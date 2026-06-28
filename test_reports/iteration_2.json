@@ -1,0 +1,49 @@
+{
+  "summary": "FormForge iteration-2 RBAC + RLS testing: 36/38 backend tests pass (94.7%). All 4 demo accounts seed correctly. /api/auth/menu returns correct role-specific menus (super=16, admin=10, vendor_admin=4, vendor_user=2) and frontend sidebar mirrors it exactly. /api/sites RLS verified (super=3, cluster-mgr admin=Alpha+Bravo, vendor admin/user=Alpha+Charlie). /api/lookup/options + /api/lookup/resolve enforce same row-level scoping (vendor_user blocked from Bravo, allowed on Alpha). /api/submissions: vendor_user only sees own; vendor_admin sees team. /api/forms: assigned_vendor_ids gates visibility AND vendor_user PUT returns 403 (write-guard works). PDF Builder parity: PUT /api/pdf-forms/{id} accepts data_source/lookup/formula on fields (PDFField extra='allow') AND carries assignment fields. PDF UI mounts the shared dlf-tabs component. Iteration-1 regression suite still passes 18/18. TWO REAL BUGS FOUND: the Master Data edit guard is NOT enforced — admin role (rahul.verma) can POST AND PUT /api/sites, when the review_request mandates only super_admin can.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/sites", "issue": "Admin role (non-super) can create sites — returns 200 instead of 403. /app/backend/vendor_routes.py:432 calls _require_admin (allows admin-tier) but should call permissions.require_master_data_editor (super_admin only).", "priority": "HIGH"},
+      {"endpoint": "PUT /api/sites/{site_id}", "issue": "Admin role can update sites — returns 200 instead of 403. Same root cause at /app/backend/vendor_routes.py:438. Also applies to DELETE /api/sites/{id} (line 458) and POST /api/sites/bulk (line 465) which were not directly tested but use the same guard.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "/api/auth/menu (admin role)", "issue": "Admin role returns 10 menu items (includes 'pdf-submissions') while the review_request listed 9. Functionally correct since pdf-submissions complements pdf-forms; just a spec-vs-impl wording delta. No 'users'/'smtp'/'settings' leakage."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard charts", "issues": ["Console warnings: 'The width(-1) and height(-1) of chart should be greater than 0' — recharts containers render before parent gets size. Cosmetic but worth a minHeight on the container."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_rbac_rls.py",
+    "/app/backend/tests/test_formforge_features.py",
+    "/app/test_reports/pytest/iter2_full.xml"
+  ],
+  "action_items": [
+    "Fix /app/backend/vendor_routes.py site write endpoints (POST '', PUT/DELETE '/{site_id}', POST '/bulk', POST '/bulk-delete', POST '/import') to use permissions.require_master_data_editor (super_admin only) instead of _require_admin. The helper already exists in /app/backend/permissions.py (line 234).",
+    "OPTIONAL: Reconsider whether 'pdf-submissions' should appear in the admin sidebar (review_request lists 9 items without it). Either remove from menu_for(admin) in permissions.py or update the spec.",
+    "OPTIONAL: Set a minHeight on the recharts ResponsiveContainer parent on Dashboard to silence the width(-1)/height(-1) warning."
+  ],
+  "critical_code_review_comments": [
+    "/app/backend/permissions.py defines require_master_data_editor (line 234) but vendor_routes.py never calls it — dead helper while the guard is missing in practice.",
+    "submission_filter for ADMIN (permissions.py:211) only restricts to {'submitted_by': uid}, which is wrong by design: an admin should see submissions for forms they own/are-assigned-to, not just ones they personally submitted. server.py compensates by computing visible form_ids inline (line 454-456), so the helper itself is misleading — consider removing or aligning the helper.",
+    "PDFField uses extra='allow' (pdf_routes.py:66) which is correct for parity, but the validate-field-types loop (line 521) still rejects unknown 'type' values — fine for now, just ensure builder always emits one of PDF_FIELD_TYPES.",
+    "site_filter (permissions.py:118-119) wraps vendor_email match around the first clause via index mutation — fragile if future code re-orders clauses. Consider building the OR list explicitly.",
+    "form_filter (permissions.py:147) returns {'form_id':'__none__'} when an admin has no uid (impossible in practice, but the same pattern is used elsewhere as a 'deny-all' filter — document the convention)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_rbac_rls.py (new — 20 RBAC/RLS pytest cases)"
+  ],
+  "success_rate": {
+    "backend": "94.7% (36/38 pytest — 18/18 iter-1 regression + 18/20 iter-2; 2 failures are real Master-Data-guard bugs)",
+    "frontend": "100% (sidebar menus match /api/auth/menu spec for all 4 roles; dlf-tabs component mounted in PDF builder)"
+  },
+  "test_credentials": "Super: admin@example.com/Admin@12345; Cluster-Mgr Admin: rahul.verma@example.com/Admin@12345; Vendor Admin: vendor.admin@sunops.example.com/Vendor@12345; Vendor User: vendor.user@sunops.example.com/Vendor@12345 — all seeded automatically by /app/backend/server.py startup.",
+  "seed_data_creation": "Test creates+deletes TEST_RBAC_* forms inline (cleaned up). The two failing master-data-guard tests now self-heal (delete leaked site / revert leaked plant_name) so reruns are idempotent.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Re-run only `python -m pytest backend/tests/test_rbac_rls.py::TestMasterDataGuard -v` after main agent swaps _require_admin->require_master_data_editor in vendor_routes.py. All other 36 tests already pass. Frontend sidebar verification was done with Playwright by logging into all 4 demo accounts — no need to re-do unless menu_for() changes.",
+  "rca of the issue": "Root cause of the 2 backend failures: /app/backend/vendor_routes.py uses an internal helper `_require_admin` (admin-tier check) for all site write endpoints. The review_request mandates that Master Data writes are super_admin-only. The correct helper `require_master_data_editor` already exists in /app/backend/permissions.py:234 but is currently unused. Reproduction: login as rahul.verma@example.com -> POST /api/sites returns 200 (should be 403); PUT /api/sites/{id} returns 200 (should be 403). Mitigation: replace `await _require_admin(user)` with `from permissions import require_master_data_editor; require_master_data_editor(user)` in create_site, update_site, delete_site, bulk_upsert, bulk_delete and import endpoints in vendor_routes.py."
+}

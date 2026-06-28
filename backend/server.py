@@ -35,7 +35,7 @@ SEED_ADMIN_EMAIL = os.environ.get('SEED_ADMIN_EMAIL', 'admin@local.test')
 SEED_ADMIN_PASSWORD = os.environ.get('SEED_ADMIN_PASSWORD', 'Admin@12345')
 SEED_ADMIN_NAME = os.environ.get('SEED_ADMIN_NAME', 'Super Admin')
 
-ROLES = ['super_admin', 'admin', 'member', 'user']
+ROLES = ['super_admin', 'admin', 'vendor_admin', 'vendor_user', 'member', 'user', 'vendor']
 
 # ---------- DB ----------
 client = AsyncIOMotorClient(MONGO_URL)
@@ -100,6 +100,7 @@ class User(BaseModel):
     created_at: str
     password_hash: Optional[str] = None  # not exposed via API
     vendor_id: Optional[str] = None  # set for vendor users (RLS scope)
+    cluster_manager_name: Optional[str] = None  # for admin role — links to Site.cluster_manager_name
     assignments: Optional[Dict[str, List[str]]] = None  # {forms:[], pdf_forms:[], sites:[], workflows:[]}
 
 class UserOut(BaseModel):
@@ -111,6 +112,7 @@ class UserOut(BaseModel):
     is_active: bool = True
     created_at: str
     vendor_id: Optional[str] = None
+    cluster_manager_name: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
 
 class RegisterIn(BaseModel):
@@ -163,6 +165,15 @@ class FormIn(BaseModel):
     theme: FormTheme = FormTheme()
     settings: FormSettings = FormSettings()
     status: str = "draft"     # draft | published | archived
+    # ---- Assignment fields (row-level security) ----
+    assigned_site_ids: List[str] = []
+    assigned_vendor_ids: List[str] = []
+    assigned_vendor_user_ids: List[str] = []
+    assigned_admin_ids: List[str] = []
+    assigned_member_ids: List[str] = []
+    assigned_department_ids: List[str] = []
+    assigned_team_ids: List[str] = []
+    assigned_cluster_managers: List[str] = []
 
 class Form(FormIn):
     form_id: str
@@ -244,6 +255,39 @@ async def startup():
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         logger.info(f"Seeded super admin: {SEED_ADMIN_EMAIL}")
+
+    # Seed demo accounts for the four-role permission model (idempotent).
+    async def _ensure(email: str, name: str, role: str, password: str, **extra):
+        if await db.users.find_one({"email": email}):
+            return
+        uid = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": uid, "email": email, "name": name, "role": role,
+            "password_hash": bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
+            "picture": None, "is_active": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            **extra,
+        })
+        logger.info(f"Seeded {role}: {email}")
+    # Cluster-Manager admin scoped to Rahul Verma (sees Alpha + Bravo only)
+    await _ensure("rahul.verma@example.com", "Rahul Verma (Cluster Mgr)",
+                  "admin", "Admin@12345", cluster_manager_name="Rahul Verma")
+    # Vendor admin for SunOps (sees Alpha + Charlie only)
+    sunops_vid = "ven_sunops_demo"
+    if not await db.vendors.find_one({"vendor_id": sunops_vid}):
+        await db.vendors.insert_one({
+            "vendor_id": sunops_vid, "vendor_name": "SunOps Pvt Ltd",
+            "vendor_email": "ops@sunops.example.com",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    # Backfill sites with vendor_id where vendor_email matches
+    await db.sites.update_many({"vendor_email": "ops@sunops.example.com", "vendor_id": {"$exists": False}},
+                               {"$set": {"vendor_id": sunops_vid}})
+    await _ensure("vendor.admin@sunops.example.com", "SunOps Vendor Admin",
+                  "vendor_admin", "Vendor@12345", vendor_id=sunops_vid)
+    await _ensure("vendor.user@sunops.example.com", "SunOps Vendor User",
+                  "vendor_user", "Vendor@12345", vendor_id=sunops_vid)
+
     init_storage()
 
 @app.on_event("shutdown")
@@ -377,6 +421,56 @@ async def google_session(body: GoogleSessionIn):
 async def me(user: User = Depends(get_current_user)):
     return UserOut(**user.model_dump())
 
+
+@api.get("/auth/menu")
+async def auth_menu(user: User = Depends(get_current_user)):
+    """Return the sidebar menu + capability matrix appropriate for this user."""
+    from permissions import capabilities_for, menu_for, normalize_role
+    return {
+        "menu": menu_for(user),
+        "capabilities": capabilities_for(user),
+        "role": normalize_role(user.role),
+    }
+
+
+# ---------- Global submissions list (admin / vendor admin views) ----------
+@api.get("/submissions", response_model=List[Submission])
+async def list_all_submissions(user: User = Depends(get_current_user), q: Optional[str] = None,
+                               status: Optional[str] = None, form_id: Optional[str] = None):
+    """List submissions visible to the current user.
+
+      super_admin → all
+      admin       → submissions for forms they own/are assigned to
+      vendor_admin→ submissions from their vendor's users
+      vendor_user → only their own submissions
+    """
+    from permissions import normalize_role, form_filter, is_super_admin
+    role = normalize_role(user.role)
+    query: Dict[str, Any] = {}
+
+    if not is_super_admin(user):
+        # First find form_ids visible to this user
+        ff = form_filter(user)
+        forms_visible = await db.forms.find(ff, {"_id": 0, "form_id": 1}).to_list(2000)
+        visible_ids = [f["form_id"] for f in forms_visible]
+        clauses: List[Dict[str, Any]] = [{"form_id": {"$in": visible_ids}}]
+        if role == "vendor_user":
+            clauses = [{"submitted_by": user.user_id}]  # strict: only own
+        elif role == "vendor_admin":
+            # vendor's submissions = submitted by any user with vendor_id == ours
+            vid = user.vendor_id
+            if vid:
+                team = await db.users.find({"vendor_id": vid}, {"_id": 0, "user_id": 1}).to_list(2000)
+                clauses.append({"submitted_by": {"$in": [u["user_id"] for u in team]}})
+            else:
+                return []
+        query = {"$and": clauses} if len(clauses) > 1 else clauses[0]
+    if form_id: query.setdefault("form_id", form_id)
+    if status:  query["status"] = status
+    if q:       query["values"] = {"$regex": q, "$options": "i"}
+    rows = await db.submissions.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    return [Submission(**r) for r in rows]
+
 # ---------- Users (admin) ----------
 @api.get("/users", response_model=List[UserOut])
 async def list_users(user: User = Depends(require_role("super_admin"))):
@@ -411,6 +505,9 @@ class UserUpdateIn(BaseModel):
     role: Optional[str] = None
     is_active: Optional[bool] = None
     password: Optional[str] = None
+    vendor_id: Optional[str] = None
+    cluster_manager_name: Optional[str] = None
+    assignments: Optional[Dict[str, List[str]]] = None
 
 @api.patch("/users/{user_id}", response_model=UserOut)
 async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(require_role("super_admin"))):
@@ -421,6 +518,9 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(req
         updates["role"] = body.role
     if body.is_active is not None: updates["is_active"] = body.is_active
     if body.password: updates["password_hash"] = hash_password(body.password)
+    if body.vendor_id is not None: updates["vendor_id"] = body.vendor_id or None
+    if body.cluster_manager_name is not None: updates["cluster_manager_name"] = body.cluster_manager_name or None
+    if body.assignments is not None: updates["assignments"] = body.assignments
     if not updates: raise HTTPException(400, "No fields")
     res = await db.users.update_one({"user_id": user_id}, {"$set": updates})
     if not res.matched_count: raise HTTPException(404, "User not found")
@@ -443,17 +543,23 @@ def _slug(title: str) -> str:
 async def list_forms(user: User = Depends(get_current_user),
                      archived: bool = False, favorite: Optional[bool] = None,
                      q: Optional[str] = None):
+    from permissions import form_filter, is_super_admin
     query: Dict[str, Any] = {"is_deleted": False, "is_archived": archived}
-    if user.role in ("vendor", "vendor_admin"):
-        # vendor users only see forms explicitly assigned to them
-        assigned = (user.assignments or {}).get("forms") or []
-        query["form_id"] = {"$in": assigned}
-    elif user.role not in ("super_admin",):
-        query["owner_id"] = user.user_id
+    # Apply role-based RLS unless super admin
+    if not is_super_admin(user):
+        query = {"$and": [query, form_filter(user)]}
     if favorite is not None:
-        query["is_favorite"] = favorite
+        # Keep the favorite filter outside the $and rewrap so we don't lose it
+        if "$and" in query:
+            query["$and"].append({"is_favorite": favorite})
+        else:
+            query["is_favorite"] = favorite
     if q:
-        query["title"] = {"$regex": q, "$options": "i"}
+        clause = {"title": {"$regex": q, "$options": "i"}}
+        if "$and" in query:
+            query["$and"].append(clause)
+        else:
+            query["title"] = clause["title"]
     rows = await db.forms.find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
     return [Form(**r) for r in rows]
 
@@ -471,16 +577,17 @@ async def create_form(body: FormIn, user: User = Depends(get_current_user)):
     doc.pop("_id", None)
     return Form(**doc)
 
-async def _get_form_for_user(form_id: str, user: User) -> dict:
+async def _get_form_for_user(form_id: str, user: User, *, write: bool = False) -> dict:
+    from permissions import can_edit_form, can_view_form
     doc = await db.forms.find_one({"form_id": form_id, "is_deleted": False}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Form not found")
-    if user.role in ("vendor", "vendor_admin"):
-        assigned = (user.assignments or {}).get("forms") or []
-        if form_id not in assigned:
-            raise HTTPException(403, "Forbidden")
-    elif user.role != "super_admin" and doc["owner_id"] != user.user_id:
-        raise HTTPException(403, "Forbidden")
+    if write:
+        if not can_edit_form(user, doc):
+            raise HTTPException(403, "You do not have permission to edit this form")
+    else:
+        if not can_view_form(user, doc):
+            raise HTTPException(403, "You do not have permission to view this form")
     return doc
 
 @api.get("/forms/{form_id}", response_model=Form)
@@ -489,7 +596,7 @@ async def get_form(form_id: str, user: User = Depends(get_current_user)):
 
 @api.put("/forms/{form_id}", response_model=Form)
 async def update_form(form_id: str, body: FormIn, user: User = Depends(get_current_user)):
-    existing = await _get_form_for_user(form_id, user)
+    existing = await _get_form_for_user(form_id, user, write=True)
     updates = body.model_dump()
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.forms.update_one({"form_id": form_id}, {"$set": updates})
@@ -504,7 +611,7 @@ class FormPatch(BaseModel):
 
 @api.patch("/forms/{form_id}", response_model=Form)
 async def patch_form(form_id: str, body: FormPatch, user: User = Depends(get_current_user)):
-    existing = await _get_form_for_user(form_id, user)
+    existing = await _get_form_for_user(form_id, user, write=True)
     upd = {k: v for k, v in body.model_dump().items() if v is not None}
     upd["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.forms.update_one({"form_id": form_id}, {"$set": upd})
@@ -529,7 +636,7 @@ async def duplicate_form(form_id: str, user: User = Depends(get_current_user)):
 
 @api.delete("/forms/{form_id}")
 async def delete_form(form_id: str, user: User = Depends(get_current_user)):
-    await _get_form_for_user(form_id, user)
+    await _get_form_for_user(form_id, user, write=True)
     await db.forms.update_one({"form_id": form_id}, {"$set": {"is_deleted": True}})
     return {"ok": True}
 
@@ -571,8 +678,17 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
     # fire workflow trigger (best-effort; never blocks the response)
     try:
         from workflow_routes import fire_trigger as _ft
+        # Section 8 — workflow triggers carry enough context to identify which
+        # form/PDF, which site, which vendor, and the current submission status.
+        site_name = body.values.get("site_name") or body.values.get("site")
+        vendor_name = body.values.get("vendor_name") or body.values.get("vendor")
         await _ft(db, "form_submitted",
-                  {"submission_id": sid, "form_id": form["form_id"], "form_name": form.get("title"),
+                  {"submission_id": sid,
+                   "form_id": form["form_id"], "form_name": form.get("title"),
+                   "form_type": "form",
+                   "site_name": site_name,
+                   "vendor_name": vendor_name,
+                   "current_status": doc["status"],
                    "values": body.values, "user_id": viewer.user_id if viewer else None,
                    "user_email": viewer.email if viewer else None, "ip": doc["ip"]})
     except Exception as _e:  # noqa: BLE001

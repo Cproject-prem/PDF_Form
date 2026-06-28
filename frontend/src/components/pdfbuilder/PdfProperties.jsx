@@ -8,6 +8,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Plus, X, Trash2, Copy, ArrowUp, ArrowDown, Lock, Unlock, Eye, EyeOff } from "lucide-react";
+import FieldDataLookupFormulaTabs from "@/components/builder/FieldDataLookupFormulaTabs";
 
 export default function PdfProperties({ field, fields, onChange, onDuplicate, onDelete, onZ, onLock, onVisible }) {
   if (!field) {
@@ -225,6 +226,13 @@ export default function PdfProperties({ field, fields, onChange, onDuplicate, on
             </div>
           )}
         </Section>
+
+        {/* Parity tabs — Data Source, Lookup, Formula (full Form-Builder feature parity) */}
+        <FieldDataLookupFormulaTabs
+          field={field}
+          formFields={fields || []}
+          onChange={(patch) => set(patch)}
+        />
 
         <div className="flex items-center gap-2 pt-2">
           <Button data-testid="prop-duplicate" variant="outline" className="flex-1" onClick={() => onDuplicate(field.id)}>

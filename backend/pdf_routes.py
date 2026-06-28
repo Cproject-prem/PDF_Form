@@ -61,7 +61,9 @@ PDF_FIELD_TYPES = {
 
 # --------------------------------------------------------------------- models
 class PDFField(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # Allow extra so PDF fields can carry the same data_source/lookup/formula
+    # blobs that normal form fields use — full parity with the Form Builder.
+    model_config = ConfigDict(extra="allow")
     id: str
     page: int = 1
     # Coordinates as percentages of the page (0..1) for resolution independence
@@ -92,6 +94,12 @@ class PDFField(BaseModel):
     alignment: str = "left"
     conditional_logic: Optional[Dict[str, Any]] = None
     db_mapping: str = ""
+    # ---- Parity tabs with Form Builder ----
+    data_source: Optional[Dict[str, Any]] = None
+    lookup: Optional[Dict[str, Any]] = None
+    formula: Optional[Dict[str, Any]] = None
+    description: str = ""
+    help_text: str = ""
 
 
 class PDFPage(BaseModel):
@@ -108,6 +116,15 @@ class PDFTemplateIn(BaseModel):
     status: str = "draft"
     pages: List[PDFPage] = []
     version: int = 1
+    # ---- Assignment fields (row-level security) ----
+    assigned_site_ids: List[str] = Field(default_factory=list)
+    assigned_vendor_ids: List[str] = Field(default_factory=list)
+    assigned_vendor_user_ids: List[str] = Field(default_factory=list)
+    assigned_admin_ids: List[str] = Field(default_factory=list)
+    assigned_member_ids: List[str] = Field(default_factory=list)
+    assigned_department_ids: List[str] = Field(default_factory=list)
+    assigned_team_ids: List[str] = Field(default_factory=list)
+    assigned_cluster_managers: List[str] = Field(default_factory=list)
 
 
 class PDFTemplate(PDFTemplateIn):
@@ -401,26 +418,34 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
     subs = APIRouter(prefix="/pdf-submissions")
 
     def _owner_query(user) -> Dict[str, Any]:
+        from permissions import form_filter, is_super_admin
         q: Dict[str, Any] = {"is_deleted": False}
-        if user.role in ("vendor", "vendor_admin"):
-            # Vendor users only see PDF forms explicitly assigned to them
-            assigned = ((getattr(user, "assignments", None) or {}).get("pdf_forms")) or []
-            q["template_id"] = {"$in": assigned}
-        elif user.role != "super_admin":
-            q["owner_id"] = user.user_id
-        return q
+        if is_super_admin(user):
+            return q
+        # Re-use the central form_filter — pdf_templates use the same
+        # assignment columns (form_id == template_id semantically).
+        rls = form_filter(user)
+        # rename keys: form_filter uses form_id; pdf collection uses template_id
+        rls_str = str(rls)
+        if "'form_id'" in rls_str:
+            import json as _json
+            rls = _json.loads(_json.dumps(rls).replace('"form_id"', '"template_id"'))
+        return {"$and": [q, rls]}
 
-    async def _get_template_for_user(template_id: str, user) -> dict:
+    async def _get_template_for_user(template_id: str, user, *, write: bool = False) -> dict:
+        from permissions import can_edit_form, can_view_form, is_super_admin
         doc = await db.pdf_templates.find_one({"template_id": template_id, "is_deleted": False},
                                               {"_id": 0})
         if not doc:
             raise HTTPException(404, "Template not found")
-        if user.role in ("vendor", "vendor_admin"):
-            assigned = ((getattr(user, "assignments", None) or {}).get("pdf_forms")) or []
-            if template_id not in assigned:
-                raise HTTPException(403, "Forbidden")
-        elif user.role != "super_admin" and doc["owner_id"] != user.user_id:
-            raise HTTPException(403, "Forbidden")
+        # Adapt doc to look like a Form doc for permission check (form_id alias)
+        probe = {**doc, "form_id": doc.get("template_id")}
+        if write:
+            if not (is_super_admin(user) or can_edit_form(user, probe)):
+                raise HTTPException(403, "You do not have permission to edit this PDF form")
+        else:
+            if not (is_super_admin(user) or can_view_form(user, probe)):
+                raise HTTPException(403, "You do not have permission to view this PDF form")
         return doc
 
     # --- Upload (creates a new template from a PDF) -----------------------
@@ -489,7 +514,7 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
 
     @router.put("/{template_id}", response_model=PDFTemplate)
     async def update_template(template_id: str, body: PDFTemplateIn, user=Depends(get_current_user)):
-        existing = await _get_template_for_user(template_id, user)
+        existing = await _get_template_for_user(template_id, user, write=True)
         updates = body.model_dump()
         # validate field types
         for f in updates.get("fields", []):
@@ -505,7 +530,7 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
 
     @router.patch("/{template_id}", response_model=PDFTemplate)
     async def patch_template(template_id: str, body: PDFTemplatePatch, user=Depends(get_current_user)):
-        existing = await _get_template_for_user(template_id, user)
+        existing = await _get_template_for_user(template_id, user, write=True)
         upd = {k: v for k, v in body.model_dump().items() if v is not None}
         if upd.get("status") and upd["status"] not in ("draft", "published", "archived"):
             raise HTTPException(400, "Invalid status")
@@ -516,7 +541,7 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
 
     @router.delete("/{template_id}")
     async def delete_template(template_id: str, user=Depends(get_current_user)):
-        await _get_template_for_user(template_id, user)
+        await _get_template_for_user(template_id, user, write=True)
         await db.pdf_templates.update_one({"template_id": template_id},
                                           {"$set": {"is_deleted": True, "updated_at": _now()}})
         return {"ok": True}

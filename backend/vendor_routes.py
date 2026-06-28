@@ -184,17 +184,26 @@ def list_assigned_ids(user, kind: str) -> Optional[List[str]]:
 def _site_filter_for_user(user, show_all: bool = False) -> Dict[str, Any]:
     """Build a Mongo filter for `sites` based on caller role.
 
-    Vendor users see sites where:
-      - `vendor_email` matches their email, OR
-      - `vendor_id` matches their vendor_id, OR
-      - `site_id` is in `assignments.sites`.
-
-    Admins see everything by default (show_all is allowed only for admins
-    and is the default for them).
+    Delegates to the centralised `permissions.site_filter()` which implements
+    the 4-tier RBAC (super_admin, admin, vendor_admin, vendor_user).
+    `show_all=True` is honoured only for super_admin (admins always see the
+    restricted set determined by cluster_manager / assigned_admin_ids).
     """
-    if not user or user.role in ("super_admin", "admin") or show_all:
+    if not user:
+        return {"_impossible": True}
+    try:
+        from permissions import site_filter, is_super_admin
+    except Exception:
+        site_filter = None  # type: ignore
+        is_super_admin = None  # type: ignore
+    if is_super_admin and is_super_admin(user) and show_all:
         return {}
-    if user.role in ("vendor", "vendor_admin"):
+    if site_filter:
+        return site_filter(user)
+    # legacy fallback (used only if permissions module fails to import)
+    if user.role in ("super_admin", "admin") or show_all:
+        return {}
+    if user.role in ("vendor", "vendor_admin", "vendor_user"):
         or_clauses: List[Dict[str, Any]] = []
         if user.email:
             or_clauses.append({"vendor_email": user.email})
@@ -207,7 +216,6 @@ def _site_filter_for_user(user, show_all: bool = False) -> Dict[str, Any]:
         if not or_clauses:
             return {"_impossible": True}
         return {"$or": or_clauses}
-    # plain user — see nothing in master data
     return {"_impossible": True}
 
 
@@ -937,6 +945,7 @@ DEMO_SITES = [
      "ac_capacity": 50, "dc_capacity": 65, "inverter_capacity": 50,
      "vendor_name": "SunOps Pvt Ltd", "vendor_email": "ops@sunops.example.com",
      "cluster": "South-1", "region": "South", "site_status": "operational",
+     "cluster_manager_name": "Rahul Verma",
      "commission_date": "2023-04-01"},
     {"site_name": "Bravo Wind 30MW", "site_code": "BRAVO-30", "asset_id": "AST-1002",
      "plant_name": "Bravo", "customer_name": "Helios Energy",
@@ -945,6 +954,7 @@ DEMO_SITES = [
      "ac_capacity": 30, "dc_capacity": 0, "inverter_capacity": 30,
      "vendor_name": "WindWorks", "vendor_email": "ops@windworks.example.com",
      "cluster": "South-2", "region": "South", "site_status": "operational",
+     "cluster_manager_name": "Rahul Verma",
      "commission_date": "2022-09-10"},
     {"site_name": "Charlie Hybrid 25MW", "site_code": "CHARLIE-25", "asset_id": "AST-1003",
      "plant_name": "Charlie", "customer_name": "Acme Power",
@@ -953,12 +963,24 @@ DEMO_SITES = [
      "ac_capacity": 25, "dc_capacity": 32, "inverter_capacity": 25,
      "vendor_name": "SunOps Pvt Ltd", "vendor_email": "ops@sunops.example.com",
      "cluster": "West-1", "region": "West", "site_status": "commissioning",
+     "cluster_manager_name": "Priya Sharma",
      "commission_date": "2024-11-15"},
 ]
 
 
 async def seed_demo_sites(db) -> None:
-    """Idempotent demo data — does nothing if any site already exists."""
+    """Idempotent demo data — does nothing if any site already exists.
+
+    Also performs a one-time backfill of `cluster_manager_name` on existing
+    demo sites for the new admin-by-cluster-manager RLS feature.
+    """
+    # Backfill cluster_manager_name on existing rows (idempotent)
+    for r in DEMO_SITES:
+        if r.get("cluster_manager_name"):
+            await db.sites.update_many(
+                {"site_code": r["site_code"], "cluster_manager_name": {"$in": [None, ""]}},
+                {"$set": {"cluster_manager_name": r["cluster_manager_name"]}},
+            )
     if await db.sites.count_documents({}) > 0:
         return
     now = _now()
