@@ -1,0 +1,111 @@
+{
+  "theme": "light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "vibe": "Objective, rigid, functional, high-density enterprise SaaS",
+  "typography": {
+    "fonts": {
+      "headings": "Cabinet Grotesk",
+      "body": "IBM Plex Sans",
+      "mono": "IBM Plex Mono",
+      "installation_command": "yarn add @fontsource/cabinet-grotesk @fontsource/ibm-plex-sans @fontsource/ibm-plex-mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl font-black tracking-tighter text-slate-950",
+      "h2": "text-2xl sm:text-3xl font-bold tracking-tight text-slate-900",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-tight text-slate-900",
+      "h4": "text-lg font-semibold text-slate-800",
+      "body": "text-sm text-slate-700 leading-relaxed",
+      "small_label": "text-xs font-semibold tracking-[0.05em] uppercase text-slate-500",
+      "code_formula": "font-mono text-sm text-slate-800 tracking-tight"
+    }
+  },
+  "colors": {
+    "background": {
+      "app": "#FAFAFA",
+      "canvas": "#F1F5F9",
+      "surface": "#FFFFFF",
+      "sidebar": "#FFFFFF"
+    },
+    "border": {
+      "default": "#E2E8F0",
+      "active": "#0055FF",
+      "focus": "#93C5FD"
+    },
+    "text": {
+      "primary": "#0A0A0A",
+      "secondary": "#475569",
+      "muted": "#94A3B8"
+    },
+    "accents": {
+      "primary": "#0055FF",
+      "primary_hover": "#0044CC",
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444",
+      "formula_field": "#10B981",
+      "formula_function": "#0055FF",
+      "formula_operator": "#F59E0B"
+    }
+  },
+  "layout_and_spacing": {
+    "strategy": "Control Room Grid",
+    "form_builder": {
+      "structure": "3-column layout. Left sidebar (280px) for Field Palette. Center area for Canvas. Right sidebar (320px) for Field Configuration.",
+      "canvas_background": "bg-[radial-gradient(#CBD5E1_1px,transparent_1px)] [background-size:16px_16px] bg-slate-50",
+      "panels": "border-r border-l border-slate-200 bg-white shadow-sm z-10"
+    },
+    "density": "High density. Use tightly packed components for Master Data Tables and Configuration forms. Use p-4 for panel sections, p-2 for individual configuration rows.",
+    "borders": "1px solid #E2E8F0. Sharp corners or minimal rounded-md (4px) to emphasize functional technicality."
+  },
+  "components": {
+    "general": {
+      "card": "Flat background, 1px subtle border, no shadow. Hover: slight lift, border darkens.",
+      "buttons": "High contrast. Primary: bg-blue-600 text-white rounded-md hover:bg-blue-700. Secondary: bg-white text-slate-700 border border-slate-200 hover:bg-slate-50.",
+      "inputs": "Shadcn default inputs but force text-sm, 1px border. Focus state must use ring-2 ring-blue-500/20 border-blue-500.",
+      "modals": "Use Shadcn Dialog for Formula Builder and PDF Builder. Must have backdrop-blur-sm bg-black/40 overlay."
+    },
+    "form_builder_specific": {
+      "field_palette": "Draggable items must have a clear grab handle icon. Use generic card look: border border-slate-200 p-3 flex items-center gap-3 cursor-grab active:cursor-grabbing hover:border-blue-400 hover:bg-blue-50.",
+      "configuration_panel": "Use Shadcn Tabs for [General, Data Source, Lookup, Formula, Validation, Advanced]. Inside tabs, use Shadcn Accordion for dense grouping.",
+      "formula_builder": "A Code Editor-like UI. Dark mode or high contrast light mode. Must use different colors for Field Tags (Green), Functions (Blue), and Numbers (Purple).",
+      "master_data_table": "Dense data tables with sticky headers. Horizontal and vertical scrolling. Use Shadcn Table + Pagination."
+    }
+  },
+  "icons_and_media": {
+    "icon_library": "@phosphor-icons/react",
+    "installation_command": "yarn add @phosphor-icons/react",
+    "usage": "Use Phosphor icons in 'regular' or 'bold' weight. Avoid 'duotone' for this technical dashboard.",
+    "images": {
+      "empty_state_network": {
+        "url": "https://images.unsplash.com/photo-1644088379091-d574269d422f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGRhdGElMjBuZXR3b3JrfGVufDB8fHx8MTc4MjY4MDQxNHww&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract data network for empty states in Master Data or Form Workflow areas."
+      },
+      "user_avatar": {
+        "url": "https://images.unsplash.com/photo-1560250097-0b93528c311a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTF8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdHxlbnwwfHx8fDE3ODI2ODA0MTN8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Professional headshot for Admin/Vendor profile avatar."
+      },
+      "company_logo": {
+        "url": "https://images.unsplash.com/photo-1669220339242-c12788586902?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwxfHxjb21wYW55JTIwbG9nbyUyMG1vbm9jaHJvbWV8ZW58MHx8fHwxNzgyNjgwNDE0fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Monochrome abstract company logo for the top-left dashboard nav."
+      }
+    }
+  },
+  "motion_and_interactions": {
+    "drag_drop": "Use smooth transitions for sorting items. Highlight drop zones with a dashed blue border and light blue background (bg-blue-50 border-blue-400 border-dashed).",
+    "transitions": "Use fast, snappy transitions for tooltips and accordions. duration-150 ease-out.",
+    "hover_states": "All interactive elements MUST have a visible hover state. Ensure text color contrast is maintained on hover."
+  },
+  "accessibility_and_testing": {
+    "testing_attributes": "All interactive and key informational elements MUST include a 'data-testid' attribute. Example: data-testid='field-palette-text-input', data-testid='config-tab-validation', data-testid='formula-builder-save-btn'.",
+    "focus_management": "Ensure focus states have higher contrast. Use focus-visible:ring-2 focus-visible:ring-blue-500.",
+    "aria_labels": "Use aria-labels for icon-only buttons (like delete field, copy field)."
+  },
+  "instructions_to_main_agent": {
+    "tech_stack": "React.js (use .jsx or .js, NOT .tsx), Tailwind CSS, Shadcn UI.",
+    "state_management": "Use Zustand or standard React Context for the complex Form Builder state to avoid excessive prop drilling between Canvas, Sidebar Config, and Field Palette.",
+    "drag_and_drop": "Implement drag and drop functionality natively with HTML5 or use a lightweight library like @dnd-kit/core (preferred for React) or react-beautiful-dnd.",
+    "formula_engine": "The formula builder needs a reliable parser. Build a standard evaluation function or use a library like mathjs. The UI must clearly map 'Field IDs' (e.g., {{site_capacity}}) distinct from standard strings.",
+    "data_structures": "Maintain a strict schema for form fields: { id, type, label, lookupConfig: { sourceTable, sourceColumn, targetColumn }, formulaConfig: { expression, dependencies }, validation: { required, min, max } }.",
+    "component_usage": "Do NOT use HTML <select>. Always use Shadcn DropdownMenu or Select. Use Shadcn Table for Master Data management."
+  }
+}
