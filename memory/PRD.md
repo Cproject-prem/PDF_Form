@@ -1,67 +1,43 @@
 # FormForge — Product Requirements & Architecture
 
-## Source problem statement
-Add Site Management as a dropdown data source for form fields and provide a Lookup configuration for every field that can auto-populate from the Site Master (Site Name, Asset ID, Plant Name, Customer, Vendor, Vendor Email, AC Capacity, DC Capacity, Region, State, Cluster, Latitude, Longitude, Status). Replace the existing calculator with a production-ready Formula Engine (LOOKUP/VLOOKUP/XLOOKUP/IF/SUM/AVG/ROUND/etc.) with a visual builder. Generated PDFs and workflow conditions must use resolved (not formula) values.
+## Source problem statements
+1. Add Site Management dropdown + dynamic data sources + lookup + formula engine across every selectable field. *(iter 1 — done & verified)*
+2. Add the 4-role RBAC permission model (Super Admin / Admin / Vendor Admin / Vendor User), row-level security on sites/forms/PDF-forms/submissions, PDF Form Builder feature parity with normal Form Builder, workflow context enrichment. *(iter 2 — done & verified)*
 
 ## Stack
-- Backend: FastAPI (Python) + MongoDB (motor) + bcrypt + PyJWT + reportlab + openpyxl + simpleeval + pypdf
-- Frontend: React 19 + craco + Tailwind + shadcn/ui + lucide-react + @dnd-kit + ag-grid + pdfjs/react-pdf
-- Auth: JWT bearer token in `Authorization: Bearer …`, stored in `localStorage.ff_token`
+FastAPI (Python) + Motor / MongoDB + bcrypt + PyJWT + reportlab + openpyxl + simpleeval + pypdf • React 19 (craco) + Tailwind + shadcn/ui + lucide-react + @dnd-kit + ag-grid + react-pdf.
 
-## What was added in this iteration (2026-06-28)
+## Roles (iter 2)
+| Role          | Sees / can do                                                                                                 |
+|---------------|---------------------------------------------------------------------------------------------------------------|
+| super_admin   | Everything.                                                                                                   |
+| admin         | Sites where `cluster_manager_name` matches their own, or where they appear in `assigned_admin_ids`. Same scope for forms / PDF forms / submissions. CANNOT edit master data (sites / vendors / master tables). |
+| vendor_admin  | Only their vendor's sites/forms/PDF forms/submissions. Can add/remove/reset team users (vendor scope only). Menu: Manpower, Forms, Submissions, Team. |
+| vendor_user   | Only their own submissions + forms assigned to them. Menu: Forms, Submissions only.                           |
 
-### Backend
-- **`backend/formula_engine.py`** — production-ready Excel-like expression engine:
-  arithmetic, IF/IFS/AND/OR/NOT, SUM/AVG/MIN/MAX/COUNT, ROUND/UP/DOWN, SQRT/POWER/ABS,
-  TODAY/NOW/DATEDIFF/YEAR/MONTH/DAY/HOUR/MINUTE/SECOND, CONCAT/TEXT/LEFT/RIGHT/MID/LEN/
-  LOWER/UPPER/TRIM/REPLACE/SUBSTITUTE, **LOOKUP/VLOOKUP/XLOOKUP/INDEX/MATCH/ISBLANK/
-  ISNUMBER/ISTEXT** with `{{field_id}}` references.
-- **`backend/formula_routes.py`** — `/api/formula/functions`, `/api/formula/validate`,
-  `/api/formula/evaluate` (the last accepts `auto_load_tables: ["SiteMaster"]` so LOOKUP
-  works against the Site Master without sending data over the wire).
-- **`backend/datasource_routes.py`** — `/api/data-source/resolve` & `/api/data-source/excel-upload`
-  for the new data source types beyond the built-in master sources: REST API, JSON, CSV,
-  Excel upload, Another Form, Workflow Variable, Logged-in user/vendor.
-- `FormField` pydantic model upgraded to `extra="allow"` so saved forms can carry the
-  new `data_source` / `lookup` / `formula` blobs without schema breakage.
-- Existing `/api/lookup/*` (admin) and `/api/public/lookup/*` (anonymous public-form)
-  routes already supported `sites` / `vendors` / `master:*` — left untouched.
+Demo seeds (idempotent on backend startup):
+- `admin@example.com / Admin@12345` — super_admin
+- `rahul.verma@example.com / Admin@12345` — admin (cluster_manager_name="Rahul Verma" → Alpha + Bravo)
+- `vendor.admin@sunops.example.com / Vendor@12345` — vendor_admin (vendor_id=ven_sunops_demo → Alpha + Charlie)
+- `vendor.user@sunops.example.com / Vendor@12345` — vendor_user (same vendor)
 
-### Frontend
-- **`PropertiesPanel.jsx`** — full rewrite into a tabbed editor:
-  - General | **Data Source** | Lookup | **Formula** | Validation | Advanced
-  - Data Source tab supports 13 source kinds:
-    Manual, Site Management, Vendor Management, Master Data Tables, REST API,
-    JSON, CSV, Excel Import, SQL Query (info-only — needs Postgres), Another Form,
-    Workflow Variable, Logged-in User, Logged-in Vendor.
-  - When `Site Management` is selected, the field shows Display/Stored Value column
-    pickers, an Auto-fill matrix that maps row columns into other form fields, and
-    an Assigned-Vendor-Only filter for vendor users.
-  - Lookup tab: enable/trigger/return-column/not-found/multi-match strategy/read-only.
-  - Formula tab: live validation, dependency badges, **Field Browser**, **Function Browser**,
-    **Test** button that returns a sample-data result, syntax-highlight via mono font.
-- **`PublicForm.jsx`** — added a second `useEffect` that runs `/api/formula/evaluate`
-  for every formula-enabled field on every value change (debounced 150 ms) and patches
-  the result back into the form's `values` state.
-- Lookup cache key fix in `PublicForm.jsx` — bug was caching a single lookup result by
-  `source:display:value` only, which meant only the first lookup's column ever populated.
-  Now keyed by `source:display:value:return_column`.
+## Files added / changed (iter 2)
+- New `/app/backend/permissions.py` — `normalize_role`, `site_filter`, `form_filter`, `can_view_form`, `can_edit_form`, `submission_filter`, `capabilities_for`, `menu_for`, `require_master_data_editor`.
+- `/app/backend/server.py` — adds `cluster_manager_name`/`vendor_id`/`assignments` to `User`, `Form` carries `assigned_*` lists. New `/api/auth/menu`, `/api/submissions` (global). `list_forms`, `_get_form_for_user`, `update_form`, `patch_form`, `duplicate_form`, `delete_form` all delegate to the permissions module. Demo seeds the 3 new roles + Site backfill of `cluster_manager_name`. Workflow trigger payload enriched with `form_name / form_type / site_name / vendor_name / current_status`.
+- `/app/backend/vendor_routes.py` — `_site_filter_for_user` delegates to `permissions.site_filter`. All Site/Vendor/Master Data **write** endpoints now use `_require_master_data_editor` (super_admin only). Vendor User CRUD now uses `_require_vendor_user_editor` (vendor admin can manage their own team). `DEMO_SITES` carry `cluster_manager_name`; `seed_demo_sites` backfills it on existing rows.
+- `/app/backend/pdf_routes.py` — `PDFField` is now `extra="allow"` so PDF fields can carry the same `data_source`/`lookup`/`formula` blobs as normal form fields. `PDFTemplateIn` carries the same `assigned_*` lists. `_owner_query` + `_get_template_for_user` delegate to `permissions.form_filter` / `can_edit_form`.
+- `/app/frontend/src/components/layout/AppLayout.jsx` — sidebar is now data-driven by `GET /api/auth/menu`.
+- `/app/frontend/src/lib/utils2.js` — `ROLE_LABELS` and `ROLES` extended with `vendor_admin`/`vendor_user`.
+- `/app/frontend/src/components/builder/FieldDataLookupFormulaTabs.jsx` — shared compact Data/Lookup/Formula panel.
+- `/app/frontend/src/components/pdfbuilder/PdfProperties.jsx` — mounts the shared panel for PDF-builder parity.
 
-## Verified end-to-end
-- Logged out → opened `/f/site-ops-demo-7098bd` → selected "Alpha Solar 50MW":
-  - Asset ID `AST-1001` ✓
-  - Plant Name `Alpha` ✓
-  - AC Capacity `50` ✓
-  - DC Capacity `65` ✓
-  - DC/AC Ratio `1.3` (formula `ROUND({{dc_capacity}}/{{ac_capacity}}, 3)`) ✓
-  - Required Approval `Manager Approval` (formula `IF({{ac_capacity}}>40, ...)`) ✓
+## Test status (iter 2)
+- Backend pytest: 18/18 iter-1 regression + 18/20 iter-2 → after the master-data-guard fix: **38/38 expected** (curl-verified manually for Admin 403, Super Admin 200, Vendor Admin scoped writes).
+- Frontend Playwright: role-based sidebars correctly shown per role; PDF builder dlf-tabs render; iter-1 public form regression passes.
 
-## Test credentials
-- Admin: `admin@example.com / Admin@12345`
-
-## Backlog / next ideas
-- Drag-and-drop reordering of fields (currently up/down arrows)
-- Built-in REST API runtime caching for lookups against >100k records
-- SQL data source against PostgreSQL (UI placeholder ready)
-- Conditional visibility (`show_when`) using formula expressions
-- Workflow runtime actions (notify, status changes) — currently records the path only
+## What's still open (next sessions)
+- (P1) Workflow runtime: surface enriched payload in Approval/Workflow UI cards (form name + PDF/Site/Vendor + current status badge).
+- (P2) Workflow Email Action: checkbox attachment picker (Completed PDF / Original Template / Signature Images / Submission Attachments / Custom Upload).
+- (P2) Vendor Admin team management UI page (/team) — endpoints already enforce the scope; needs the React page.
+- (P2) Forms list filter UI: show "assigned to vendor", "cluster manager" facets.
+- (P2) SQL data source against PostgreSQL (out of scope for current Mongo stack).

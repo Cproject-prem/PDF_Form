@@ -244,6 +244,26 @@ def build_routers(db, get_current_user, hash_password_fn):
         if user.role not in ("super_admin", "admin"):
             raise HTTPException(403, "Admin role required")
 
+    async def _require_master_data_editor(user) -> None:
+        """Only Super Admin may write to master data (sites, vendors, master tables).
+
+        This matches the spec: Admin can view but not edit Site/Vendor/Master Data.
+        """
+        if user.role != "super_admin":
+            raise HTTPException(403, "Only Super Admin can edit master data records.")
+
+    async def _require_vendor_user_editor(user, vendor_id: str) -> None:
+        """Super Admin OR the Vendor Admin of THAT vendor.
+
+        Vendor Admins can manage their own team users (add/remove/reset password/
+        activate/deactivate). Super Admin can manage anyone.
+        """
+        if user.role == "super_admin":
+            return
+        if user.role == "vendor_admin" and getattr(user, "vendor_id", None) == vendor_id:
+            return
+        raise HTTPException(403, "Only Super Admin or this vendor's Vendor Admin may edit team users.")
+
     # ---------- Vendors CRUD ----------
 
     @vendors.get("")
@@ -259,7 +279,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @vendors.post("")
     async def create_vendor(body: VendorIn, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         now = _now()
         doc = {
             "vendor_id": _gen("ven"),
@@ -285,7 +305,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @vendors.put("/{vid}")
     async def update_vendor(vid: str, body: VendorIn, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         existing = _clean(await db.vendors.find_one({"vendor_id": vid}))
         if not existing:
             raise HTTPException(404, "Vendor not found")
@@ -295,7 +315,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @vendors.delete("/{vid}")
     async def delete_vendor(vid: str, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         # also deactivate vendor users
         await db.vendors.delete_one({"vendor_id": vid})
         await db.users.update_many({"vendor_id": vid}, {"$set": {"is_active": False}})
@@ -314,7 +334,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @vusers.post("/{vid}")
     async def create_vendor_user(vid: str, body: VendorUserIn, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_vendor_user_editor(user, vid)
         vendor = _clean(await db.vendors.find_one({"vendor_id": vid}))
         if not vendor:
             raise HTTPException(404, "Vendor not found")
@@ -340,10 +360,10 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @vusers.patch("/{user_id}")
     async def update_vendor_user(user_id: str, body: VendorUserUpdate, user=Depends(get_current_user)):
-        await _require_admin(user)
         target = _clean(await db.users.find_one({"user_id": user_id}))
         if not target or not target.get("vendor_id"):
             raise HTTPException(404, "Vendor user not found")
+        await _require_vendor_user_editor(user, target["vendor_id"])
         upd: Dict[str, Any] = {}
         if body.name is not None: upd["name"] = body.name
         if body.role is not None and body.role in ("vendor", "vendor_admin"):
@@ -359,10 +379,10 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @vusers.put("/{user_id}/assignments")
     async def set_assignments(user_id: str, body: Assignment, user=Depends(get_current_user)):
-        await _require_admin(user)
         target = _clean(await db.users.find_one({"user_id": user_id}))
         if not target or not target.get("vendor_id"):
             raise HTTPException(404, "Vendor user not found")
+        await _require_vendor_user_editor(user, target["vendor_id"])
         await db.users.update_one(
             {"user_id": user_id},
             {"$set": {"assignments": body.model_dump(),
@@ -374,7 +394,10 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @vusers.delete("/{user_id}")
     async def delete_vendor_user(user_id: str, user=Depends(get_current_user)):
-        await _require_admin(user)
+        target = _clean(await db.users.find_one({"user_id": user_id, "vendor_id": {"$exists": True}}))
+        if not target:
+            raise HTTPException(404, "Vendor user not found")
+        await _require_vendor_user_editor(user, target["vendor_id"])
         await db.users.delete_one({"user_id": user_id, "vendor_id": {"$exists": True}})
         return {"ok": True}
 
@@ -404,7 +427,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.post("/columns")
     async def add_column(body: Dict[str, str], user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         label = (body.get("label") or "").strip()
         if not label:
             raise HTTPException(400, "Label required")
@@ -420,7 +443,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.delete("/columns/{key}")
     async def del_column(key: str, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         if key in SITE_COLUMNS:
             raise HTTPException(400, "Core columns cannot be removed")
         cfg = _clean(await db.site_columns.find_one({"_id": "default"})) or {"custom": []}
@@ -430,12 +453,12 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.post("")
     async def create_site(body: Dict[str, Any], user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         return await _upsert_site(db, body, user)
 
     @sites.put("/{site_id}")
     async def update_site(site_id: str, body: Dict[str, Any], user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         existing = _clean(await db.sites.find_one({"site_id": site_id}))
         if not existing:
             raise HTTPException(404, "Site not found")
@@ -455,14 +478,14 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.delete("/{site_id}")
     async def delete_site(site_id: str, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         await db.sites.delete_one({"site_id": site_id})
         await _audit_master(db, user, "site.delete", site_id, {})
         return {"ok": True}
 
     @sites.post("/bulk")
     async def bulk_upsert(body: BulkSitesIn, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         upserted = 0
         for row in body.rows:
             await _upsert_site(db, row, user)
@@ -475,7 +498,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.post("/bulk-delete")
     async def bulk_delete(body: Dict[str, List[str]], user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         ids = body.get("site_ids", [])
         n = await db.sites.delete_many({"site_id": {"$in": ids}})
         await _audit_master(db, user, "site.bulk_delete", None, {"count": n.deleted_count})
@@ -554,7 +577,7 @@ def build_routers(db, get_current_user, hash_password_fn):
         replace: bool = Form(False),
         user=Depends(get_current_user),
     ):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         cols = await list_columns(user=user)
         key_by_label = {c["label"].lower(): c["key"] for c in cols}
         # also accept the raw keys as headers
@@ -640,7 +663,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @master.post("/{table}")
     async def add_master(table: str, body: Dict[str, Any], user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         doc = {
             "row_id": _gen("mdr"), "table": table,
             "data": body, "created_at": _now(), "created_by": user.user_id, "version": 1,
@@ -651,7 +674,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @master.put("/{row_id}")
     async def update_master(row_id: str, body: Dict[str, Any], user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         existing = _clean(await db.master_data.find_one({"row_id": row_id}))
         if not existing:
             raise HTTPException(404, "Row not found")
@@ -670,7 +693,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @master.delete("/{row_id}")
     async def delete_master(row_id: str, user=Depends(get_current_user)):
-        await _require_admin(user)
+        await _require_master_data_editor(user)
         await db.master_data.delete_one({"row_id": row_id})
         await _audit_master(db, user, "master.delete", row_id, {})
         return {"ok": True}
