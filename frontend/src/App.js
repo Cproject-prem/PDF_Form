@@ -56,6 +56,7 @@ function Router() {
       <Route path="/dashboard" element={<Protected><DashboardPage /></Protected>} />
       <Route path="/submissions" element={<Protected><SubmissionsHubPage /></Protected>} />
       <Route path="/forms" element={<Protected><FormsPage /></Protected>} />
+      <Route path="/pdf-forms" element={<Protected><FormsPage /></Protected>} />
       <Route path="/forms/:id/build" element={<Protected><FormBuilderPage /></Protected>} />
       <Route path="/forms/:id/submissions" element={<Protected><SubmissionsPage /></Protected>} />
       <Route path="/pdf-forms/:id/build" element={<Protected><PdfBuilderPage /></Protected>} />
@@ -64,13 +65,15 @@ function Router() {
       <Route path="/workflows/:id/build" element={<Protected><WorkflowDesignerPage /></Protected>} />
       <Route path="/approvals" element={<Protected><ApprovalsPage /></Protected>} />
       <Route path="/workflow-analytics" element={<Protected><WorkflowAnalyticsPage /></Protected>} />
+      <Route path="/reports" element={<Protected><WorkflowAnalyticsPage /></Protected>} />
       <Route path="/audit-logs" element={<Protected><AuditLogsPage /></Protected>} />
       <Route path="/settings/smtp" element={<Protected><SmtpSettingsPage /></Protected>} />
       <Route path="/vendors" element={<Protected><VendorsPage /></Protected>} />
       <Route path="/sites" element={<Protected><SiteMasterPage /></Protected>} />
       <Route path="/master-data" element={<Protected><MasterDataPage /></Protected>} />
+      <Route path="/team" element={<Protected><UsersPage /></Protected>} />
       <Route path="/settings" element={<Protected roles={["super_admin"]}><SettingsPage /></Protected>} />
-      <Route path="/users" element={<Protected roles={["super_admin"]}><UsersPage /></Protected>} />
+      <Route path="/users" element={<Protected roles={["super_admin", "admin"]}><UsersPage /></Protected>} />
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

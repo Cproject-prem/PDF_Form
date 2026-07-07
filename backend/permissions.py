@@ -309,7 +309,8 @@ def menu_for(user) -> List[Dict[str, str]]:
                       "master-data", "reports", "audit-logs", "users", "smtp", "settings"])
     if role == ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
-                      "workflows", "approvals", "site-master", "vendors", "reports"])
+                      "workflows", "approvals", "site-master", "vendors",
+                      "master-data", "users", "reports"])
     if role == VENDOR_ADMIN:
         return _menu(["manpower", "forms", "submissions", "team"])
     if role == VENDOR_USER:
@@ -326,16 +327,16 @@ _MENU_DEFS = {
     "workflows":          {"label": "Workflow Automation","path": "/workflows"},
     "workflow-analytics": {"label": "Workflow Analytics", "path": "/workflow-analytics"},
     "approvals":          {"label": "Approvals",          "path": "/approvals"},
-    "site-master":        {"label": "Site Management",    "path": "/site-master"},
+    "site-master":        {"label": "Site Management",    "path": "/sites"},
     "vendors":            {"label": "Vendor Management",  "path": "/vendors"},
     "master-data":        {"label": "Master Data",        "path": "/master-data"},
     "reports":            {"label": "Reports",            "path": "/reports"},
     "audit-logs":         {"label": "Audit Logs",         "path": "/audit-logs"},
     "users":              {"label": "Users",              "path": "/users"},
-    "smtp":               {"label": "Email / SMTP",       "path": "/smtp"},
+    "smtp":               {"label": "Email / SMTP",       "path": "/settings/smtp"},
     "settings":           {"label": "Settings",           "path": "/settings"},
     "manpower":           {"label": "Manpower",           "path": "/team"},
-    "team":                {"label": "Team Management",    "path": "/team"},
+    "team":               {"label": "Team Management",    "path": "/team"},
 }
 
 
