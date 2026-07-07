@@ -77,13 +77,35 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 
 def get_object(path: str) -> tuple:
-    """Read bytes back from local disk. Returns (data, content_type)."""
+    """Read bytes back from local disk. Returns (data, content_type).
+    Also tolerates legacy Emergent-storage paths like
+    `formforge/uploads/{user}/{uuid}.ext` — we hunt for the file's basename
+    under `local/`, `pdf/` and `completed/` before giving up."""
     safe = path.lstrip("/")
     target = LOCAL_UPLOAD_ROOT / safe
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="File missing on disk")
-    ct = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    return target.read_bytes(), ct
+    if target.exists() and target.is_file():
+        ct = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        return target.read_bytes(), ct
+
+    # Fallback: try to find by basename in known locations
+    basename = os.path.basename(safe)
+    if basename:
+        search_dirs = [
+            LOCAL_UPLOAD_ROOT / "tmp",
+            LOCAL_UPLOAD_ROOT / "submissions",
+            Path(str(LOCAL_UPLOAD_ROOT).replace("/local", "")) / "pdf",
+            Path(str(LOCAL_UPLOAD_ROOT).replace("/local", "")) / "completed",
+        ]
+        for d in search_dirs:
+            if not d.exists():
+                continue
+            # rglob so we descend into submissions/{sid}/
+            for candidate in d.rglob(basename):
+                if candidate.is_file():
+                    ct = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+                    return candidate.read_bytes(), ct
+
+    raise HTTPException(status_code=404, detail=f"File missing on disk: {path}")
 
 
 async def _organize_submission_files(sid: str, values: Dict[str, Any]) -> None:
