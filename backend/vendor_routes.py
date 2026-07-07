@@ -1009,7 +1009,10 @@ async def seed_demo_sites(db) -> None:
     Also performs a one-time backfill of `cluster_manager_name` on existing
     demo sites for the new admin-by-cluster-manager RLS feature.
     """
-    # Backfill cluster_manager_name on existing rows (idempotent)
+    # Backfill cluster_manager_name and approver_email on demo rows.
+    # NOTE: for the three seed site_codes we always overwrite approver_email
+    # because an earlier iteration accidentally copied cluster_manager into
+    # this column.  Non-demo rows are left untouched.
     for r in DEMO_SITES:
         if r.get("cluster_manager_name"):
             await db.sites.update_many(
@@ -1017,8 +1020,8 @@ async def seed_demo_sites(db) -> None:
                 {"$set": {"cluster_manager_name": r["cluster_manager_name"]}},
             )
         if r.get("approver_email"):
-            await db.sites.update_many(
-                {"site_code": r["site_code"], "approver_email": {"$in": [None, ""]}},
+            await db.sites.update_one(
+                {"site_code": r["site_code"]},
                 {"$set": {"approver_email": r["approver_email"]}},
             )
     if await db.sites.count_documents({}) > 0:

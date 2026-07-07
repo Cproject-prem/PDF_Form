@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
+import { getErrorMessage } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,18 +39,18 @@ export default function UsersPage() {
       toast.success("User created"); setOpen(false);
       setNewU({ name: "", email: "", password: "", role: "user" });
       load();
-    } catch (e) { toast.error(e?.response?.data?.detail || "Failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Failed")); }
   };
 
   const updateUser = async (u, patch) => {
     try { await api.patch(`/users/${u.user_id}`, patch); load(); }
-    catch (e) { toast.error(e?.response?.data?.detail || "Update failed"); }
+    catch (e) { toast.error(getErrorMessage(e, "Update failed")); }
   };
 
   const del = async (u) => {
     if (!confirm(`Delete ${u.email}?`)) return;
     try { await api.delete(`/users/${u.user_id}`); toast.success("Deleted"); load(); }
-    catch (e) { toast.error(e?.response?.data?.detail || "Delete failed"); }
+    catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
   };
 
   return (

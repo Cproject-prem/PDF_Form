@@ -55,7 +55,7 @@ def build_datasource_router(db, get_current_user):
         headers = [str(c) if c is not None else f"col_{i}" for i, c in enumerate(next(it, []) or [])]
         rows: List[dict] = []
         for r_row in it:
-            if not r_row or all(c is None for c in r_row): continue
+            if not r_row or all(c is None for c in r_row): continue  # noqa: E701, E702
             rows.append({headers[i]: r_row[i] for i in range(min(len(headers), len(r_row)))})
         return {"columns": headers, "rows": rows}
 
@@ -124,7 +124,7 @@ async def _resolve(src: Dict[str, Any], user, db) -> Dict[str, Any]:
             data = json.loads(src.get("json_text") or "[]")
         except json.JSONDecodeError as e:
             raise HTTPException(400, f"Invalid JSON: {e}")
-        disp = src.get("display_column"); val = src.get("value_column") or disp
+        disp = src.get("display_column"); val = src.get("value_column") or disp  # noqa: E701, E702
         if isinstance(data, list):
             for row in data:
                 if isinstance(row, dict):
@@ -146,7 +146,7 @@ async def _resolve(src: Dict[str, Any], user, db) -> Dict[str, Any]:
 
     elif t == "rest_api":
         url = src.get("url")
-        if not url: raise HTTPException(400, "REST API url is required")
+        if not url: raise HTTPException(400, "REST API url is required")  # noqa: E701, E702
         try:
             resp = requests.get(url, headers=src.get("headers") or {}, timeout=12)
             resp.raise_for_status()
@@ -156,9 +156,9 @@ async def _resolve(src: Dict[str, Any], user, db) -> Dict[str, Any]:
         path = src.get("json_path")
         if path:
             for part in path.split("."):
-                if isinstance(data, dict): data = data.get(part)
+                if isinstance(data, dict): data = data.get(part)  # noqa: E701, E702
         rows = data if isinstance(data, list) else []
-        disp = src.get("display_column"); val = src.get("value_column") or disp
+        disp = src.get("display_column"); val = src.get("value_column") or disp  # noqa: E701, E702
         for row in rows:
             if isinstance(row, dict):
                 label = row.get(disp) if disp else next(iter(row.values()), "")
@@ -169,19 +169,19 @@ async def _resolve(src: Dict[str, Any], user, db) -> Dict[str, Any]:
 
     elif t == "excel":
         for row in src.get("rows") or []:
-            disp = src.get("display_column"); val = src.get("value_column") or disp
+            disp = src.get("display_column"); val = src.get("value_column") or disp  # noqa: E701, E702
             label = row.get(disp) if disp else next(iter(row.values()), "")
             items.append({"label": str(label),
                           "value": row.get(val) if val else label, "row": row})
 
     elif t == "another_form":
-        form_id = src.get("form_id"); col = src.get("column") or "id"
+        form_id = src.get("form_id"); col = src.get("column") or "id"  # noqa: E701, E702
         if form_id:
             subs = await db.submissions.find({"form_id": form_id}, {"_id": 0}).to_list(10000)
             seen = set()
             for s in subs:
                 v = s.get("values", {}).get(col)
-                if v is None or v in seen: continue
+                if v is None or v in seen: continue  # noqa: E701, E702
                 seen.add(v)
                 items.append({"label": str(v), "value": v, "row": s.get("values", {})})
 

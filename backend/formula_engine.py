@@ -289,9 +289,9 @@ def _f_avg(a, c, ev):
     n = _flat_nums(a, ev)
     return sum(n) / len(n) if n else 0
 def _f_min(a, c, ev):
-    n = _flat_nums(a, ev); return min(n) if n else 0
+    n = _flat_nums(a, ev); return min(n) if n else 0  # noqa: E701, E702
 def _f_max(a, c, ev):
-    n = _flat_nums(a, ev); return max(n) if n else 0
+    n = _flat_nums(a, ev); return max(n) if n else 0  # noqa: E701, E702
 def _f_count(a, c, ev):
     cnt = 0
     for x in a:
@@ -304,18 +304,18 @@ def _f_count(a, c, ev):
 
 
 def _f_round(a, c, ev):
-    n = _num(ev(a[0])); d = int(_num(ev(a[1]))) if len(a) > 1 else 0
+    n = _num(ev(a[0])); d = int(_num(ev(a[1]))) if len(a) > 1 else 0  # noqa: E701, E702
     return round(n, d)
 def _f_roundup(a, c, ev):
-    n = _num(ev(a[0])); d = int(_num(ev(a[1]))) if len(a) > 1 else 0
-    f = 10 ** d; return math.ceil(n * f) / f
+    n = _num(ev(a[0])); d = int(_num(ev(a[1]))) if len(a) > 1 else 0  # noqa: E701, E702
+    f = 10 ** d; return math.ceil(n * f) / f  # noqa: E701, E702
 def _f_rounddn(a, c, ev):
-    n = _num(ev(a[0])); d = int(_num(ev(a[1]))) if len(a) > 1 else 0
-    f = 10 ** d; return math.floor(n * f) / f
+    n = _num(ev(a[0])); d = int(_num(ev(a[1]))) if len(a) > 1 else 0  # noqa: E701, E702
+    f = 10 ** d; return math.floor(n * f) / f  # noqa: E701, E702
 def _f_abs(a, c, ev):   return abs(_num(ev(a[0])))
 def _f_sqrt(a, c, ev):
     n = _num(ev(a[0]))
-    if n < 0: raise FormulaError("INVALID_VALUE", "SQRT of negative")
+    if n < 0: raise FormulaError("INVALID_VALUE", "SQRT of negative")  # noqa: E701, E702
     return math.sqrt(n)
 def _f_power(a, c, ev): return _num(ev(a[0])) ** _num(ev(a[1]))
 
@@ -325,57 +325,57 @@ def _f_now(a, c, ev):   return datetime.now(timezone.utc).isoformat()
 
 
 def _parse_date(v):
-    if v in (None, ""): return None
-    if isinstance(v, (datetime, date)): return v
+    if v in (None, ""): return None  # noqa: E701, E702
+    if isinstance(v, (datetime, date)): return v  # noqa: E701, E702
     s = str(v)
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S",
                 "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
-        try: return datetime.strptime(s.replace("Z", "+0000"), fmt)
-        except (ValueError, TypeError): continue
-    try: return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError: raise FormulaError("INVALID_VALUE", f"Cannot parse date {s!r}")
+        try: return datetime.strptime(s.replace("Z", "+0000"), fmt)  # noqa: E701, E702
+        except (ValueError, TypeError): continue  # noqa: E701, E702
+    try: return datetime.fromisoformat(s.replace("Z", "+00:00"))  # noqa: E701, E702
+    except ValueError: raise FormulaError("INVALID_VALUE", f"Cannot parse date {s!r}")  # noqa: E701, E702
 
 
 def _f_datediff(a, c, ev):
-    if len(a) < 2: raise FormulaError("INVALID_FORMULA", "DATEDIFF(start, end[, unit])")
-    x = _parse_date(ev(a[0])); y = _parse_date(ev(a[1]))
+    if len(a) < 2: raise FormulaError("INVALID_FORMULA", "DATEDIFF(start, end[, unit])")  # noqa: E701, E702
+    x = _parse_date(ev(a[0])); y = _parse_date(ev(a[1]))  # noqa: E701, E702
     unit = _str(ev(a[2])).upper() if len(a) > 2 else "D"
-    if x is None or y is None: return 0
-    if isinstance(x, date) and not isinstance(x, datetime): x = datetime(x.year, x.month, x.day)
-    if isinstance(y, date) and not isinstance(y, datetime): y = datetime(y.year, y.month, y.day)
+    if x is None or y is None: return 0  # noqa: E701, E702
+    if isinstance(x, date) and not isinstance(x, datetime): x = datetime(x.year, x.month, x.day)  # noqa: E701, E702
+    if isinstance(y, date) and not isinstance(y, datetime): y = datetime(y.year, y.month, y.day)  # noqa: E701, E702
     d = y - x
-    if unit == "D": return d.days
-    if unit == "H": return d.total_seconds() / 3600
-    if unit == "M": return (y.year - x.year) * 12 + (y.month - x.month)
-    if unit == "Y": return y.year - x.year
+    if unit == "D": return d.days  # noqa: E701, E702
+    if unit == "H": return d.total_seconds() / 3600  # noqa: E701, E702
+    if unit == "M": return (y.year - x.year) * 12 + (y.month - x.month)  # noqa: E701, E702
+    if unit == "Y": return y.year - x.year  # noqa: E701, E702
     return d.days
 
 
-def _f_year(a, c, ev):  d = _parse_date(ev(a[0])); return d.year if d else 0
-def _f_month(a, c, ev): d = _parse_date(ev(a[0])); return d.month if d else 0
-def _f_day(a, c, ev):   d = _parse_date(ev(a[0])); return d.day if d else 0
-def _f_hour(a, c, ev):  d = _parse_date(ev(a[0])); return d.hour if isinstance(d, datetime) else 0
-def _f_min_(a, c, ev):  d = _parse_date(ev(a[0])); return d.minute if isinstance(d, datetime) else 0
-def _f_sec(a, c, ev):   d = _parse_date(ev(a[0])); return d.second if isinstance(d, datetime) else 0
+def _f_year(a, c, ev):  d = _parse_date(ev(a[0])); return d.year if d else 0  # noqa: E701, E702
+def _f_month(a, c, ev): d = _parse_date(ev(a[0])); return d.month if d else 0  # noqa: E701, E702
+def _f_day(a, c, ev):   d = _parse_date(ev(a[0])); return d.day if d else 0  # noqa: E701, E702
+def _f_hour(a, c, ev):  d = _parse_date(ev(a[0])); return d.hour if isinstance(d, datetime) else 0  # noqa: E701, E702
+def _f_min_(a, c, ev):  d = _parse_date(ev(a[0])); return d.minute if isinstance(d, datetime) else 0  # noqa: E701, E702
+def _f_sec(a, c, ev):   d = _parse_date(ev(a[0])); return d.second if isinstance(d, datetime) else 0  # noqa: E701, E702
 
 
 def _f_concat(a, c, ev): return "".join(_str(ev(x)) for x in a)
 def _f_text(a, c, ev):   return _str(ev(a[0]))
 def _f_left(a, c, ev):
-    s = _str(ev(a[0])); n = int(_num(ev(a[1]))) if len(a) > 1 else 1; return s[:n]
+    s = _str(ev(a[0])); n = int(_num(ev(a[1]))) if len(a) > 1 else 1; return s[:n]  # noqa: E701, E702
 def _f_right(a, c, ev):
-    s = _str(ev(a[0])); n = int(_num(ev(a[1]))) if len(a) > 1 else 1
+    s = _str(ev(a[0])); n = int(_num(ev(a[1]))) if len(a) > 1 else 1  # noqa: E701, E702
     return s[-n:] if n > 0 else ""
 def _f_mid(a, c, ev):
-    s = _str(ev(a[0])); st = int(_num(ev(a[1]))) - 1; ln = int(_num(ev(a[2])))
+    s = _str(ev(a[0])); st = int(_num(ev(a[1]))) - 1; ln = int(_num(ev(a[2])))  # noqa: E701, E702
     return s[max(0, st):max(0, st) + ln]
 def _f_len(a, c, ev):    return len(_str(ev(a[0])))
 def _f_lower(a, c, ev):  return _str(ev(a[0])).lower()
 def _f_upper(a, c, ev):  return _str(ev(a[0])).upper()
 def _f_trim(a, c, ev):   return _str(ev(a[0])).strip()
 def _f_replace(a, c, ev):
-    s = _str(ev(a[0])); st = int(_num(ev(a[1]))) - 1
-    ln = int(_num(ev(a[2]))); new = _str(ev(a[3]))
+    s = _str(ev(a[0])); st = int(_num(ev(a[1]))) - 1  # noqa: E701, E702
+    ln = int(_num(ev(a[2]))); new = _str(ev(a[3]))  # noqa: E701, E702
     return s[:st] + new + s[st + ln:]
 def _f_subst(a, c, ev):
     return _str(ev(a[0])).replace(_str(ev(a[1])), _str(ev(a[2])))
@@ -385,8 +385,8 @@ def _f_subst(a, c, ev):
 
 def _f_lookup(a, c, ev):
     """LOOKUP(value, table_name, key_col, return_col)"""
-    if len(a) < 4: raise FormulaError("INVALID_FORMULA", "LOOKUP(value, table, key, return)")
-    val = ev(a[0]); tbl = _str(ev(a[1])); kcol = _str(ev(a[2])); rcol = _str(ev(a[3]))
+    if len(a) < 4: raise FormulaError("INVALID_FORMULA", "LOOKUP(value, table, key, return)")  # noqa: E701, E702
+    val = ev(a[0]); tbl = _str(ev(a[1])); kcol = _str(ev(a[2])); rcol = _str(ev(a[3]))  # noqa: E701, E702
     rows = (c.get("tables") or {}).get(tbl) or []
     for r in rows:
         if _str(r.get(kcol)) == _str(val):
@@ -397,12 +397,12 @@ def _f_lookup(a, c, ev):
 def _f_vlookup(a, c, ev): return _f_lookup(a[:4], c, ev)
 def _f_xlookup(a, c, ev):
     r = _f_lookup(a[:4], c, ev)
-    if r is None and len(a) >= 5: return ev(a[4])
+    if r is None and len(a) >= 5: return ev(a[4])  # noqa: E701, E702
     return r
 
 
 def _f_match(a, c, ev):
-    val = ev(a[0]); tbl = _str(ev(a[1])); kcol = _str(ev(a[2]))
+    val = ev(a[0]); tbl = _str(ev(a[1])); kcol = _str(ev(a[2]))  # noqa: E701, E702
     rows = (c.get("tables") or {}).get(tbl) or []
     for i, r in enumerate(rows):
         if _str(r.get(kcol)) == _str(val):
@@ -411,21 +411,21 @@ def _f_match(a, c, ev):
 
 
 def _f_index(a, c, ev):
-    tbl = _str(ev(a[0])); idx = int(_num(ev(a[1]))) - 1; col = _str(ev(a[2]))
+    tbl = _str(ev(a[0])); idx = int(_num(ev(a[1]))) - 1; col = _str(ev(a[2]))  # noqa: E701, E702
     rows = (c.get("tables") or {}).get(tbl) or []
-    if 0 <= idx < len(rows): return rows[idx].get(col)
+    if 0 <= idx < len(rows): return rows[idx].get(col)  # noqa: E701, E702
     raise FormulaError("LOOKUP_NOT_FOUND", "INDEX out of range")
 
 
 def _f_isblank(a, c, ev):
-    v = ev(a[0]); return v is None or v == ""
+    v = ev(a[0]); return v is None or v == ""  # noqa: E701, E702
 def _f_isnumber(a, c, ev):
     v = ev(a[0])
-    if isinstance(v, bool): return False
-    if isinstance(v, (int, float)): return True
+    if isinstance(v, bool): return False  # noqa: E701, E702
+    if isinstance(v, (int, float)): return True  # noqa: E701, E702
     if isinstance(v, str):
-        try: float(v); return True
-        except ValueError: return False
+        try: float(v); return True  # noqa: E701, E702
+        except ValueError: return False  # noqa: E701, E702
     return False
 def _f_istext(a, c, ev):
     return isinstance(ev(a[0]), str)
@@ -453,25 +453,25 @@ FUNCS: Dict[str, Callable] = {
 
 
 def evaluate(expr: str, values: Dict[str, Any], tables: Dict[str, List[dict]] | None = None):
-    if not expr or not expr.strip(): return None
+    if not expr or not expr.strip(): return None  # noqa: E701, E702
     src = expr.strip().lstrip("=")
     ast = _Parser(_tokenize(src)).parse()
     ctx = {"values": values or {}, "tables": tables or {}}
 
     def ev(n):
-        if n is None: return None
+        if n is None: return None  # noqa: E701, E702
         k = n[0]
-        if k == "num": return n[1]
-        if k == "str": return n[1]
-        if k == "bool": return n[1]
-        if k == "null": return None
-        if k == "field": return ctx["values"].get(n[1])
-        if k == "bin": return _binop(n[1], ev(n[2]), ev(n[3]))
-        if k == "cmp": return _cmp(n[1], ev(n[2]), ev(n[3]))
-        if k == "neg": return -_num(ev(n[1]))
+        if k == "num": return n[1]  # noqa: E701, E702
+        if k == "str": return n[1]  # noqa: E701, E702
+        if k == "bool": return n[1]  # noqa: E701, E702
+        if k == "null": return None  # noqa: E701, E702
+        if k == "field": return ctx["values"].get(n[1])  # noqa: E701, E702
+        if k == "bin": return _binop(n[1], ev(n[2]), ev(n[3]))  # noqa: E701, E702
+        if k == "cmp": return _cmp(n[1], ev(n[2]), ev(n[3]))  # noqa: E701, E702
+        if k == "neg": return -_num(ev(n[1]))  # noqa: E701, E702
         if k == "call":
             fn = FUNCS.get(n[1])
-            if not fn: raise FormulaError("INVALID_FORMULA", f"Unknown function {n[1]}")
+            if not fn: raise FormulaError("INVALID_FORMULA", f"Unknown function {n[1]}")  # noqa: E701, E702
             return fn(n[2], ctx, ev)
         raise FormulaError("INVALID_FORMULA", f"Bad node {k}")
 
@@ -479,7 +479,7 @@ def evaluate(expr: str, values: Dict[str, Any], tables: Dict[str, List[dict]] | 
 
 
 def extract_dependencies(expr: str) -> List[str]:
-    if not expr: return []
+    if not expr: return []  # noqa: E701, E702
     out, seen = [], set()
     src = expr.strip().lstrip("=")
     try:
@@ -487,23 +487,23 @@ def extract_dependencies(expr: str) -> List[str]:
     except FormulaError:
         for m in re.finditer(r"\{\{([A-Za-z_][\w]*)\}\}", src):
             if m.group(1) not in seen:
-                out.append(m.group(1)); seen.add(m.group(1))
+                out.append(m.group(1)); seen.add(m.group(1))  # noqa: E701, E702
         return out
     fnames = set(FUNCS.keys()) | {"TRUE", "FALSE", "NULL"}
     for i, (t, v) in enumerate(toks):
         if t == "FIELD":
             fid = v[2:-2]
-            if fid not in seen: out.append(fid); seen.add(fid)
+            if fid not in seen: out.append(fid); seen.add(fid)  # noqa: E701, E702
         elif t == "IDENT":
-            if v.upper() in fnames: continue
+            if v.upper() in fnames: continue  # noqa: E701, E702
             nxt = toks[i + 1] if i + 1 < len(toks) else ("END", "")
             if not (nxt[0] == "OP" and nxt[1] == "("):
-                if v not in seen: out.append(v); seen.add(v)
+                if v not in seen: out.append(v); seen.add(v)  # noqa: E701, E702
     return out
 
 
 def validate(expr: str) -> dict:
-    if not expr or not expr.strip(): return {"valid": True, "dependencies": []}
+    if not expr or not expr.strip(): return {"valid": True, "dependencies": []}  # noqa: E701, E702
     try:
         _Parser(_tokenize(expr.strip().lstrip("="))).parse()
         return {"valid": True, "dependencies": extract_dependencies(expr)}
