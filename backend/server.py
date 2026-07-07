@@ -195,6 +195,10 @@ class Form(FormIn):
     is_favorite: bool = False
     is_archived: bool = False
     is_deleted: bool = False
+    # Enrichment fields (populated by list_forms so the UI can render an
+    # "owner" chip without a follow-up round-trip).
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
 
 class SubmissionIn(BaseModel):
     values: Dict[str, Any]    # {field_id: value}
@@ -439,10 +443,15 @@ async def me(user: User = Depends(get_current_user)):
 
 @api.get("/auth/menu")
 async def auth_menu(user: User = Depends(get_current_user)):
-    """Return the sidebar menu + capability matrix appropriate for this user."""
-    from permissions import capabilities_for, menu_for, normalize_role
+    """Return the sidebar menu (with group segregation) + capability matrix."""
+    from permissions import capabilities_for, menu_for, normalize_role, MENU_GROUPS
+    items = menu_for(user)
+    # Only include groups that actually have at least one visible item
+    used = {i.get("group") for i in items}
+    groups = [g for g in MENU_GROUPS if g["key"] in used]
     return {
-        "menu": menu_for(user),
+        "menu": items,
+        "groups": groups,
         "capabilities": capabilities_for(user),
         "role": normalize_role(user.role),
     }
@@ -924,6 +933,19 @@ async def list_forms(user: User = Depends(get_current_user),
         else:
             query["title"] = clause["title"]
     rows = await db.forms.find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
+    # Enrich with owner_name/email — cheap when the list is capped at 500
+    owner_ids = {r.get("owner_id") for r in rows if r.get("owner_id")}
+    owners: Dict[str, Dict[str, Any]] = {}
+    if owner_ids:
+        for o in await db.users.find(
+            {"user_id": {"$in": list(owner_ids)}}, {"_id": 0, "user_id": 1, "name": 1, "email": 1},
+        ).to_list(1000):
+            owners[o["user_id"]] = o
+    for r in rows:
+        o = owners.get(r.get("owner_id"))
+        if o:
+            r["owner_name"] = o.get("name")
+            r["owner_email"] = o.get("email")
     return [Form(**r) for r in rows]
 
 @api.post("/forms", response_model=Form)

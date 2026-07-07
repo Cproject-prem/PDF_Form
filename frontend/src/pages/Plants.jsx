@@ -178,11 +178,18 @@ function statusColor(s) {
 function PlantDetail({ siteCode }) {
   const nav = useNavigate();
   const [data, setData] = useState(null);
+  const [columns, setColumns] = useState([]);
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    api.get(`/sites/by-code/${encodeURIComponent(siteCode)}`)
-      .then((r) => setData(r.data))
+    Promise.all([
+      api.get(`/sites/by-code/${encodeURIComponent(siteCode)}`),
+      api.get("/sites/columns").catch(() => ({ data: [] })),
+    ])
+      .then(([site, cols]) => {
+        setData(site.data);
+        setColumns(cols.data || []);
+      })
       .catch((e) => setError(getErrorMessage(e, "Plant not found")));
   }, [siteCode]);
 
@@ -203,6 +210,33 @@ function PlantDetail({ siteCode }) {
   }
   const p = data.site || {};
   const subs = data.recent_submissions || [];
+
+  // Group columns into curated sections; any remaining custom columns
+  // (added later via Site Management) land in "Additional details".
+  const SECTIONS = [
+    { title: "Capacity", icon: <Zap className="w-4 h-4" />,
+      keys: ["ac_capacity", "dc_capacity", "inverter_capacity"] },
+    { title: "Location", icon: <MapPin className="w-4 h-4" />,
+      keys: ["state", "district", "location", "latitude", "longitude"] },
+    { title: "Vendor & customer", icon: <Building2 className="w-4 h-4" />,
+      keys: ["vendor_name", "vendor_email", "vendor_login_user", "customer_name",
+             "cluster", "cluster_manager_name"] },
+    { title: "Approver", icon: <Mail className="w-4 h-4" />,
+      keys: ["approver_email"] },
+    { title: "Timeline", icon: <Calendar className="w-4 h-4" />,
+      keys: ["commission_date", "om_start_date", "warranty_end_date"] },
+  ];
+  const skip = new Set([
+    "site_id", "site_name", "site_code", "asset_id", "plant_name",
+    "site_status", "region", "created_at", "updated_at", "_id",
+    "assigned_admin_ids", "assigned_vendor_ids", "is_deleted",
+  ]);
+  const knownKeys = new Set(SECTIONS.flatMap((s) => s.keys));
+  const labelsByKey = Object.fromEntries((columns || []).map((c) => [c.key, c.label]));
+  const extras = Object.keys(p)
+    .filter((k) => !skip.has(k) && !knownKeys.has(k))
+    .filter((k) => p[k] !== null && p[k] !== undefined && p[k] !== "");
+  const humanize = (k) => labelsByKey[k] || k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
 
   return (
     <AppLayout>
@@ -242,28 +276,29 @@ function PlantDetail({ siteCode }) {
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-          <Section title="Location" icon={<MapPin className="w-4 h-4" />}>
-            <Row label="State"     value={p.state} />
-            <Row label="District"  value={p.district} />
-            <Row label="Location"  value={p.location} />
-            <Row label="Latitude"  value={p.latitude} />
-            <Row label="Longitude" value={p.longitude} />
-          </Section>
-          <Section title="Vendor & customer" icon={<Building2 className="w-4 h-4" />}>
-            <Row label="Vendor" value={p.vendor_name} />
-            <Row label="Vendor email" value={p.vendor_email} />
-            <Row label="Customer" value={p.customer_name} />
-            <Row label="Cluster" value={p.cluster} />
-            <Row label="Cluster manager" value={p.cluster_manager_name} />
-          </Section>
-          <Section title="Approver" icon={<Mail className="w-4 h-4" />}>
-            <Row label="Approver email" value={p.approver_email} monospace />
-          </Section>
-          <Section title="Timeline" icon={<Calendar className="w-4 h-4" />}>
-            <Row label="Commissioned" value={p.commission_date} />
-            <Row label="O&M start" value={p.om_start_date} />
-            <Row label="Warranty end" value={p.warranty_end_date} />
-          </Section>
+          {SECTIONS.map((s) => {
+            const rows = s.keys
+              .filter((k) => p[k] !== undefined)
+              .map((k) => ({
+                key: k,
+                label: labelsByKey[k] || humanize(k),
+                value: p[k],
+                mono: k === "approver_email" || k === "vendor_email",
+              }));
+            if (rows.length === 0) return null;
+            return (
+              <Section key={s.title} title={s.title} icon={s.icon}>
+                {rows.map((r) => <Row key={r.key} label={r.label} value={r.value} monospace={r.mono} />)}
+              </Section>
+            );
+          })}
+          {extras.length > 0 && (
+            <Section title="Additional details" icon={<FileText className="w-4 h-4" />}>
+              {extras.map((k) => (
+                <Row key={k} label={humanize(k)} value={renderMaybe(p[k])} />
+              ))}
+            </Section>
+          )}
         </div>
 
         {/* Recent submissions */}
@@ -310,6 +345,13 @@ function PlantDetail({ siteCode }) {
       </div>
     </AppLayout>
   );
+}
+
+function renderMaybe(v) {
+  if (v === null || v === undefined) return "—";
+  if (Array.isArray(v)) return v.join(", ");
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
 }
 
 function HeroStat({ label, value }) {

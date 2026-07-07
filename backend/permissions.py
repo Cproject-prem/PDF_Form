@@ -380,27 +380,35 @@ def menu_for(user) -> List[Dict[str, str]]:
 
 
 _MENU_DEFS = {
-    "dashboard":          {"label": "Dashboard",          "path": "/dashboard"},
-    "forms":              {"label": "Forms",              "path": "/forms"},
-    "pdf-forms":          {"label": "PDF Forms",          "path": "/pdf-forms"},
-    "submissions":        {"label": "Submissions",        "path": "/submissions"},
-    "pdf-submissions":    {"label": "PDF Submissions",    "path": "/pdf-submissions"},
-    "workflows":          {"label": "Workflow Automation","path": "/workflows"},
-    "workflow-analytics": {"label": "Workflow Analytics", "path": "/workflow-analytics"},
-    "approvals":          {"label": "Approvals",          "path": "/approvals"},
-    "site-master":        {"label": "Site Management",    "path": "/sites"},
-    "plants":             {"label": "Plants",              "path": "/plants"},
-    "vendors":            {"label": "Vendor Management",  "path": "/vendors"},
-    "master-data":        {"label": "Master Data",        "path": "/master-data"},
-    "reports":            {"label": "Reports",            "path": "/reports"},
-    "audit-logs":         {"label": "Audit Logs",         "path": "/audit-logs"},
-    "users":              {"label": "Users",              "path": "/users"},
-    "smtp":               {"label": "Email / SMTP",       "path": "/settings/smtp"},
-    "welcome-email":      {"label": "Welcome Email",      "path": "/settings/welcome-email"},
-    "settings":           {"label": "Settings",           "path": "/settings"},
-    "manpower":           {"label": "Manpower",           "path": "/team"},
-    "team":               {"label": "Team Management",    "path": "/team"},
+    "dashboard":          {"label": "Dashboard",           "path": "/dashboard",           "group": "workspace"},
+    "forms":              {"label": "Forms",               "path": "/forms",               "group": "workspace"},
+    "pdf-forms":          {"label": "PDF Forms",           "path": "/pdf-forms",           "group": "workspace"},
+    "submissions":        {"label": "Submissions",         "path": "/submissions",         "group": "workspace"},
+    "pdf-submissions":    {"label": "PDF Submissions",     "path": "/pdf-submissions",     "group": "workspace"},
+    "workflows":          {"label": "Workflow Automation", "path": "/workflows",           "group": "workspace"},
+    "workflow-analytics": {"label": "Workflow Analytics",  "path": "/workflow-analytics",  "group": "workspace"},
+    "approvals":          {"label": "Approvals",           "path": "/approvals",           "group": "workspace"},
+    "plants":             {"label": "Plants",              "path": "/plants",              "group": "data"},
+    "site-master":        {"label": "Site Management",     "path": "/sites",               "group": "data"},
+    "vendors":            {"label": "Vendor Management",   "path": "/vendors",             "group": "data"},
+    "master-data":        {"label": "Master Data",         "path": "/master-data",         "group": "data"},
+    "reports":            {"label": "Reports",             "path": "/reports",             "group": "data"},
+    "manpower":           {"label": "Manpower",            "path": "/team",                "group": "team"},
+    "team":               {"label": "Team",                "path": "/team",                "group": "team"},
+    "users":              {"label": "Users",               "path": "/users",               "group": "admin"},
+    "audit-logs":         {"label": "Audit Logs",          "path": "/audit-logs",          "group": "admin"},
+    "smtp":               {"label": "Email / SMTP",        "path": "/settings/smtp",       "group": "admin"},
+    "welcome-email":      {"label": "Welcome Email",       "path": "/settings/welcome-email","group": "admin"},
+    "settings":           {"label": "Settings",            "path": "/settings",            "group": "admin"},
 }
+
+# Human-friendly group headers rendered in the sidebar.
+MENU_GROUPS = [
+    {"key": "workspace", "label": "Workspace"},
+    {"key": "data",      "label": "Data"},
+    {"key": "team",      "label": "Team"},
+    {"key": "admin",     "label": "Administration"},
+]
 
 
 def _menu(keys: List[str]) -> List[Dict[str, str]]:

@@ -49,11 +49,16 @@ export default function AppLayout({ children, fullWidth = false }) {
   const { user, logout } = useAuth();
   const nav = useNavigate();
   const [menu, setMenu] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [role, setRole] = useState(user?.role);
   useEffect(() => {
     if (!user) return;
     api.get("/auth/menu")
-      .then((r) => { setMenu(r.data.menu || []); setRole(r.data.role); })
+      .then((r) => {
+        setMenu(r.data.menu || []);
+        setGroups(r.data.groups || []);
+        setRole(r.data.role);
+      })
       .catch(() => setMenu([]));
   }, [user]);
 
@@ -70,24 +75,39 @@ export default function AppLayout({ children, fullWidth = false }) {
             <span className="font-heading font-bold text-lg tracking-tight">FormForge</span>
           </Link>
         </div>
-        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-          {menu.map((item) => {
-            const Icon = ICONS[item.key] || FileStack;
-            const path = PATH_ALIASES[item.path] || item.path;
+        <nav className="flex-1 p-4 space-y-4 overflow-y-auto" data-testid="sidebar-nav">
+          {(groups.length ? groups : [{ key: "workspace", label: "" }]).map((g) => {
+            const items = menu.filter((m) => (m.group || "workspace") === g.key);
+            if (items.length === 0) return null;
             return (
-              <NavLink
-                key={item.key}
-                to={path}
-                data-testid={`nav-${item.key}`}
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
-                    isActive ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"
-                  }`
-                }
-              >
-                <Icon className="w-4 h-4" />
-                {item.label}
-              </NavLink>
+              <div key={g.key} data-testid={`nav-group-${g.key}`}>
+                {g.label && (
+                  <div className="px-3 pb-1.5 text-[10px] uppercase tracking-[0.12em] font-bold text-slate-400">
+                    {g.label}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  {items.map((item) => {
+                    const Icon = ICONS[item.key] || FileStack;
+                    const path = PATH_ALIASES[item.path] || item.path;
+                    return (
+                      <NavLink
+                        key={item.key}
+                        to={path}
+                        data-testid={`nav-${item.key}`}
+                        className={({ isActive }) =>
+                          `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                            isActive ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"
+                          }`
+                        }
+                      >
+                        <Icon className="w-4 h-4" />
+                        {item.label}
+                      </NavLink>
+                    );
+                  })}
+                </div>
+              </div>
             );
           })}
           {menu.length === 0 && (

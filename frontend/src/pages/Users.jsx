@@ -101,11 +101,15 @@ export default function UsersPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <div className="text-xs uppercase tracking-[0.1em] text-slate-400 font-bold mb-1">
-              User management
+              {myRole === "vendor_admin" ? "Team management" : "User management"}
             </div>
-            <h1 className="text-3xl sm:text-4xl font-heading font-bold tracking-tight">Users</h1>
+            <h1 className="text-3xl sm:text-4xl font-heading font-bold tracking-tight">
+              {myRole === "vendor_admin" ? "My Team" : "Users"}
+            </h1>
             <p className="text-slate-500 mt-1">
-              Manage team members, region access, and reset passwords.
+              {myRole === "vendor_admin"
+                ? "Manage vendor users within your organisation. Role changes are limited to vendor scope."
+                : "Manage team members, region access, and reset passwords."}
             </p>
           </div>
           <Button

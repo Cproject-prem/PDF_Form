@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import {
   Plus, Search, Star, MoreHorizontal, Copy, Archive, Trash2, ExternalLink,
-  PieChart, Pencil, Globe, Circle, FileText, FileType2, UploadCloud
+  PieChart, Pencil, Globe, Circle, FileText, FileType2, UploadCloud, User as UserIcon,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -353,10 +353,23 @@ export default function FormsPage() {
                 </div>
                 <h3 className="font-heading font-semibold text-lg text-slate-900 line-clamp-1">{f.title}</h3>
                 <p className="text-sm text-slate-500 mt-1 line-clamp-2 min-h-[40px]">{f.description || "No description"}</p>
-                <div className="flex items-center gap-2 text-xs text-slate-400 mt-3">
+                <div className="flex items-center gap-2 text-xs text-slate-400 mt-3 flex-wrap">
                   <span>{(f.fields || []).length} fields</span>
                   <span>·</span>
                   <span>Updated {formatDate(f.updated_at)}</span>
+                  {(f.owner_name || f.owner_email) && (
+                    <>
+                      <span>·</span>
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600"
+                        title={`Created by ${f.owner_name || f.owner_email}`}
+                        data-testid={`form-owner-${f.form_id}`}
+                      >
+                        <UserIcon className="w-3 h-3" />
+                        {f.owner_name || f.owner_email}
+                      </span>
+                    </>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 mt-4">
                   <Button data-testid={`edit-${f.form_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/forms/${f.form_id}/build`)}>
