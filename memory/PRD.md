@@ -11,13 +11,13 @@
 ## Stack
 FastAPI + Motor/MongoDB + bcrypt + PyJWT + reportlab + openpyxl + simpleeval + pypdf • React 19 (craco) + Tailwind + shadcn/ui + lucide-react + react-pdf + native WebSocket.
 
-## Roles & scope
-| Role          | Scope                                                                                                              |
-|---------------|--------------------------------------------------------------------------------------------------------------------|
-| super_admin   | Everything.  Only super_admin can create/edit/delete another super_admin.                                          |
-| admin         | Sites/forms matching their `region` OR `cluster_manager_name` OR `assigned_admin_ids`. Full CRUD on Users EXCEPT super_admin accounts.  Menu: Dashboard, Forms, PDF Forms, Submissions, Workflows, Approvals, **Plants**, Site Management, Vendors, Master Data, Users, Reports. |
-| vendor_admin  | Only their vendor's sites/forms/PDF forms/submissions. Can create/edit vendor + vendor_user accounts within own vendor. |
-| vendor_user   | Only their own submissions + assigned forms.                                                                       |
+## Roles & scope (iter 4d — SHARED FORMS)
+| Role          | Form definitions              | Submissions                                                                 |
+|---------------|-------------------------------|-----------------------------------------------------------------------------|
+| super_admin   | All                           | All                                                                         |
+| admin         | **All (shared library)**      | Submissions where `values.site_name/site_code/asset_id` refers to a site inside their `region`/`cluster_manager_name`/`assigned_admin_ids` scope. Global admins (no region/cluster set) see every submission. |
+| vendor_admin  | Only their vendor's forms     | Submissions from any user in the same `vendor_id`                            |
+| vendor_user   | Only forms assigned to them   | Only own submissions                                                        |
 
 ## Region-based access (iter 4c)
 Site Master is the master for access mapping.  Every admin user has three optional access columns:

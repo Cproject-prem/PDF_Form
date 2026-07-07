@@ -455,37 +455,29 @@ async def list_all_submissions(user: User = Depends(get_current_user), q: Option
     """List submissions visible to the current user.
 
       super_admin → all
-      admin       → submissions for forms they own/are assigned to
+      admin       → submissions whose values reference a site the admin
+                    has access to (region / cluster / assigned).  If the
+                    admin has no region/cluster set, they see all submissions.
       vendor_admin→ submissions from their vendor's users
       vendor_user → only their own submissions
     """
-    from permissions import normalize_role, form_filter, is_super_admin
+    from permissions import normalize_role, async_submission_filter
     role = normalize_role(user.role)
-    query: Dict[str, Any] = {}
+    query: Dict[str, Any] = await async_submission_filter(db, user)
 
-    if not is_super_admin(user):
-        # First find form_ids visible to this user
-        ff = form_filter(user)
-        forms_visible = await db.forms.find(ff, {"_id": 0, "form_id": 1}).to_list(2000)
-        visible_ids = [f["form_id"] for f in forms_visible]
-        clauses: List[Dict[str, Any]] = [{"form_id": {"$in": visible_ids}}]
-        if role == "vendor_user":
-            clauses = [{"submitted_by": user.user_id}]  # strict: only own
-        elif role == "vendor_admin":
-            # vendor's submissions = submitted by any user with vendor_id == ours
-            vid = user.vendor_id
-            if vid:
-                team = await db.users.find({"vendor_id": vid}, {"_id": 0, "user_id": 1}).to_list(2000)
-                clauses.append({"submitted_by": {"$in": [u["user_id"] for u in team]}})
-            else:
-                return []
-        query = {"$and": clauses} if len(clauses) > 1 else clauses[0]
+    if role == "vendor_admin":
+        vid = user.vendor_id
+        if vid:
+            team = await db.users.find({"vendor_id": vid}, {"_id": 0, "user_id": 1}).to_list(2000)
+            query = {"submitted_by": {"$in": [u["user_id"] for u in team]}}
+        else:
+            return []
     if form_id:
-        query.setdefault("form_id", form_id)
+        query = {"$and": [query, {"form_id": form_id}]} if query else {"form_id": form_id}
     if status:
-        query["status"] = status
+        query = {"$and": [query, {"status": status}]} if query else {"status": status}
     if q:
-        query["values"] = {"$regex": q, "$options": "i"}
+        query = {"$and": [query, {"values": {"$regex": q, "$options": "i"}}]} if query else {"values": {"$regex": q, "$options": "i"}}
     rows = await db.submissions.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return [Submission(**r) for r in rows]
 
@@ -495,23 +487,31 @@ async def list_all_submissions(user: User = Depends(get_current_user), q: Option
 async def submissions_overview(user: User = Depends(get_current_user)):
     """Return submissions grouped form-wise across BOTH standard forms and PDF forms.
 
+    Access model:
+      * Every admin sees EVERY form & PDF template definition.
+      * Submissions inside each group are further narrowed by
+        `async_submission_filter` — an admin only sees rows for sites they
+        can access (region / cluster / assigned). Global admins (no region,
+        no cluster) see every submission.
+      * vendor_admin sees vendor-team submissions; vendor_user sees own.
+
     Response shape:
       [{ kind: "form"|"pdf", form_id, title, slug, count, submissions: [...] }]
     """
     from permissions import (
-        normalize_role, form_filter, is_super_admin, submission_filter,
+        normalize_role, form_filter, is_super_admin, async_submission_filter,
     )
     role = normalize_role(user.role)
     groups: List[Dict[str, Any]] = []
 
-    # --- Standard forms ---------------------------------------------------
-    if is_super_admin(user):
+    # --- Standard forms — every admin/super_admin sees all --------------
+    if is_super_admin(user) or role == "admin":
         form_q: Dict[str, Any] = {}
     else:
         form_q = form_filter(user)
     forms = await db.forms.find(form_q, {"_id": 0}).sort("updated_at", -1).to_list(2000)
 
-    # Restrict which subs a vendor_user can see (only own)
+    # Restrict which subs a user can see
     sub_q_extra: Dict[str, Any] = {}
     if role == "vendor_user":
         sub_q_extra = {"submitted_by": user.user_id}
@@ -520,9 +520,14 @@ async def submissions_overview(user: User = Depends(get_current_user)):
             {"vendor_id": user.vendor_id}, {"_id": 0, "user_id": 1},
         ).to_list(2000)
         sub_q_extra = {"submitted_by": {"$in": [u["user_id"] for u in team]}}
+    elif role == "admin":
+        # region/cluster-scoped submission filter (empty for global admins)
+        sub_q_extra = await async_submission_filter(db, user)
 
     for f in forms:
-        sq = {"form_id": f["form_id"], **sub_q_extra}
+        sq = {"form_id": f["form_id"]}
+        if sub_q_extra:
+            sq = {"$and": [sq, sub_q_extra]}
         subs = await db.submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
         groups.append({
             "kind": "form",
@@ -539,18 +544,19 @@ async def submissions_overview(user: User = Depends(get_current_user)):
             "submissions": subs,
         })
 
-    # --- PDF forms --------------------------------------------------------
-    if is_super_admin(user):
+    # --- PDF templates — every admin/super_admin sees all ---------------
+    if is_super_admin(user) or role == "admin":
         pdf_q: Dict[str, Any] = {"is_deleted": False}
     else:
-        from permissions import form_filter as _ff
-        rls = _ff(user)
+        rls = form_filter(user)
         import json as _json
         rls = _json.loads(_json.dumps(rls).replace('"form_id"', '"template_id"'))
         pdf_q = {"$and": [{"is_deleted": False}, rls]}
     pdfs = await db.pdf_templates.find(pdf_q, {"_id": 0}).sort("updated_at", -1).to_list(2000)
     for t in pdfs:
-        sq = {"template_id": t["template_id"], **sub_q_extra}
+        sq = {"template_id": t["template_id"]}
+        if sub_q_extra:
+            sq = {"$and": [sq, sub_q_extra]}
         subs = await db.pdf_submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
         groups.append({
             "kind": "pdf",

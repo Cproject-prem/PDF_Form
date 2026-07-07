@@ -152,21 +152,10 @@ def form_filter(user) -> Dict[str, Any]:
         return {}
 
     if role == ADMIN:
-        # Admin sees forms they own OR are assigned to.  Region access:
-        # if the admin has a region, we also include forms whose
-        # `assigned_regions` list contains that region.  This mirrors
-        # site-level RLS where region is the primary access scope.
-        clauses: List[Dict[str, Any]] = []
-        if uid:
-            clauses.append({"owner_id": uid})
-            clauses.append({"assigned_admin_ids": uid})
-        cm = user_cluster_manager_name(user)
-        if cm:
-            clauses.append({"assigned_cluster_managers": cm})
-        region = user_region(user)
-        if region:
-            clauses.append({"assigned_regions": region})
-        return {"$or": clauses} if clauses else {"form_id": "__none__"}
+        # NEW BEHAVIOR: every admin can access every form (definitions are
+        # shared).  Submission-level RLS still applies via submission_filter()
+        # so an admin only sees the data they are entitled to.
+        return {}
 
     if role in (VENDOR_ADMIN, VENDOR_USER):
         clauses: List[Dict[str, Any]] = []
@@ -186,18 +175,11 @@ def form_filter(user) -> Dict[str, Any]:
 def can_edit_form(user, form_doc: Dict[str, Any]) -> bool:
     """True if the user may write to this form/pdf-template doc."""
     role = normalize_role(getattr(user, "role", ""))
-    uid = getattr(user, "user_id", None)
     if role == SUPER_ADMIN:
         return True
     if role == ADMIN:
-        # admin can edit own forms + any form where they are an assigned admin
-        if form_doc.get("owner_id") == uid:
-            return True
-        if uid and uid in (form_doc.get("assigned_admin_ids") or []):
-            return True
-        cm = user_cluster_manager_name(user)
-        if cm and cm in (form_doc.get("assigned_cluster_managers") or []):
-            return True
+        # Every admin can view + edit + create any form/PDF template
+        return True
     # Vendor tier cannot edit forms — only fill them
     return False
 
@@ -206,6 +188,8 @@ def can_view_form(user, form_doc: Dict[str, Any]) -> bool:
     """True if the user may read this form/pdf-template."""
     role = normalize_role(getattr(user, "role", ""))
     if role == SUPER_ADMIN:
+        return True
+    if role == ADMIN:
         return True
     if can_edit_form(user, form_doc):
         return True
@@ -222,21 +206,80 @@ def can_view_form(user, form_doc: Dict[str, Any]) -> bool:
 
 
 def submission_filter(user) -> Dict[str, Any]:
+    """Sync form of the submission filter — safe to use anywhere.
+
+    Super Admin  → {}                             (everything)
+    Admin        → {} for now; the actual scope requires an async lookup
+                   against the sites collection, so callers that need
+                   region/cluster scoping MUST use `async_submission_filter`
+                   below.  This function returns `{}` for admins because we
+                   already trust the "all forms" model — the async variant
+                   narrows the result set to their region/cluster plants.
+    Vendor Admin → {vendor_id: user.vendor_id}
+    Vendor User  → {submitted_by: user.user_id}
+    """
     role = normalize_role(getattr(user, "role", ""))
     uid = getattr(user, "user_id", None)
     vid = user_vendor_id(user)
     if role == SUPER_ADMIN:
         return {}
     if role == ADMIN:
-        # Admins see submissions for forms they own/are assigned to.
-        # We resolve form_id list lazily via the caller; here we restrict
-        # by submitter or vendor_id only.
-        return {"$or": [{"submitted_by": uid}]}
+        return {}
     if role == VENDOR_ADMIN:
         return {"vendor_id": vid} if vid else {"submission_id": "__none__"}
     if role == VENDOR_USER:
         return {"submitted_by": uid} if uid else {"submission_id": "__none__"}
     return {"submission_id": "__none__"}
+
+
+async def async_submission_filter(db, user) -> Dict[str, Any]:
+    """Region- and cluster-scoped Mongo filter for submissions.
+
+    Admin submissions are matched by any of the site-identifier fields
+    inside `values.*` (site_name / site_code / asset_id) against the set of
+    sites the admin can access according to `site_filter(user)`.  Because
+    submissions do not have a `site_id` foreign key, we materialise the set
+    of allowed identifiers once per query.
+
+    Non-admin roles fall back to the sync filter.
+    """
+    role = normalize_role(getattr(user, "role", ""))
+    if role != ADMIN:
+        return submission_filter(user)
+
+    # No region / cluster set → the admin can see everything (they can
+    # already access every form definition).  This keeps the "all forms +
+    # all their own submissions" behaviour for global admins.
+    region = user_region(user)
+    cm = user_cluster_manager_name(user)
+    if not region and not cm:
+        return {}
+
+    site_q = site_filter(user)
+    if not site_q:
+        return {}
+    rows = await db.sites.find(
+        site_q,
+        {"_id": 0, "site_name": 1, "site_code": 1, "asset_id": 1},
+    ).to_list(5000)
+    ids: set = set()
+    for r in rows:
+        for k in ("site_name", "site_code", "asset_id"):
+            v = r.get(k)
+            if v:
+                ids.add(v)
+    if not ids:
+        return {"submission_id": "__none__"}
+    id_list = list(ids)
+    or_clauses = []
+    for key in ("site_name", "site_code", "asset_id"):
+        or_clauses.append({f"values.{key}": {"$in": id_list}})
+    # Also include submissions the admin themselves submitted (always
+    # visible regardless of region).
+    uid = getattr(user, "user_id", None)
+    if uid:
+        or_clauses.append({"submitted_by": uid})
+    return {"$or": or_clauses}
 
 
 # ----------------------------------------------------------------------------
