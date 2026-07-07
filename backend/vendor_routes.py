@@ -256,6 +256,16 @@ def build_routers(db, get_current_user, hash_password_fn):
         if user.role != "super_admin":
             raise HTTPException(403, "Only Super Admin can edit master data records.")
 
+    async def _require_site_editor(user) -> None:
+        """Super Admin OR Admin may edit sites/site columns.
+
+        Site-level data is now part of the day-to-day admin workflow (Plant View
+        supports inline editing), so admins are trusted to write to `sites`.
+        Vendor/master-data tables remain super-admin only.
+        """
+        if user.role not in ("super_admin", "admin"):
+            raise HTTPException(403, "Admin role required")
+
     async def _require_vendor_user_editor(user, vendor_id: str) -> None:
         """Super Admin OR the Vendor Admin of THAT vendor.
 
@@ -433,7 +443,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.post("/columns")
     async def add_column(body: Dict[str, str], user=Depends(get_current_user)):
-        await _require_master_data_editor(user)
+        await _require_site_editor(user)
         label = (body.get("label") or "").strip()
         if not label:
             raise HTTPException(400, "Label required")
@@ -449,7 +459,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.delete("/columns/{key}")
     async def del_column(key: str, user=Depends(get_current_user)):
-        await _require_master_data_editor(user)
+        await _require_site_editor(user)
         if key in SITE_COLUMNS:
             raise HTTPException(400, "Core columns cannot be removed")
         cfg = _clean(await db.site_columns.find_one({"_id": "default"})) or {"custom": []}
@@ -464,7 +474,7 @@ def build_routers(db, get_current_user, hash_password_fn):
 
     @sites.put("/{site_id}")
     async def update_site(site_id: str, body: Dict[str, Any], user=Depends(get_current_user)):
-        await _require_master_data_editor(user)
+        await _require_site_editor(user)
         existing = _clean(await db.sites.find_one({"site_id": site_id}))
         if not existing:
             raise HTTPException(404, "Site not found")
@@ -674,6 +684,35 @@ def build_routers(db, get_current_user, hash_password_fn):
                 recent.append(r)
         recent.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         return {"site": site, "recent_submissions": recent[:20]}
+
+    @sites.put("/by-code/{site_code}")
+    async def update_site_by_code(site_code: str, body: Dict[str, Any],
+                                  user=Depends(get_current_user)):
+        """Plant View editor — patch a site by its `site_code`.
+
+        Any admin can update sites they can see (Plant View is now editable).
+        Fields not in the current column schema are silently accepted so the
+        UI can add ad-hoc data alongside adding a new column.
+        """
+        await _require_site_editor(user)
+        existing = _clean(await db.sites.find_one({"site_code": site_code}))
+        if not existing:
+            raise HTTPException(404, "Site not found")
+        # version snapshot for audit
+        await db.site_versions.insert_one({
+            "snapshot_id": _gen("siv"),
+            "site_id": existing.get("site_id"),
+            "version": existing.get("version", 1),
+            "row": existing, "saved_at": _now(), "saved_by": user.user_id,
+        })
+        upd = {k: v for k, v in body.items() if k not in ("site_id", "_id", "site_code")}
+        upd["updated_at"] = _now()
+        upd["updated_by"] = user.user_id
+        upd["version"] = int(existing.get("version", 1)) + 1
+        await db.sites.update_one({"site_code": site_code}, {"$set": upd})
+        await _audit_master(db, user, "site.update", existing.get("site_id"),
+                            {"via": "by-code", "changes": list(upd.keys())})
+        return {**existing, **upd}
 
     @sites.get("/_imports")
     async def import_history(user=Depends(get_current_user)):

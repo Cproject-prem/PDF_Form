@@ -884,16 +884,41 @@ async def delete_user(user_id: str, user: User = Depends(_require_user_editor)):
 # ---------- Region metadata (populated from Site Master) ----------
 @api.get("/regions", response_model=List[str])
 async def list_regions(user: User = Depends(get_current_user)):
-    """Distinct list of regions from Site Master, filtered by RLS.
-
-    Used by the User Management page's Region dropdown so admins are always
-    picking from live plant data — Site Master is the single source of truth."""
+    """Union of distinct site regions (RLS-filtered) + curated master-data
+    regions. This lets admins add "possible" regions ahead of any plant
+    being seeded there so the User create dropdown always has the full set.
+    """
     from permissions import site_filter, is_super_admin
     q: Dict[str, Any] = {}
     if not is_super_admin(user):
         q = site_filter(user)
-    rows = await db.sites.distinct("region", q)
-    return sorted([r for r in rows if r])
+    live = await db.sites.distinct("region", q)
+    master = await db.master_data.distinct("value", {"table": "regions"})
+    combined = {r for r in live if r} | {m for m in master if m}
+    return sorted(combined)
+
+
+@api.post("/regions", response_model=List[str])
+async def add_region(body: Dict[str, str], user: User = Depends(_require_user_editor)):
+    """Register a new region in the master list.  Idempotent by (table, value)."""
+    from permissions import is_super_admin, normalize_role
+    if not (is_super_admin(user) or normalize_role(user.role) == "admin"):
+        raise HTTPException(403, "Only Admin/Super Admin can manage regions")
+    value = (body.get("value") or "").strip()
+    if not value:
+        raise HTTPException(400, "Region name required")
+    await db.master_data.update_one(
+        {"table": "regions", "value": value},
+        {"$setOnInsert": {
+            "table": "regions",
+            "value": value,
+            "row_id": f"reg_{uuid.uuid4().hex[:8]}",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": user.user_id,
+        }},
+        upsert=True,
+    )
+    return await list_regions(user)
 
 
 @api.get("/cluster-managers", response_model=List[str])

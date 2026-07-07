@@ -6,10 +6,15 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
+import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import {
   Search, MapPin, Zap, Building2, User as UserIcon, Mail, Calendar,
-  ArrowLeft, ExternalLink, FileText, FileType2,
+  ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -177,11 +182,14 @@ function statusColor(s) {
 /* ----------------------------- DETAIL VIEW ------------------------------ */
 function PlantDetail({ siteCode }) {
   const nav = useNavigate();
+  const { user } = useAuth();
+  const canEdit = user && (user.role === "super_admin" || user.role === "admin");
   const [data, setData] = useState(null);
   const [columns, setColumns] = useState([]);
   const [error, setError] = useState(null);
+  const [editOpen, setEditOpen] = useState(false);
 
-  useEffect(() => {
+  const load = () => {
     Promise.all([
       api.get(`/sites/by-code/${encodeURIComponent(siteCode)}`),
       api.get("/sites/columns").catch(() => ({ data: [] })),
@@ -191,7 +199,8 @@ function PlantDetail({ siteCode }) {
         setColumns(cols.data || []);
       })
       .catch((e) => setError(getErrorMessage(e, "Plant not found")));
-  }, [siteCode]);
+  };
+  useEffect(load, [siteCode]);
 
   if (error) {
     return (
@@ -241,13 +250,24 @@ function PlantDetail({ siteCode }) {
   return (
     <AppLayout>
       <div className="max-w-6xl">
-        <Button
-          data-testid="plant-back"
-          variant="ghost" size="sm" onClick={() => nav("/plants")}
-          className="mb-3 -ml-2 text-slate-500"
-        >
-          <ArrowLeft className="w-4 h-4 mr-1.5" /> Back to Plants
-        </Button>
+        <div className="flex items-center justify-between mb-3">
+          <Button
+            data-testid="plant-back"
+            variant="ghost" size="sm" onClick={() => nav("/plants")}
+            className="-ml-2 text-slate-500"
+          >
+            <ArrowLeft className="w-4 h-4 mr-1.5" /> Back to Plants
+          </Button>
+          {canEdit && (
+            <Button
+              data-testid="plant-edit-btn"
+              variant="outline" size="sm"
+              onClick={() => setEditOpen(true)}
+            >
+              <Pencil className="w-4 h-4 mr-1.5" /> Edit plant
+            </Button>
+          )}
+        </div>
 
         {/* Hero card */}
         <Card className="rounded-2xl border-slate-100 card-soft bg-gradient-to-br from-white via-slate-50 to-blue-50/40 p-6 mb-6">
@@ -343,6 +363,17 @@ function PlantDetail({ siteCode }) {
           )}
         </Card>
       </div>
+
+      {editOpen && (
+        <EditPlantDialog
+          open={editOpen}
+          onOpenChange={setEditOpen}
+          site={p}
+          columns={columns}
+          onSaved={() => { setEditOpen(false); load(); }}
+          onColumnsChanged={(cols) => setColumns(cols)}
+        />
+      )}
     </AppLayout>
   );
 }
@@ -352,6 +383,158 @@ function renderMaybe(v) {
   if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+/* --------------------------- Edit Plant dialog --------------------------- */
+function EditPlantDialog({ open, onOpenChange, site, columns, onSaved, onColumnsChanged }) {
+  const humanize = (k) => k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  const SKIP = new Set(["site_id", "created_at", "updated_at", "_id",
+    "assigned_admin_ids", "assigned_vendor_ids", "is_deleted", "version",
+    "updated_by",
+  ]);
+  const editable = (columns || []).filter((c) => !SKIP.has(c.key));
+  const [form, setForm] = useState(() =>
+    Object.fromEntries(editable.map((c) => [c.key, site[c.key] ?? ""])),
+  );
+  const [newColLabel, setNewColLabel] = useState("");
+  const [addingCol, setAddingCol] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const addColumn = async () => {
+    const label = newColLabel.trim();
+    if (!label) { toast.error("Column label required"); return; }
+    setAddingCol(true);
+    try {
+      await api.post("/sites/columns", { label });
+      const cols = (await api.get("/sites/columns")).data || [];
+      onColumnsChanged(cols);
+      const newKey = cols.find((c) => c.label === label)?.key;
+      if (newKey) setForm((f) => ({ ...f, [newKey]: "" }));
+      setNewColLabel("");
+      toast.success(`Column "${label}" added`);
+    } catch (e) { toast.error(getErrorMessage(e, "Failed to add column")); }
+    finally { setAddingCol(false); }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      // Only send fields that changed
+      const patch = {};
+      for (const [k, v] of Object.entries(form)) {
+        if ((site[k] ?? "") !== v) patch[k] = v;
+      }
+      if (Object.keys(patch).length === 0) {
+        toast.info("Nothing to save");
+        setSaving(false);
+        return;
+      }
+      await api.put(`/sites/by-code/${encodeURIComponent(site.site_code)}`, patch);
+      toast.success("Plant updated");
+      onSaved();
+    } catch (e) { toast.error(getErrorMessage(e, "Update failed")); }
+    finally { setSaving(false); }
+  };
+
+  // group columns like the read view so the editor looks familiar
+  const GROUPS = [
+    { title: "Identity",  keys: ["site_name", "site_code", "asset_id", "plant_name",
+      "customer_name", "site_status", "region"] },
+    { title: "Capacity",  keys: ["ac_capacity", "dc_capacity", "inverter_capacity"] },
+    { title: "Location",  keys: ["state", "district", "location", "latitude", "longitude"] },
+    { title: "Vendor",    keys: ["vendor_name", "vendor_email", "vendor_login_user",
+      "cluster", "cluster_manager_name"] },
+    { title: "Approver",  keys: ["approver_email"] },
+    { title: "Timeline",  keys: ["commission_date", "om_start_date", "warranty_end_date"] },
+    { title: "Notes",     keys: ["remarks"] },
+  ];
+  const known = new Set(GROUPS.flatMap((g) => g.keys));
+  const custom = editable.filter((c) => !known.has(c.key));
+  if (custom.length) GROUPS.push({ title: "Custom", keys: custom.map((c) => c.key) });
+
+  const labelFor = (k) => (columns.find((c) => c.key === k)?.label) || humanize(k);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>Edit plant · {site.site_name}</DialogTitle>
+          <DialogDescription>
+            Fields come from Site Management. Add a new column below and it will
+            appear here plus in the plant view read layout.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex-1 overflow-y-auto nice-scroll pr-1 space-y-5">
+          {GROUPS.map((g) => {
+            const keys = g.keys.filter((k) => editable.some((c) => c.key === k));
+            if (keys.length === 0) return null;
+            return (
+              <div key={g.title}>
+                <div className="text-[10px] uppercase tracking-[0.12em] font-bold text-slate-400 pb-2">
+                  {g.title}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {keys.map((k) => (
+                    <div key={k}>
+                      <Label className="text-xs">{labelFor(k)}</Label>
+                      <Input
+                        data-testid={`edit-plant-${k}`}
+                        value={form[k] ?? ""}
+                        onChange={(e) => setForm({ ...form, [k]: e.target.value })}
+                        className="mt-1"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+
+          <div className="border-t border-slate-100 pt-4">
+            <div className="text-[10px] uppercase tracking-[0.12em] font-bold text-slate-400 pb-2">
+              Add a new column to Site Master
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <Label className="text-xs">Column label</Label>
+                <Input
+                  data-testid="new-column-label"
+                  value={newColLabel}
+                  onChange={(e) => setNewColLabel(e.target.value)}
+                  placeholder="e.g. Insurance expiry"
+                  className="mt-1"
+                />
+              </div>
+              <Button
+                data-testid="new-column-add"
+                variant="outline"
+                onClick={addColumn}
+                disabled={addingCol || !newColLabel.trim()}
+              >
+                <Plus className="w-4 h-4 mr-1.5" />
+                {addingCol ? "Adding…" : "Add column"}
+              </Button>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-1">
+              Added columns become fields for every plant in Site Management.
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button
+            data-testid="edit-plant-save"
+            className="bg-blue-600 hover:bg-blue-700"
+            onClick={save}
+            disabled={saving}
+          >
+            <Save className="w-4 h-4 mr-1.5" />
+            {saving ? "Saving…" : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function HeroStat({ label, value }) {
