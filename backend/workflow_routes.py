@@ -1322,6 +1322,65 @@ def build_workflow_routers(db, get_current_user):
 
     # ---------- Approvals ----------
 
+    async def _enrich_approval(apv: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach form / site / vendor context so the UI can render badges
+        without a bunch of follow-up round-trips."""
+        # Form / PDF template name
+        form_name = apv.get("form_name")
+        if not form_name and apv.get("form_id"):
+            kind = apv.get("submission_kind")
+            if kind == "pdf":
+                tpl = await db.pdf_templates.find_one(
+                    {"template_id": apv["form_id"]}, {"_id": 0, "title": 1, "slug": 1},
+                )
+                if tpl:
+                    apv["form_name"] = tpl.get("title")
+                    apv["form_slug"] = tpl.get("slug")
+            else:
+                f = await db.forms.find_one(
+                    {"form_id": apv["form_id"]}, {"_id": 0, "title": 1, "slug": 1},
+                )
+                if f:
+                    apv["form_name"] = f.get("title")
+                    apv["form_slug"] = f.get("slug")
+        # Site + region lookup by any of the site identifiers on the approval
+        if apv.get("site_name") and not apv.get("region"):
+            site = await db.sites.find_one(
+                {"$or": [{"site_name": apv["site_name"]},
+                         {"asset_id": apv["site_name"]},
+                         {"site_code": apv["site_name"]}]},
+                {"_id": 0, "region": 1, "cluster_manager_name": 1,
+                 "vendor_name": 1, "customer_name": 1},
+            )
+            if site:
+                apv["region"] = site.get("region")
+                apv["cluster_manager_name"] = site.get("cluster_manager_name")
+                if not apv.get("vendor_name"):
+                    apv["vendor_name"] = site.get("vendor_name")
+                if not apv.get("customer_name"):
+                    apv["customer_name"] = site.get("customer_name")
+        # Submitter info
+        sid = apv.get("submission_id")
+        if sid and not apv.get("submitted_by_name"):
+            col = "pdf_submissions" if apv.get("submission_kind") == "pdf" else "submissions"
+            sub = await db[col].find_one(
+                {"submission_id": sid}, {"_id": 0, "submitted_by": 1},
+            )
+            if sub and sub.get("submitted_by"):
+                u = await db.users.find_one(
+                    {"user_id": sub["submitted_by"]}, {"_id": 0, "name": 1, "email": 1, "vendor_id": 1},
+                )
+                if u:
+                    apv["submitted_by_name"] = u.get("name")
+                    apv["submitted_by_email"] = u.get("email")
+                    if u.get("vendor_id") and not apv.get("vendor_name"):
+                        v = await db.vendors.find_one(
+                            {"vendor_id": u["vendor_id"]}, {"_id": 0, "vendor_name": 1},
+                        )
+                        if v:
+                            apv["vendor_name"] = v.get("vendor_name")
+        return apv
+
     @approvals.get("")
     async def list_my_approvals(status_filter: Optional[str] = None, user=Depends(get_current_user)):
         identifiers = [user.user_id, user.email]
@@ -1329,14 +1388,15 @@ def build_workflow_routers(db, get_current_user):
         if status_filter:
             q["status"] = status_filter
         rows = await db.approvals.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
-        return rows
+        # Enrich each row with form/site/vendor context for badges
+        return [await _enrich_approval(r) for r in rows]
 
     @approvals.get("/{approval_id}")
     async def get_approval(approval_id: str, user=Depends(get_current_user)):
         apv = _clean(await db.approvals.find_one({"approval_id": approval_id}))
         if not apv:
             raise HTTPException(404, "Not found")
-        return apv
+        return await _enrich_approval(apv)
 
     @approvals.post("/{approval_id}/decide")
     async def decide(approval_id: str, body: ApprovalAction, request: Request, user=Depends(get_current_user)):

@@ -365,12 +365,13 @@ def menu_for(user) -> List[Dict[str, str]]:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "workflow-analytics", "approvals",
                       "plants", "site-master", "vendors",
-                      "master-data", "reports", "audit-logs", "users", "smtp", "settings"])
+                      "master-data", "reports", "audit-logs", "users",
+                      "smtp", "welcome-email", "settings"])
     if role == ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "approvals",
                       "plants", "site-master", "vendors",
-                      "master-data", "users", "reports"])
+                      "master-data", "users", "welcome-email", "reports"])
     if role == VENDOR_ADMIN:
         return _menu(["manpower", "forms", "submissions", "plants", "team"])
     if role == VENDOR_USER:
@@ -395,6 +396,7 @@ _MENU_DEFS = {
     "audit-logs":         {"label": "Audit Logs",         "path": "/audit-logs"},
     "users":              {"label": "Users",              "path": "/users"},
     "smtp":               {"label": "Email / SMTP",       "path": "/settings/smtp"},
+    "welcome-email":      {"label": "Welcome Email",      "path": "/settings/welcome-email"},
     "settings":           {"label": "Settings",           "path": "/settings"},
     "manpower":           {"label": "Manpower",           "path": "/team"},
     "team":               {"label": "Team Management",    "path": "/team"},

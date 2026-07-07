@@ -12,6 +12,7 @@ import PublicFormPage from "@/pages/PublicForm";
 import SubmissionsPage from "@/pages/Submissions";
 import SubmissionsHubPage from "@/pages/SubmissionsHub";
 import PlantsPage from "@/pages/Plants";
+import WelcomeEmailSettingsPage from "@/pages/WelcomeEmailSettings";
 import SettingsPage from "@/pages/Settings";
 import UsersPage from "@/pages/Users";
 import PdfBuilderPage from "@/pages/PdfBuilder";
@@ -69,6 +70,7 @@ function Router() {
       <Route path="/reports" element={<Protected><WorkflowAnalyticsPage /></Protected>} />
       <Route path="/audit-logs" element={<Protected><AuditLogsPage /></Protected>} />
       <Route path="/settings/smtp" element={<Protected><SmtpSettingsPage /></Protected>} />
+      <Route path="/settings/welcome-email" element={<Protected roles={["super_admin","admin"]}><WelcomeEmailSettingsPage /></Protected>} />
       <Route path="/vendors" element={<Protected><VendorsPage /></Protected>} />
       <Route path="/sites" element={<Protected><SiteMasterPage /></Protected>} />
       <Route path="/plants" element={<Protected><PlantsPage /></Protected>} />

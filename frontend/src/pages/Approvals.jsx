@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner";
 import {
   CheckCircle2, XCircle, RotateCcw, Clock, ShieldCheck, FileSignature, AlertTriangle,
+  FileText, FileType2, MapPin, Building2, User as UserIcon, Globe,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -98,7 +99,8 @@ export default function ApprovalsPage() {
                     {apv.description && (
                       <p className="text-xs text-slate-500 line-clamp-2 mb-3">{apv.description}</p>
                     )}
-                    <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <ContextBadges apv={apv} />
+                    <div className="flex items-center justify-between text-[11px] text-slate-400 mt-3">
                       <span className="flex items-center gap-1">
                         <Clock className="w-3 h-3" /> {formatDate(apv.created_at)}
                       </span>
@@ -124,6 +126,7 @@ export default function ApprovalsPage() {
               </DialogHeader>
 
               <div className="space-y-3 text-sm">
+                <ContextBadges apv={selected} large />
                 <div className="grid grid-cols-2 gap-3">
                   <Info label="Status"><StatusBadge status={selected.status} /></Info>
                   <Info label="Submission">
@@ -131,6 +134,17 @@ export default function ApprovalsPage() {
                   </Info>
                   <Info label="Approvers">{(selected.approvers || []).join(", ")}</Info>
                   <Info label="Created">{formatDate(selected.created_at)}</Info>
+                  {selected.submitted_by_name && (
+                    <Info label="Submitted by">
+                      {selected.submitted_by_name}
+                      {selected.submitted_by_email && (
+                        <span className="text-xs text-slate-400 ml-1">({selected.submitted_by_email})</span>
+                      )}
+                    </Info>
+                  )}
+                  {selected.cluster_manager_name && (
+                    <Info label="Cluster manager">{selected.cluster_manager_name}</Info>
+                  )}
                 </div>
 
                 {(selected.decisions || []).length > 0 && (
@@ -222,5 +236,51 @@ function StatusBadge({ status }) {
     <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${m.cls}`}>
       <Icon className="w-3 h-3" /> {status}
     </span>
+  );
+}
+
+/**
+ * Context badges — enrich each approval card / dialog with quick chips for
+ * Form, Region, Site, Vendor. Any missing field is silently skipped.
+ */
+function ContextBadges({ apv, large = false }) {
+  const chips = [];
+  if (apv.form_name) {
+    const Icon = apv.submission_kind === "pdf" ? FileType2 : FileText;
+    const cls = apv.submission_kind === "pdf"
+      ? "bg-violet-50 text-violet-700 border-violet-200"
+      : "bg-blue-50 text-blue-700 border-blue-200";
+    chips.push({ icon: Icon, text: apv.form_name, cls });
+  }
+  if (apv.region) {
+    chips.push({ icon: Globe, text: apv.region, cls: "bg-cyan-50 text-cyan-700 border-cyan-200" });
+  }
+  if (apv.site_name) {
+    chips.push({ icon: MapPin, text: apv.site_name, cls: "bg-emerald-50 text-emerald-700 border-emerald-200" });
+  }
+  if (apv.vendor_name) {
+    chips.push({ icon: Building2, text: apv.vendor_name, cls: "bg-orange-50 text-orange-700 border-orange-200" });
+  }
+  if (apv.submitted_by_name && !large) {
+    chips.push({ icon: UserIcon, text: apv.submitted_by_name, cls: "bg-slate-50 text-slate-700 border-slate-200" });
+  }
+  if (chips.length === 0) return null;
+  return (
+    <div className={`flex flex-wrap gap-1 ${large ? "" : ""}`} data-testid="apv-context-badges">
+      {chips.map((c, i) => {
+        const Icon = c.icon;
+        const size = large ? "text-xs px-2 py-1" : "text-[10px] px-1.5 py-0.5";
+        return (
+          <span
+            key={i}
+            className={`inline-flex items-center gap-1 rounded-md border ${size} ${c.cls}`}
+            title={c.text}
+          >
+            <Icon className={large ? "w-3.5 h-3.5" : "w-3 h-3"} />
+            <span className={large ? "" : "truncate max-w-[10rem]"}>{c.text}</span>
+          </span>
+        );
+      })}
+    </div>
   );
 }

@@ -1388,6 +1388,68 @@ async def update_settings(body: SettingsIn, user: User = Depends(require_role("s
         doc["smtp"]["password"] = "********"
     return SettingsIn(**doc)
 
+# ---------- Welcome email template (configurable per workspace) ----------
+DEFAULT_WELCOME_EMAIL = {
+    "subject": "Welcome to FormForge — your account is ready",
+    "body_html": (
+        "<p>Hi {{name}},</p>"
+        "<p>Your account on FormForge has been created.</p>"
+        "<ul>"
+        "<li><b>Email:</b> {{email}}</li>"
+        "<li><b>Temporary password:</b> {{password}}</li>"
+        "</ul>"
+        "<p><a href=\"{{login_url}}\">Sign in</a> and change your password on first login.</p>"
+        "<p>— The FormForge team</p>"
+    ),
+}
+
+
+class WelcomeEmailIn(BaseModel):
+    subject: str
+    body_html: str
+
+
+@api.get("/settings/welcome-email", response_model=WelcomeEmailIn)
+async def get_welcome_email(user: User = Depends(_require_user_editor)):
+    doc = await db.workspace_settings.find_one({"_id": "welcome_email"}, {"_id": 0}) or {}
+    return WelcomeEmailIn(
+        subject=doc.get("subject") or DEFAULT_WELCOME_EMAIL["subject"],
+        body_html=doc.get("body_html") or DEFAULT_WELCOME_EMAIL["body_html"],
+    )
+
+
+@api.put("/settings/welcome-email", response_model=WelcomeEmailIn)
+async def put_welcome_email(body: WelcomeEmailIn, user: User = Depends(require_role("super_admin", "admin"))):
+    await db.workspace_settings.update_one(
+        {"_id": "welcome_email"},
+        {"$set": {"subject": body.subject, "body_html": body.body_html,
+                  "updated_at": datetime.now(timezone.utc).isoformat(),
+                  "updated_by": user.user_id}},
+        upsert=True,
+    )
+    return body
+
+
+class WelcomeEmailPreviewIn(BaseModel):
+    subject: str
+    body_html: str
+    name: str = "Sample User"
+    email: str = "sample@example.com"
+    password: str = "P4ssW0rd!"
+
+
+@api.post("/settings/welcome-email/preview")
+async def preview_welcome_email(body: WelcomeEmailPreviewIn, user: User = Depends(_require_user_editor)):
+    base_url = os.environ.get("PUBLIC_BASE_URL") or ""
+    login_url = f"{base_url}/login" if base_url else "/login"
+    def _fmt(s: str) -> str:
+        return (s.replace("{{name}}", body.name)
+                  .replace("{{email}}", body.email)
+                  .replace("{{password}}", body.password)
+                  .replace("{{login_url}}", login_url))
+    return {"subject": _fmt(body.subject), "body_html": _fmt(body.body_html)}
+
+
 @api.get("/health")
 async def health():
     return {"status": "ok", "time": datetime.now(timezone.utc).isoformat()}
