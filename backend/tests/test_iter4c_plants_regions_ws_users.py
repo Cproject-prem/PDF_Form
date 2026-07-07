@@ -15,9 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 import pytest
 import requests
@@ -343,7 +342,7 @@ class TestRegionRls:
             r2 = requests.get(f"{API}/forms", headers=south_ctx["h"], timeout=15)
             assert r2.status_code == 200, r2.text
             ids = [f["form_id"] for f in r2.json()]
-            assert fid in ids, f"south.admin should see form assigned to South region"
+            assert fid in ids, "south.admin should see form assigned to South region"
         finally:
             requests.delete(f"{API}/forms/{fid}", headers=super_ctx["h"], timeout=15)
 

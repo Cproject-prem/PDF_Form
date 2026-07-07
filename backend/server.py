@@ -184,6 +184,7 @@ class FormIn(BaseModel):
     assigned_department_ids: List[str] = []
     assigned_team_ids: List[str] = []
     assigned_cluster_managers: List[str] = []
+    assigned_regions: List[str] = []
 
 class Form(FormIn):
     form_id: str
@@ -662,7 +663,17 @@ def _user_scope_filter(actor: User) -> Dict[str, Any]:
 
 async def _require_user_admin(user: User = Depends(get_current_user)) -> User:
     """Auth guard for user-management endpoints. Allow super_admin, admin,
-    vendor_admin — each with a different scope enforced by the filter."""
+    vendor_admin — each with a different scope enforced by the filter.
+    vendor_user is allowed only to read (list returns just themselves)."""
+    from permissions import normalize_role
+    role = normalize_role(user.role)
+    if role not in ("super_admin", "admin", "vendor_admin", "vendor_user"):
+        raise HTTPException(403, "Forbidden")
+    return user
+
+
+async def _require_user_editor(user: User = Depends(get_current_user)) -> User:
+    """Stricter guard for user create/update/delete — excludes vendor_user."""
     from permissions import normalize_role
     role = normalize_role(user.role)
     if role not in ("super_admin", "admin", "vendor_admin"):
@@ -699,7 +710,7 @@ def _gen_temp_password(n: int = 10) -> str:
     )
 
 @api.post("/users", response_model=Dict[str, Any])
-async def create_user(body: UserCreateIn, user: User = Depends(_require_user_admin)):
+async def create_user(body: UserCreateIn, user: User = Depends(_require_user_editor)):
     from permissions import normalize_role
     if body.role not in ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -757,7 +768,14 @@ async def create_user(body: UserCreateIn, user: User = Depends(_require_user_adm
                 db,
                 EmailRequest(to=[email], subject=_fmt(subject_tpl), body_html=_fmt(body_tpl)),
             )
-            email_status = res.get("status", "sent") if isinstance(res, dict) else "sent"
+            raw_status = res.get("status", "sent") if isinstance(res, dict) else "sent"
+            # Bucket transport statuses so the frontend only sees sent/skipped/failed.
+            if raw_status == "sent":
+                email_status = "sent"
+            elif raw_status.startswith("skip"):
+                email_status = "skipped"
+            else:
+                email_status = "failed"
         except Exception as exc:  # noqa: BLE001
             email_status = "failed"
             email_error = str(exc)[:240]
@@ -784,7 +802,7 @@ class UserUpdateIn(BaseModel):
     assignments: Optional[Dict[str, List[str]]] = None
 
 @api.patch("/users/{user_id}", response_model=UserOut)
-async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_require_user_admin)):
+async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_require_user_editor)):
     from permissions import normalize_role
     target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if not target:
@@ -831,7 +849,7 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_re
     return UserOut(**doc)
 
 @api.delete("/users/{user_id}")
-async def delete_user(user_id: str, user: User = Depends(_require_user_admin)):
+async def delete_user(user_id: str, user: User = Depends(_require_user_editor)):
     from permissions import normalize_role
     if user_id == user.user_id:
         raise HTTPException(400, "Cannot delete yourself")
@@ -947,6 +965,15 @@ class FormPatch(BaseModel):
     is_archived: Optional[bool] = None
     status: Optional[str] = None
     title: Optional[str] = None
+    assigned_site_ids: Optional[List[str]] = None
+    assigned_vendor_ids: Optional[List[str]] = None
+    assigned_vendor_user_ids: Optional[List[str]] = None
+    assigned_admin_ids: Optional[List[str]] = None
+    assigned_member_ids: Optional[List[str]] = None
+    assigned_department_ids: Optional[List[str]] = None
+    assigned_team_ids: Optional[List[str]] = None
+    assigned_cluster_managers: Optional[List[str]] = None
+    assigned_regions: Optional[List[str]] = None
 
 @api.patch("/forms/{form_id}", response_model=Form)
 async def patch_form(form_id: str, body: FormPatch, user: User = Depends(get_current_user)):
