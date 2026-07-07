@@ -1,6 +1,7 @@
 """FormForge — In-app notifications.
 
-A lightweight collection that powers the bell icon in the app header.
+A lightweight collection that powers the bell icon in the app header, plus
+a per-user WebSocket channel that pushes notifications in real time.
 
 Notification schema:
     notification_id   str  (n_<uuid>)
@@ -19,15 +20,22 @@ Endpoints (mounted under /api):
     GET    /notifications/unread-count   — quick badge counter
     PATCH  /notifications/{id}/read      — mark one as read
     POST   /notifications/read-all       — mark all mine as read
+    WS     /notifications/ws?token=...   — real-time push channel (JWT via query)
 """
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
+
+log = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -36,6 +44,41 @@ def _now() -> str:
 
 def _gen() -> str:
     return f"n_{uuid.uuid4().hex[:14]}"
+
+
+# ----------------------- In-process WebSocket registry ----------------------
+# Maps user_id → set of active WebSocket connections.  A single user may have
+# multiple tabs open, each getting its own push.  A production deployment
+# behind multiple workers would swap this for a Redis pub/sub — for now the
+# app runs one uvicorn worker.
+_CONNECTIONS: Dict[str, Set[WebSocket]] = defaultdict(set)
+_CONN_LOCK = asyncio.Lock()
+
+
+async def _register(user_id: str, ws: WebSocket) -> None:
+    async with _CONN_LOCK:
+        _CONNECTIONS[user_id].add(ws)
+
+
+async def _unregister(user_id: str, ws: WebSocket) -> None:
+    async with _CONN_LOCK:
+        _CONNECTIONS[user_id].discard(ws)
+        if not _CONNECTIONS[user_id]:
+            _CONNECTIONS.pop(user_id, None)
+
+
+async def _push(user_id: str, payload: Dict[str, Any]) -> None:
+    """Best-effort push to every open socket for this user."""
+    async with _CONN_LOCK:
+        sockets = list(_CONNECTIONS.get(user_id, ()))
+    if not sockets:
+        return
+    text = json.dumps(payload, default=str)
+    for ws in sockets:
+        try:
+            await ws.send_text(text)
+        except Exception:  # noqa: BLE001
+            await _unregister(user_id, ws)
 
 
 class Notification(BaseModel):
@@ -55,7 +98,8 @@ async def create_notification(db, *, user_id: str, kind: str, title: str,
                               body: str = "", link: Optional[str] = None,
                               submission_id: Optional[str] = None,
                               approval_id: Optional[str] = None) -> Dict[str, Any]:
-    """Persist a notification for a single recipient. Idempotent-ish by
+    """Persist a notification for a single recipient and push it over
+    every open WebSocket that belongs to that user.  Idempotent-ish by
     (user_id, approval_id, kind) — if a matching row already exists we
     return the existing one without inserting a duplicate."""
     if approval_id and kind:
@@ -78,6 +122,11 @@ async def create_notification(db, *, user_id: str, kind: str, title: str,
         "created_at": _now(),
     }
     await db.notifications.insert_one(dict(doc))
+    # Real-time push (fire-and-forget; failures never block the write)
+    try:
+        await _push(user_id, {"type": "notification", "notification": doc})
+    except Exception as _e:  # noqa: BLE001
+        log.debug("notification push failed: %s", _e)
     return doc
 
 
@@ -100,7 +149,7 @@ async def notify_users_by_email(db, emails: List[str], **kwargs) -> int:
     return n
 
 
-def build_notifications_router(db, get_current_user) -> APIRouter:
+def build_notifications_router(db, get_current_user, _resolve_ws_user) -> APIRouter:
     router = APIRouter(prefix="/notifications")
 
     @router.get("", response_model=List[Notification])
@@ -132,5 +181,39 @@ def build_notifications_router(db, get_current_user) -> APIRouter:
             {"$set": {"read": True}},
         )
         return {"marked": r.modified_count}
+
+    @router.websocket("/ws")
+    async def ws_channel(ws: WebSocket, token: Optional[str] = None):
+        """Real-time notifications channel.
+
+        Auth is via ?token=<JWT> because browsers can't set custom headers on
+        WebSocket handshakes.  The token is validated by the caller-supplied
+        `_resolve_ws_user` function (which mirrors the HTTP dependency)."""
+        user = None
+        if token:
+            try:
+                user = await _resolve_ws_user(token)
+            except Exception:  # noqa: BLE001
+                user = None
+        if not user:
+            await ws.close(code=4401)
+            return
+        await ws.accept()
+        await _register(user.user_id, ws)
+        try:
+            # Send a greeting with the current unread count so the client
+            # can update the badge without a follow-up REST call.
+            c = await db.notifications.count_documents({"user_id": user.user_id, "read": False})
+            await ws.send_text(json.dumps({"type": "hello", "unread_count": c}))
+            # Keep the connection open — we don't accept messages from the
+            # client, but we must read to detect disconnects.
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        except Exception as _e:  # noqa: BLE001
+            log.debug("ws channel closed: %s", _e)
+        finally:
+            await _unregister(user.user_id, ws)
 
     return router

@@ -639,6 +639,42 @@ def build_routers(db, get_current_user, hash_password_fn):
         rows = await db.site_versions.find({"site_id": site_id}, {"_id": 0}).sort("saved_at", -1).to_list(50)
         return rows
 
+    @sites.get("/by-code/{site_code}")
+    async def get_site_by_code(site_code: str, user=Depends(get_current_user)):
+        """Plant View endpoint — fetch one site (with RLS) and enrich with
+        recent submissions summary for the Plant page.  Non-privileged
+        users hit a 404 when the site is outside their access scope."""
+        from permissions import site_filter as _sf, is_super_admin
+        q: Dict[str, Any] = {"site_code": site_code}
+        if not is_super_admin(user):
+            rls = _sf(user)
+            q = {"$and": [q, rls]} if rls else q
+        site = await db.sites.find_one(q, {"_id": 0})
+        if not site:
+            raise HTTPException(404, "Plant not found or out of scope")
+        # Recent submissions across BOTH standard and PDF forms that mention
+        # this site (by site_name or site_code in the submission values).
+        recent: List[Dict[str, Any]] = []
+        for col in ("submissions", "pdf_submissions"):
+            match_ids: List[Any] = [site.get("site_name"), site.get("site_code"), site.get("asset_id")]
+            match_ids = [m for m in match_ids if m]
+            or_clauses = []
+            for key in ("site_name", "site_code", "asset_id"):
+                for mid in match_ids:
+                    or_clauses.append({f"values.{key}": mid})
+            if not or_clauses:
+                continue
+            rows = await db[col].find(
+                {"$or": or_clauses},
+                {"_id": 0, "submission_id": 1, "form_id": 1, "template_id": 1,
+                 "created_at": 1, "status": 1, "submitted_by": 1},
+            ).sort("created_at", -1).limit(20).to_list(20)
+            for r in rows:
+                r["kind"] = "pdf" if col == "pdf_submissions" else "form"
+                recent.append(r)
+        recent.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return {"site": site, "recent_submissions": recent[:20]}
+
     @sites.get("/_imports")
     async def import_history(user=Depends(get_current_user)):
         await _require_admin(user)

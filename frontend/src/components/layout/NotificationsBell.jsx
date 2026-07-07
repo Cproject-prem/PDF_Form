@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Bell, CheckCheck, Inbox } from "lucide-react";
@@ -6,10 +6,12 @@ import {
   Popover, PopoverContent, PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
 
 /**
- * Bell icon in the header — polls unread count every 30s and shows the
- * list of unread + last-25 notifications in a popover.
+ * Bell icon in the header — subscribes to /api/notifications/ws for
+ * real-time push, falls back to polling every 60s if the WebSocket
+ * ever drops.  Shows the last 50 notifications in a popover.
  */
 export default function NotificationsBell() {
   const nav = useNavigate();
@@ -17,14 +19,14 @@ export default function NotificationsBell() {
   const [count, setCount] = useState(0);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
+  const wsRef = useRef(null);
+  const retryTimer = useRef(null);
 
   const refreshCount = useCallback(async () => {
     try {
       const r = await api.get("/notifications/unread-count");
       setCount(r.data?.count || 0);
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }, []);
 
   const loadList = useCallback(async () => {
@@ -32,29 +34,61 @@ export default function NotificationsBell() {
     try {
       const r = await api.get("/notifications");
       setItems(r.data || []);
-    } catch {
-      /* ignore */
-    } finally {
-      setLoading(false);
-    }
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }, []);
+
+  const connectWs = useCallback(() => {
+    const token = localStorage.getItem("ff_token");
+    if (!token) return;
+    const backend = process.env.REACT_APP_BACKEND_URL || "";
+    const wsUrl = backend.replace(/^http/, "ws") + `/api/notifications/ws?token=${encodeURIComponent(token)}`;
+    try {
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      ws.onopen = () => {
+        // clear any pending reconnect
+        if (retryTimer.current) clearTimeout(retryTimer.current);
+      };
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === "hello") setCount(msg.unread_count || 0);
+          if (msg.type === "notification") {
+            setCount((c) => c + 1);
+            const n = msg.notification;
+            // Prepend to the list if the popover has been opened previously
+            setItems((xs) => [n, ...xs].slice(0, 50));
+            toast.info(n.title, { description: n.body });
+          }
+        } catch { /* ignore malformed */ }
+      };
+      ws.onclose = () => {
+        wsRef.current = null;
+        // reconnect after 3s if we're still logged in
+        if (localStorage.getItem("ff_token")) {
+          retryTimer.current = setTimeout(connectWs, 3000);
+        }
+      };
+      ws.onerror = () => { try { ws.close(); } catch { /* ignore */ } };
+    } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
     refreshCount();
-    const t = setInterval(refreshCount, 30000);
-    return () => clearInterval(t);
-  }, [refreshCount]);
+    connectWs();
+    // Poll as a safety net in case the WS drops silently
+    const t = setInterval(refreshCount, 60000);
+    return () => {
+      clearInterval(t);
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      if (wsRef.current) try { wsRef.current.close(); } catch { /* ignore */ }
+    };
+  }, [refreshCount, connectWs]);
 
-  useEffect(() => {
-    if (open) loadList();
-  }, [open, loadList]);
+  useEffect(() => { if (open) loadList(); }, [open, loadList]);
 
   const openItem = async (n) => {
-    try {
-      await api.patch(`/notifications/${n.notification_id}/read`);
-    } catch {
-      /* ignore */
-    }
+    try { await api.patch(`/notifications/${n.notification_id}/read`); } catch { /* ignore */ }
     setOpen(false);
     if (n.link) nav(n.link);
     refreshCount();

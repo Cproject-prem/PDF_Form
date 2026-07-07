@@ -11,6 +11,7 @@ import FormBuilderPage from "@/pages/FormBuilder";
 import PublicFormPage from "@/pages/PublicForm";
 import SubmissionsPage from "@/pages/Submissions";
 import SubmissionsHubPage from "@/pages/SubmissionsHub";
+import PlantsPage from "@/pages/Plants";
 import SettingsPage from "@/pages/Settings";
 import UsersPage from "@/pages/Users";
 import PdfBuilderPage from "@/pages/PdfBuilder";
@@ -70,6 +71,8 @@ function Router() {
       <Route path="/settings/smtp" element={<Protected><SmtpSettingsPage /></Protected>} />
       <Route path="/vendors" element={<Protected><VendorsPage /></Protected>} />
       <Route path="/sites" element={<Protected><SiteMasterPage /></Protected>} />
+      <Route path="/plants" element={<Protected><PlantsPage /></Protected>} />
+      <Route path="/plants/:site_code" element={<Protected><PlantsPage /></Protected>} />
       <Route path="/master-data" element={<Protected><MasterDataPage /></Protected>} />
       <Route path="/team" element={<Protected><UsersPage /></Protected>} />
       <Route path="/settings" element={<Protected roles={["super_admin"]}><SettingsPage /></Protected>} />

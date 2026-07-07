@@ -109,6 +109,7 @@ class User(BaseModel):
     password_hash: Optional[str] = None  # not exposed via API
     vendor_id: Optional[str] = None  # set for vendor users (RLS scope)
     cluster_manager_name: Optional[str] = None  # for admin role — links to Site.cluster_manager_name
+    region: Optional[str] = None  # for admin role — links to Site.region (regional access scope)
     assignments: Optional[Dict[str, List[str]]] = None  # {forms:[], pdf_forms:[], sites:[], workflows:[]}
 
 class UserOut(BaseModel):
@@ -121,6 +122,7 @@ class UserOut(BaseModel):
     created_at: str
     vendor_id: Optional[str] = None
     cluster_manager_name: Optional[str] = None
+    region: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
 
 class RegisterIn(BaseModel):
@@ -280,6 +282,9 @@ async def startup():
     # Cluster-Manager admin scoped to Rahul Verma (sees Alpha + Bravo only)
     await _ensure("rahul.verma@example.com", "Rahul Verma (Cluster Mgr)",
                   "admin", "Admin@12345", cluster_manager_name="Rahul Verma")
+    # Regional admin scoped to "South" region — sees Alpha + Bravo + any other South plants
+    await _ensure("south.admin@example.com", "South Regional Admin",
+                  "admin", "Admin@12345", region="South")
     # Vendor admin for SunOps (sees Alpha + Charlie only)
     sunops_vid = "ven_sunops_demo"
     if not await db.vendors.find_one({"vendor_id": sunops_vid}):
@@ -637,33 +642,136 @@ async def export_submissions_xlsx(form_id: str, user: User = Depends(get_current
 
 
 # ---------- Users (admin) ----------
+def _user_scope_filter(actor: User) -> Dict[str, Any]:
+    """Restrict which users an actor can list/edit.
+    - super_admin: everyone
+    - admin: everyone EXCEPT super_admin accounts (cannot see/manage them)
+    - vendor_admin: only users in the same vendor_id
+    - vendor_user: none (empty query returns their own only)
+    """
+    from permissions import normalize_role
+    role = normalize_role(actor.role)
+    if role == "super_admin":
+        return {}
+    if role == "admin":
+        return {"role": {"$ne": "super_admin"}}
+    if role == "vendor_admin":
+        return {"vendor_id": actor.vendor_id, "role": {"$in": ["vendor", "vendor_admin", "vendor_user"]}}
+    return {"user_id": actor.user_id}
+
+
+async def _require_user_admin(user: User = Depends(get_current_user)) -> User:
+    """Auth guard for user-management endpoints. Allow super_admin, admin,
+    vendor_admin — each with a different scope enforced by the filter."""
+    from permissions import normalize_role
+    role = normalize_role(user.role)
+    if role not in ("super_admin", "admin", "vendor_admin"):
+        raise HTTPException(403, "Forbidden")
+    return user
+
+
 @api.get("/users", response_model=List[UserOut])
-async def list_users(user: User = Depends(require_role("super_admin"))):
-    rows = await db.users.find({}, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
+async def list_users(user: User = Depends(_require_user_admin)):
+    q = _user_scope_filter(user)
+    rows = await db.users.find(q, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
     return [UserOut(**r) for r in rows]
 
 class UserCreateIn(BaseModel):
     email: EmailStr
     name: str
-    password: str = Field(min_length=6)
+    password: Optional[str] = Field(default=None, min_length=6)
     role: str = "user"
+    vendor_id: Optional[str] = None
+    cluster_manager_name: Optional[str] = None
+    region: Optional[str] = None
+    send_welcome_email: bool = True
 
-@api.post("/users", response_model=UserOut)
-async def create_user(body: UserCreateIn, user: User = Depends(require_role("super_admin"))):
+def _gen_temp_password(n: int = 10) -> str:
+    import secrets
+    import string
+    alpha = string.ascii_letters + string.digits
+    # ensure at least one uppercase + one digit + one symbol
+    return (
+        secrets.choice(string.ascii_uppercase)
+        + secrets.choice(string.digits)
+        + "!"
+        + "".join(secrets.choice(alpha) for _ in range(max(3, n - 3)))
+    )
+
+@api.post("/users", response_model=Dict[str, Any])
+async def create_user(body: UserCreateIn, user: User = Depends(_require_user_admin)):
+    from permissions import normalize_role
     if body.role not in ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
+    # Prevent non-super-admin from creating a super_admin
+    if body.role == "super_admin" and normalize_role(user.role) != "super_admin":
+        raise HTTPException(403, "Only super_admin can create super_admin accounts")
+    # vendor_admin can only create vendor scope users, and only in own vendor
+    if normalize_role(user.role) == "vendor_admin":
+        if body.role not in ("vendor", "vendor_user"):
+            raise HTTPException(403, "Vendor Admins can only create vendor users")
+        body.vendor_id = user.vendor_id  # force scope
     email = body.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=409, detail="Email taken")
+    temp_password = body.password or _gen_temp_password()
+    generated = body.password is None
     uid = f"user_{uuid.uuid4().hex[:12]}"
     doc = {
         "user_id": uid, "email": email, "name": body.name, "role": body.role,
-        "password_hash": hash_password(body.password), "picture": None,
+        "password_hash": hash_password(temp_password), "picture": None,
         "is_active": True, "created_at": datetime.now(timezone.utc).isoformat(),
+        "vendor_id": body.vendor_id or None,
+        "cluster_manager_name": body.cluster_manager_name or None,
+        "region": body.region or None,
     }
     await db.users.insert_one(doc)
+
+    # Best-effort welcome email — never blocks user creation.
+    email_status = "skipped"
+    email_error: Optional[str] = None
+    if body.send_welcome_email:
+        try:
+            from workflow_routes import _send_email, EmailRequest
+            settings = await db.workspace_settings.find_one({"_id": "welcome_email"}, {"_id": 0}) or {}
+            base_url = os.environ.get("PUBLIC_BASE_URL") or (
+                f"https://{os.environ.get('HOSTNAME','localhost')}"
+            )
+            subject_tpl = settings.get("subject") or "Welcome to FormForge — your account is ready"
+            body_tpl = settings.get("body_html") or (
+                "<p>Hi {{name}},</p>"
+                "<p>Your account on FormForge has been created.</p>"
+                "<ul>"
+                "<li><b>Email:</b> {{email}}</li>"
+                "<li><b>Temporary password:</b> {{password}}</li>"
+                "</ul>"
+                "<p><a href=\"{{login_url}}\">Sign in</a> and change your password on first login.</p>"
+                "<p>— The FormForge team</p>"
+            )
+            def _fmt(s: str) -> str:
+                return (s.replace("{{name}}", body.name)
+                          .replace("{{email}}", email)
+                          .replace("{{password}}", temp_password)
+                          .replace("{{login_url}}", f"{base_url}/login"))
+            res = await _send_email(
+                db,
+                EmailRequest(to=[email], subject=_fmt(subject_tpl), body_html=_fmt(body_tpl)),
+            )
+            email_status = res.get("status", "sent") if isinstance(res, dict) else "sent"
+        except Exception as exc:  # noqa: BLE001
+            email_status = "failed"
+            email_error = str(exc)[:240]
+
     doc.pop("password_hash", None)
-    return UserOut(**doc)
+    out = UserOut(**doc).model_dump()
+    # Return the temp password ONLY when it was generated OR the welcome email failed;
+    # this lets the creator hand it off manually if SMTP is not configured.
+    if generated or email_status != "sent":
+        out["temp_password"] = temp_password
+    out["email_status"] = email_status
+    if email_error:
+        out["email_error"] = email_error
+    return out
 
 class UserUpdateIn(BaseModel):
     name: Optional[str] = None
@@ -672,16 +780,35 @@ class UserUpdateIn(BaseModel):
     password: Optional[str] = None
     vendor_id: Optional[str] = None
     cluster_manager_name: Optional[str] = None
+    region: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
 
 @api.patch("/users/{user_id}", response_model=UserOut)
-async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(require_role("super_admin"))):
+async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_require_user_admin)):
+    from permissions import normalize_role
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "User not found")
+    actor_role = normalize_role(user.role)
+    target_role = normalize_role(target.get("role", ""))
+    # Non-super_admin cannot edit a super_admin account
+    if target_role == "super_admin" and actor_role != "super_admin":
+        raise HTTPException(403, "Only super_admin can edit a super_admin")
+    # vendor_admin can only edit users in own vendor and cannot promote
+    if actor_role == "vendor_admin":
+        if target.get("vendor_id") != user.vendor_id:
+            raise HTTPException(403, "Out of scope")
+        if body.role and body.role not in ("vendor", "vendor_user"):
+            raise HTTPException(403, "Vendor Admins can only assign vendor roles")
+
     updates = {}
     if body.name is not None:
         updates["name"] = body.name
     if body.role is not None:
         if body.role not in ROLES:
             raise HTTPException(400, "Invalid role")
+        if body.role == "super_admin" and actor_role != "super_admin":
+            raise HTTPException(403, "Only super_admin can grant super_admin")
         updates["role"] = body.role
     if body.is_active is not None:
         updates["is_active"] = body.is_active
@@ -691,6 +818,8 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(req
         updates["vendor_id"] = body.vendor_id or None
     if body.cluster_manager_name is not None:
         updates["cluster_manager_name"] = body.cluster_manager_name or None
+    if body.region is not None:
+        updates["region"] = body.region or None
     if body.assignments is not None:
         updates["assignments"] = body.assignments
     if not updates:
@@ -702,11 +831,47 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(req
     return UserOut(**doc)
 
 @api.delete("/users/{user_id}")
-async def delete_user(user_id: str, user: User = Depends(require_role("super_admin"))):
+async def delete_user(user_id: str, user: User = Depends(_require_user_admin)):
+    from permissions import normalize_role
     if user_id == user.user_id:
         raise HTTPException(400, "Cannot delete yourself")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "role": 1, "vendor_id": 1})
+    if not target:
+        raise HTTPException(404, "User not found")
+    actor_role = normalize_role(user.role)
+    target_role = normalize_role(target.get("role", ""))
+    if target_role == "super_admin" and actor_role != "super_admin":
+        raise HTTPException(403, "Only super_admin can delete a super_admin")
+    if actor_role == "vendor_admin" and target.get("vendor_id") != user.vendor_id:
+        raise HTTPException(403, "Out of scope")
     await db.users.delete_one({"user_id": user_id})
     return {"ok": True}
+
+
+# ---------- Region metadata (populated from Site Master) ----------
+@api.get("/regions", response_model=List[str])
+async def list_regions(user: User = Depends(get_current_user)):
+    """Distinct list of regions from Site Master, filtered by RLS.
+
+    Used by the User Management page's Region dropdown so admins are always
+    picking from live plant data — Site Master is the single source of truth."""
+    from permissions import site_filter, is_super_admin
+    q: Dict[str, Any] = {}
+    if not is_super_admin(user):
+        q = site_filter(user)
+    rows = await db.sites.distinct("region", q)
+    return sorted([r for r in rows if r])
+
+
+@api.get("/cluster-managers", response_model=List[str])
+async def list_cluster_managers(user: User = Depends(get_current_user)):
+    from permissions import site_filter, is_super_admin
+    q: Dict[str, Any] = {}
+    if not is_super_admin(user):
+        q = site_filter(user)
+    rows = await db.sites.distinct("cluster_manager_name", q)
+    return sorted([r for r in rows if r])
+
 
 # ---------- Forms ----------
 def _slug(title: str) -> str:
@@ -1234,9 +1399,22 @@ api.include_router(build_formula_router(db, get_current_user))
 from datasource_routes import build_datasource_router
 api.include_router(build_datasource_router(db, get_current_user))
 
-# ---------- In-app Notifications (bell icon) ----------
+# ---------- In-app Notifications (bell icon + real-time WebSocket) ----------
+async def _resolve_ws_user(token: str) -> Optional[User]:
+    """Given a JWT (from ?token=... on the WebSocket handshake) return the
+    matching User or None.  Kept intentionally quiet — we do NOT raise;
+    the WebSocket route closes with code 4401 on a missing/invalid token."""
+    try:
+        data = decode_token(token)
+    except HTTPException:
+        return None
+    user = await db.users.find_one({"user_id": data.get("sub")}, {"_id": 0, "password_hash": 0})
+    if not user or not user.get("is_active", True):
+        return None
+    return User(**user)
+
 from notifications import build_notifications_router
-api.include_router(build_notifications_router(db, get_current_user))
+api.include_router(build_notifications_router(db, get_current_user, _resolve_ws_user))
 
 # Mount router
 app.include_router(api)

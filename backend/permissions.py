@@ -74,6 +74,11 @@ def user_assignments(user) -> Dict[str, List[str]]:
     return getattr(user, "assignments", None) or {}
 
 
+def user_region(user) -> Optional[str]:
+    """The region an admin user is matched against on sites (regional access)."""
+    return getattr(user, "region", None)
+
+
 def user_cluster_manager_name(user) -> Optional[str]:
     """The cluster-manager-name an admin user is matched against on sites."""
     return getattr(user, "cluster_manager_name", None)
@@ -89,8 +94,9 @@ def site_filter(user) -> Dict[str, Any]:
     only the rows the given user is allowed to see.
 
     Super Admin   → {}                                  (everything)
-    Admin         → {cluster_manager_name: <user.cluster_manager_name>}
-                    OR {assigned_admin_ids: user.user_id}
+    Admin         → {region: <user.region>} OR
+                    {cluster_manager_name: <user.cluster_manager_name>} OR
+                    {assigned_admin_ids: user.user_id}
     Vendor Admin  → {vendor_id: user.vendor_id}
     Vendor User   → {vendor_id: user.vendor_id, ...assigned site list}
     Anonymous     → an impossible filter (no rows)
@@ -101,12 +107,15 @@ def site_filter(user) -> Dict[str, Any]:
         return {}
 
     if role == ADMIN:
-        cm = user_cluster_manager_name(user)
         clauses: List[Dict[str, Any]] = []
         if uid:
             clauses.append({"assigned_admin_ids": uid})
+        cm = user_cluster_manager_name(user)
         if cm:
             clauses.append({"cluster_manager_name": cm})
+        region = user_region(user)
+        if region:
+            clauses.append({"region": region})
         if not clauses:
             return {"site_id": "__none__"}  # admin with no assignment -> nothing
         return clauses[0] if len(clauses) == 1 else {"$or": clauses}
@@ -143,7 +152,10 @@ def form_filter(user) -> Dict[str, Any]:
         return {}
 
     if role == ADMIN:
-        # admin sees forms they own OR are explicitly assigned to
+        # Admin sees forms they own OR are assigned to.  Region access:
+        # if the admin has a region, we also include forms whose
+        # `assigned_regions` list contains that region.  This mirrors
+        # site-level RLS where region is the primary access scope.
         clauses: List[Dict[str, Any]] = []
         if uid:
             clauses.append({"owner_id": uid})
@@ -151,6 +163,9 @@ def form_filter(user) -> Dict[str, Any]:
         cm = user_cluster_manager_name(user)
         if cm:
             clauses.append({"assigned_cluster_managers": cm})
+        region = user_region(user)
+        if region:
+            clauses.append({"assigned_regions": region})
         return {"$or": clauses} if clauses else {"form_id": "__none__"}
 
     if role in (VENDOR_ADMIN, VENDOR_USER):
@@ -305,16 +320,18 @@ def menu_for(user) -> List[Dict[str, str]]:
     role = normalize_role(getattr(user, "role", ""))
     if role == SUPER_ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
-                      "workflows", "workflow-analytics", "approvals", "site-master", "vendors",
+                      "workflows", "workflow-analytics", "approvals",
+                      "plants", "site-master", "vendors",
                       "master-data", "reports", "audit-logs", "users", "smtp", "settings"])
     if role == ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
-                      "workflows", "approvals", "site-master", "vendors",
+                      "workflows", "approvals",
+                      "plants", "site-master", "vendors",
                       "master-data", "users", "reports"])
     if role == VENDOR_ADMIN:
-        return _menu(["manpower", "forms", "submissions", "team"])
+        return _menu(["manpower", "forms", "submissions", "plants", "team"])
     if role == VENDOR_USER:
-        return _menu(["forms", "submissions"])
+        return _menu(["forms", "submissions", "plants"])
     return _menu(["forms"])
 
 
@@ -328,6 +345,7 @@ _MENU_DEFS = {
     "workflow-analytics": {"label": "Workflow Analytics", "path": "/workflow-analytics"},
     "approvals":          {"label": "Approvals",          "path": "/approvals"},
     "site-master":        {"label": "Site Management",    "path": "/sites"},
+    "plants":             {"label": "Plants",              "path": "/plants"},
     "vendors":            {"label": "Vendor Management",  "path": "/vendors"},
     "master-data":        {"label": "Master Data",        "path": "/master-data"},
     "reports":            {"label": "Reports",            "path": "/reports"},

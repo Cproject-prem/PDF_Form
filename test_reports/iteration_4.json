@@ -1,0 +1,57 @@
+{
+  "summary": "FormForge iter-4c (Plants + Region RLS + WebSocket + User Mgmt rewrite) — 23/26 backend pytest pass (88.5%); 3 spec deviations found. Frontend: /plants list+detail, /users rewrite, region/cluster-manager dropdowns, and NotificationsBell all render correctly with expected data-testids; all 15+ sidebar links resolve to their own paths (none go to /dashboard). WebSocket at /api/notifications/ws?token=... sends the correct hello frame and closes 4401 on missing/bad tokens.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/forms + PATCH /api/forms/{id}",
+        "issue": "Pydantic model FormIn does NOT declare `assigned_regions: List[str]` — so any create/update payload that includes assigned_regions is silently dropped. As a result south.admin@example.com CANNOT see forms that were intended to be assigned to the South region via API. permissions.form_filter already checks `assigned_regions` (permissions.py:168) and the RLS works when the field is present in mongo (verified via direct insert), so the fix is a one-liner in server.py FormIn (and FormPatch) around line 187.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/users (vendor_user)",
+        "issue": "Spec says vendor_user should see only themselves, but _require_user_admin (server.py:668) explicitly rejects vendor_user with 403. Either loosen the guard so vendor_user returns [self] OR update the spec to say 'vendor_user cannot access /api/users'."
+      },
+      {
+        "endpoint": "POST /api/users welcome email status",
+        "issue": "Backend returns email_status='skipped_no_smtp' when SMTP is not configured, but the spec+frontend expect one of ('sent','skipped','failed'). Normalize the value to 'skipped' (with an optional email_reason field) in server.py:760."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter4c_plants_regions_ws_users.py",
+    "/app/test_reports/pytest/iter4c.xml"
+  ],
+  "action_items": [
+    "Add `assigned_regions: List[str] = []` to FormIn (server.py:187) and to FormPatch (server.py:945). Also mirror on PDFForm model in pdf_routes.py if PDF-forms need region assignment.",
+    "Normalize email_status in create_user to 'skipped' when SMTP is missing (server.py:760): change `res.get('status', 'sent')` so that 'skipped_no_smtp' is bucketed as 'skipped'.",
+    "Decide vendor_user behaviour on GET /api/users: relax _require_user_admin to allow vendor_user (returning only [self] via _user_scope_filter) OR update the review-request spec. Current 403 breaks the 'vendor_user sees only themselves' clause."
+  ],
+  "critical_code_review_comments": [
+    "server.py:171 FormIn — the model is the single source of truth for form assignment fields. Missing `assigned_regions` here means the entire iter-4c region-based RLS story is invisible via the API (feature (b)). Add both `assigned_regions` and `assigned_departments` if departments are also expected — otherwise silently drops.",
+    "server.py:673 list_users vs server.py:660 _user_scope_filter — the filter has a branch for vendor_user returning {user_id: uid} but the guard (_require_user_admin, line 668) rejects vendor_user before that branch is reached. The vendor_user code path in _user_scope_filter is unreachable dead code.",
+    "notifications.py:97 create_notification — the idempotency check keys on (user_id, approval_id, kind) but not on submission_id, so two info notifications for the same submission from different producers de-dup unexpectedly if they share an approval_id. Consider making the dedup key explicit via a kwarg.",
+    "vendor_routes.py:642 /sites/by-code — recent_submissions matches by exact equality on values.site_name/site_code/asset_id, but real submissions often carry the value under a different field-id (form-designer-supplied key). Consider also matching on submission.site_id when present.",
+    "server.py:1403 _resolve_ws_user swallows every exception silently — good for security (4401 leaks nothing) but if the token is expired vs malformed it makes debugging harder; consider logging at DEBUG level with the exception class name only.",
+    "server.py:687 UserCreateIn.send_welcome_email defaults to True — combined with `body.password` being optional, a naive frontend call without password OR send_welcome_email flag triggers a real SMTP attempt. If SMTP is unconfigured this correctly falls through to 'skipped_no_smtp' + temp_password in the response, so functionally safe, just a UX consideration."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter4c_plants_regions_ws_users.py (new — 26 pytest cases covering /api/regions, /api/cluster-managers, /api/sites/by-code, user CRUD scope, region RLS, /api/auth/menu, WebSocket hello + push + 4401)"
+  ],
+  "success_rate": {
+    "backend": "88.5% (23/26 pytest; 3 spec deviations documented above)",
+    "frontend": "100% — Plants list+detail, Users page with role/region/cm dropdowns wired to live /api/regions + /api/cluster-managers, sidebar links unique (15 keys → 15 unique paths, none go to /dashboard), NotificationsBell mounts, WebSocket handshake succeeds with hello frame"
+  },
+  "test_credentials": "See /app/memory/test_credentials.md — all 5 demo accounts (admin, rahul.verma, south.admin, vendor.admin, vendor.user) are auto-seeded on backend start and were verified live.",
+  "seed_data_creation": "Tests create TEST_iter4c_* users and TEST_iter4c_south_form_* forms and delete them in cleanup fixtures. WebSocket test inserts a n_iter4c_* notification into mongo then deletes it after the test. All test artefacts are idempotent across reruns.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "After main agent adds `assigned_regions` to FormIn/FormPatch and normalizes email_status, only 3 tests need to be re-run: TestRegionRls::test_south_admin_forms_include_assigned_regions, TestUserCreate::test_create_admin_without_password_returns_temp, and TestUsersListScope::test_vendor_user_only_self. All other 23 tests are stable. WebSocket real-time PUSH test (test_hello_and_realtime_push) currently only validates the hello contract because there's no external HTTP endpoint that calls notifications.create_notification() for the connected user — direct mongo insert bypasses _push. If the main agent adds a POST /api/notifications/test or similar debug endpoint, extend this test to assert the notification frame arrives within 2s.",
+  "rca of the issue": "(1) form assigned_regions dropped: FormIn Pydantic model at server.py:171-186 lists 8 assignment fields but not `assigned_regions`; permissions.form_filter (permissions.py:168) queries for that exact key. Any assigned_regions in the POST body is silently discarded by Pydantic (default extra='ignore'). Verified by direct mongo insert — the RLS filter works. Fix: add `assigned_regions: List[str] = []` to FormIn (and FormPatch). (2) email_status='skipped_no_smtp' vs spec 'skipped': the workflow_routes._send_email helper returns the value 'skipped_no_smtp' for the no-SMTP branch; server.py:760 forwards it unmodified. Fix: coerce any 'skipped_*' → 'skipped' before assigning to out['email_status']. (3) vendor_user 403 on /api/users: _require_user_admin whitelists only super_admin/admin/vendor_admin. If spec is authoritative, add 'vendor_user' to the allowed list; _user_scope_filter already returns {user_id: uid} for that role."
+}
