@@ -23,6 +23,7 @@ import io
 import csv
 import requests
 import mimetypes
+import re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -49,52 +50,98 @@ ROLES = ['super_admin', 'admin', 'vendor_admin', 'vendor_user', 'member', 'user'
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-# ---------- Object Storage ----------
-STORAGE_URL = "https://integrations.emergentagent.com/objstore/api/v1/storage"
-storage_key: Optional[str] = None
+# ---------- Object Storage (local disk) ----------
+# Files land in /app/backend/uploads/local/tmp/ at upload time (no submission
+# context yet). When a submission is created we move any referenced files to
+# /app/backend/uploads/local/submissions/{sid}/ so every submission has its
+# own folder on disk — see _organize_submission_files() below.
+LOCAL_UPLOAD_ROOT = Path(os.environ.get("LOCAL_UPLOAD_ROOT", "/app/backend/uploads/local"))
+LOCAL_TMP_DIR = LOCAL_UPLOAD_ROOT / "tmp"
+LOCAL_SUB_DIR = LOCAL_UPLOAD_ROOT / "submissions"
+for _d in (LOCAL_UPLOAD_ROOT, LOCAL_TMP_DIR, LOCAL_SUB_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
 
-def init_storage() -> Optional[str]:
-    global storage_key
-    if storage_key:
-        return storage_key
-    if not EMERGENT_LLM_KEY:
-        logger.warning("EMERGENT_LLM_KEY not set; uploads disabled")
-        return None
-    try:
-        r = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_LLM_KEY}, timeout=30)
-        r.raise_for_status()
-        storage_key = r.json()["storage_key"]
-        logger.info("Object storage initialised")
-        return storage_key
-    except Exception as e:
-        logger.error(f"Storage init failed: {e}")
-        return None
 
 def put_object(path: str, data: bytes, content_type: str) -> dict:
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Storage unavailable")
-    r = requests.put(f"{STORAGE_URL}/objects/{path}",
-                     headers={"X-Storage-Key": key, "Content-Type": content_type},
-                     data=data, timeout=120)
-    if r.status_code == 403:
-        # session may have expired -> reset and retry once
-        globals()['storage_key'] = None
-        key = init_storage()
-        r = requests.put(f"{STORAGE_URL}/objects/{path}",
-                         headers={"X-Storage-Key": key, "Content-Type": content_type},
-                         data=data, timeout=120)
-    r.raise_for_status()
-    return r.json()
+    """Store bytes on local disk under LOCAL_UPLOAD_ROOT.
+    `path` is a slash-separated relative path (e.g. 'tmp/abc.png' or
+    'submissions/sub_x/logo.png') — we keep the same argument shape as the
+    old S3-style helper so callers don't have to change.
+    """
+    del content_type  # not stored — we rely on the filename extension
+    safe = path.lstrip("/")
+    target = LOCAL_UPLOAD_ROOT / safe
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return {"path": str(target.relative_to(LOCAL_UPLOAD_ROOT)), "size": len(data)}
 
-def get_object(path: str):
-    key = init_storage()
-    if not key:
-        raise HTTPException(status_code=503, detail="Storage unavailable")
-    r = requests.get(f"{STORAGE_URL}/objects/{path}",
-                     headers={"X-Storage-Key": key}, timeout=60)
-    r.raise_for_status()
-    return r.content, r.headers.get("Content-Type", "application/octet-stream")
+
+def get_object(path: str) -> tuple:
+    """Read bytes back from local disk. Returns (data, content_type)."""
+    safe = path.lstrip("/")
+    target = LOCAL_UPLOAD_ROOT / safe
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    ct = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return target.read_bytes(), ct
+
+
+async def _organize_submission_files(sid: str, values: Dict[str, Any]) -> None:
+    """Walk submission values, find any `{file_id, ...}` refs and physically
+    move the underlying file into `local/submissions/{sid}/`. Updates the
+    db.files record so later downloads read from the new location. Also
+    remembers which files belong to which submission via `submission_id`
+    on the file document (handy for cleanup + auditing)."""
+
+    def _collect_ids(node: Any, out: List[str]) -> None:
+        if isinstance(node, dict):
+            fid = node.get("file_id")
+            if isinstance(fid, str) and fid:
+                out.append(fid)
+            for v in node.values():
+                _collect_ids(v, out)
+        elif isinstance(node, list):
+            for item in node:
+                _collect_ids(item, out)
+
+    file_ids: List[str] = []
+    _collect_ids(values or {}, file_ids)
+    if not file_ids:
+        return
+
+    dest_dir = LOCAL_SUB_DIR / sid
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    async for rec in db.files.find({"file_id": {"$in": list(set(file_ids))}}):
+        old_rel = rec.get("storage_path") or ""
+        old_path = LOCAL_UPLOAD_ROOT / old_rel
+        if not old_path.exists():
+            continue
+        # Preserve the original filename in the per-submission folder; if a
+        # collision happens (rare — same name uploaded twice) fall back to
+        # the file_id prefix so nothing gets clobbered.
+        orig = rec.get("original_filename") or old_path.name
+        safe_name = re.sub(r"[^\w.\-]+", "_", orig)[:120] or old_path.name
+        target = dest_dir / safe_name
+        if target.exists() and target.resolve() != old_path.resolve():
+            stem, dot, ext = safe_name.rpartition(".")
+            safe_name = f"{stem or safe_name}_{rec['file_id'][:6]}{dot}{ext}" if dot else f"{safe_name}_{rec['file_id'][:6]}"
+            target = dest_dir / safe_name
+        try:
+            old_path.rename(target)
+        except OSError:
+            # cross-device or already-moved — fall back to copy + best-effort delete
+            target.write_bytes(old_path.read_bytes())
+            try:
+                old_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        new_rel = str(target.relative_to(LOCAL_UPLOAD_ROOT))
+        await db.files.update_one(
+            {"file_id": rec["file_id"]},
+            {"$set": {"storage_path": new_rel, "submission_id": sid,
+                      "organized_at": datetime.now(timezone.utc).isoformat()}},
+        )
 
 # ---------- Models ----------
 class User(BaseModel):
@@ -305,8 +352,6 @@ async def startup():
                   "vendor_admin", "Vendor@12345", vendor_id=sunops_vid)
     await _ensure("vendor.user@sunops.example.com", "SunOps Vendor User",
                   "vendor_user", "Vendor@12345", vendor_id=sunops_vid)
-
-    init_storage()
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -1123,6 +1168,11 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
     }
     await db.submissions.insert_one(doc)
     doc.pop("_id", None)
+    # Move any referenced uploads into /submissions/{sid}/ on disk
+    try:
+        await _organize_submission_files(sid, body.values)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning(f"file organization failed for {sid}: {_e}")
     # fire workflow trigger (best-effort; never blocks the response)
     try:
         from workflow_routes import fire_trigger as _ft
@@ -1346,13 +1396,16 @@ async def upload(file: UploadFile = File(...), user: User = Depends(get_current_
     if ext not in ALLOWED_EXTS:
         raise HTTPException(400, f"Extension '{ext}' not allowed")
     file_id = uuid.uuid4().hex
-    path = f"{APP_NAME}/uploads/{user.user_id}/{file_id}.{ext}"
+    # Land in the tmp bucket first — moved into submissions/{sid}/ once the
+    # submission that references this file is actually created.
+    path = f"tmp/{file_id}.{ext}"
     ct = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
     result = put_object(path, data, ct)
     doc = {
         "file_id": file_id, "storage_path": result["path"], "original_filename": file.filename,
         "content_type": ct, "size": result.get("size", len(data)),
         "uploaded_by": user.user_id, "is_deleted": False,
+        "submission_id": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.files.insert_one(doc)
@@ -1369,13 +1422,14 @@ async def public_upload(file: UploadFile = File(...)):
     if ext not in ALLOWED_EXTS:
         raise HTTPException(400, f"Extension '{ext}' not allowed")
     file_id = uuid.uuid4().hex
-    path = f"{APP_NAME}/uploads/public/{file_id}.{ext}"
+    path = f"tmp/{file_id}.{ext}"
     ct = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
     result = put_object(path, data, ct)
     doc = {
         "file_id": file_id, "storage_path": result["path"], "original_filename": file.filename,
         "content_type": ct, "size": result.get("size", len(data)),
         "uploaded_by": None, "is_deleted": False,
+        "submission_id": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.files.insert_one(doc)
@@ -1555,6 +1609,7 @@ _pdf_tpl_router, _pdf_public_router, _pdf_sub_router, _pdf_pub_sub_router = buil
     db, get_current_user, get_optional_user,
     make_download_token=make_download_token,
     verify_download_token=verify_download_token,
+    organize_submission_files=_organize_submission_files,
 )
 api.include_router(_pdf_tpl_router)
 api.include_router(_pdf_public_router)

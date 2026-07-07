@@ -411,10 +411,13 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
 # --------------------------------------------------------------------- router factory
 def build_pdf_router(db, get_current_user, get_optional_user,
                      make_download_token=None, verify_download_token=None,
+                     organize_submission_files=None,
                      _api_prefix="/api"):
     """Build the router; requires DB + auth deps from the main app.
     make_download_token / verify_download_token are injected from server.py so
     anonymous submitters can download their filled PDF via a short-lived token.
+    organize_submission_files (async) moves referenced uploaded files into a
+    per-submission folder on disk.
     """
     router = APIRouter(prefix="/pdf-forms")
     public = APIRouter(prefix="/public/pdf-forms")
@@ -649,6 +652,12 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         }
         await db.pdf_submissions.insert_one(doc)
         doc.pop("_id", None)
+        # Move any referenced uploads into /submissions/{sid}/ on disk
+        if organize_submission_files:
+            try:
+                await organize_submission_files(sid, body.values)
+            except Exception as _e:  # noqa: BLE001
+                logger.warning(f"file organization failed for {sid}: {_e}")
         # fire workflow trigger
         try:
             from workflow_routes import fire_trigger as _ft
