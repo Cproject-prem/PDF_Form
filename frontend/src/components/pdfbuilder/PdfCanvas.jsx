@@ -199,7 +199,7 @@ function FieldBox({ f, containerW, containerH, selected, snapToGrid,
       >
         <div className="px-1.5 truncate flex items-center gap-1 w-full">
           <Icon className="w-3 h-3 shrink-0 text-blue-700" />
-          <span className="truncate font-medium" style={{ fontSize: Math.max(9, (f.font_size || 12) * 0.85) }}>
+          <span className="truncate font-medium" style={{ fontSize: computeFontSize(f, h) }}>
             {f.label || meta.label}
           </span>
           {f.required && <span className="text-red-500 ml-auto">*</span>}
@@ -226,4 +226,16 @@ function hexAlpha(hex, alpha) {
   const g = parseInt(h.length === 3 ? h[1] + h[1] : h.slice(2, 4), 16);
   const b = parseInt(h.length === 3 ? h[2] + h[2] : h.slice(4, 6), 16);
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/**
+ * Compute rendered font size for a PDF field.
+ * When `font_auto_fit` is on (default), scale text to fill about 60% of the
+ * field's pixel height so it always looks consistent regardless of the box
+ * size. When off, honour the manual `font_size` (pt).
+ */
+function computeFontSize(f, heightPx) {
+  if (f.font_auto_fit === false) return Math.max(8, f.font_size || 12);
+  const target = Math.max(9, Math.min(28, heightPx * 0.55));
+  return target;
 }

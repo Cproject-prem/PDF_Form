@@ -21,7 +21,14 @@ Demo seeds (idempotent on backend startup):
 - `vendor.admin@sunops.example.com / Vendor@12345` — vendor_admin (vendor_id=ven_sunops_demo → Alpha + Charlie)
 - `vendor.user@sunops.example.com / Vendor@12345` — vendor_user (same vendor)
 
-## Files added / changed (iter 2)
+## Files added / changed (iter 3 — properties parity + PDF UX)
+- `/app/frontend/src/components/builder/PropertiesPanel.jsx` — refactored to export the reusable **`FieldPropertiesTabs`** and **`EmptyPropertiesAside`** components. Legacy `<PropertiesPanel form selectedId onUpdate>` is preserved for the normal Form Builder.
+- `/app/frontend/src/components/pdfbuilder/PdfProperties.jsx` — **rewritten** to mount `FieldPropertiesTabs` directly (same 6 tabs) plus a 7th PDF-specific "PDF" tab (Position/Size, Font, Frame, Interaction, Duplicate/Delete). Byte-identical experience across both builders.
+- `/app/frontend/src/components/pdfbuilder/PdfCanvas.jsx` — new `computeFontSize()` scales text ≈ 55 % of field height when `font_auto_fit !== false`. Auto-fit is the default for new fields.
+- `/app/frontend/src/components/pdfbuilder/PdfFiller.jsx` — mirror auto-fit at fill-time so runtime forms match builder preview.
+- `/app/frontend/src/pages/PdfBuilder.jsx` — new **Uniform Field Height** toolbar toggle (↕ icon). When on, every resize snaps back to `settings.uniform_height_value` and every new field inherits the same height. Locked fields (`f.locked=true`) are exempt so a single field can be resized alone.
+
+## Files added / changed (iter 2 — RBAC + RLS + parity)
 - New `/app/backend/permissions.py` — `normalize_role`, `site_filter`, `form_filter`, `can_view_form`, `can_edit_form`, `submission_filter`, `capabilities_for`, `menu_for`, `require_master_data_editor`.
 - `/app/backend/server.py` — adds `cluster_manager_name`/`vendor_id`/`assignments` to `User`, `Form` carries `assigned_*` lists. New `/api/auth/menu`, `/api/submissions` (global). `list_forms`, `_get_form_for_user`, `update_form`, `patch_form`, `duplicate_form`, `delete_form` all delegate to the permissions module. Demo seeds the 3 new roles + Site backfill of `cluster_manager_name`. Workflow trigger payload enriched with `form_name / form_type / site_name / vendor_name / current_status`.
 - `/app/backend/vendor_routes.py` — `_site_filter_for_user` delegates to `permissions.site_filter`. All Site/Vendor/Master Data **write** endpoints now use `_require_master_data_editor` (super_admin only). Vendor User CRUD now uses `_require_vendor_user_editor` (vendor admin can manage their own team). `DEMO_SITES` carry `cluster_manager_name`; `seed_demo_sites` backfills it on existing rows.

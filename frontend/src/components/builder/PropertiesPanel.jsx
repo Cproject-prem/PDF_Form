@@ -57,33 +57,51 @@ const MASTER_TABLES = [
 
 export default function PropertiesPanel({ form, selectedId, onUpdate }) {
   const field = (form.fields || []).find((f) => f.id === selectedId);
-
   const update = (patch) => {
     onUpdate({ ...form, fields: form.fields.map((f) => f.id === selectedId ? { ...f, ...patch } : f) });
   };
+  if (!field) return <EmptyPropertiesAside />;
+  return (
+    <aside className="w-96 shrink-0 border-l border-slate-200 bg-white overflow-hidden flex flex-col" data-testid="properties-panel">
+      <FieldPropertiesTabs field={field} formFields={form.fields || []} onChange={update} />
+    </aside>
+  );
+}
 
-  if (!field) {
-    return (
-      <aside className="w-80 shrink-0 border-l border-slate-200 bg-white overflow-y-auto nice-scroll">
-        <div className="p-6">
-          <div className="text-xs font-bold uppercase tracking-[0.1em] text-slate-500 mb-2">Properties</div>
-          <div className="flex flex-col items-center justify-center text-center py-12">
-            <div className="w-12 h-12 rounded-2xl bg-slate-50 text-slate-400 flex items-center justify-center mb-3">
-              <Settings2 className="w-5 h-5" />
-            </div>
-            <p className="text-sm text-slate-500">Select a field to edit its properties.</p>
+export function EmptyPropertiesAside() {
+  return (
+    <aside className="w-80 shrink-0 border-l border-slate-200 bg-white overflow-y-auto nice-scroll">
+      <div className="p-6">
+        <div className="text-xs font-bold uppercase tracking-[0.1em] text-slate-500 mb-2">Properties</div>
+        <div className="flex flex-col items-center justify-center text-center py-12">
+          <div className="w-12 h-12 rounded-2xl bg-slate-50 text-slate-400 flex items-center justify-center mb-3">
+            <Settings2 className="w-5 h-5" />
           </div>
+          <p className="text-sm text-slate-500">Select a field to edit its properties.</p>
         </div>
-      </aside>
-    );
-  }
+      </div>
+    </aside>
+  );
+}
 
+/**
+ * The complete tabbed field-properties body — reused by the PDF builder so
+ * its properties panel is byte-identical to the standard Form Builder.
+ *
+ * Props:
+ *   field       — the field object (must have id, type, ...)
+ *   formFields  — array of sibling fields (used by Lookup/Formula browsers)
+ *   onChange    — (patch) => void; merged into the current field
+ *   extras      — optional React node inserted as an additional tab
+ *   extrasTab   — { key, label, icon } for the extras trigger (optional)
+ */
+export function FieldPropertiesTabs({ field, formFields = [], onChange, extras = null, extrasTab = null }) {
+  const update = (patch) => onChange(patch);
   const isDisplay = TYPES_DISPLAY.includes(field.type);
   const canHaveDataSource = SELECTABLE_TYPES.includes(field.type) || field.type === "short_text";
   const canHaveValue = !["heading", "paragraph", "divider", "file"].includes(field.type);
-
   return (
-    <aside className="w-96 shrink-0 border-l border-slate-200 bg-white overflow-hidden flex flex-col" data-testid="properties-panel">
+    <>
       <div className="px-5 pt-5">
         <div className="text-xs font-bold uppercase tracking-[0.1em] text-slate-500">Properties</div>
         <div className="text-sm text-slate-400 mt-1 capitalize">{field.type.replace(/_/g, " ")}</div>
@@ -103,6 +121,11 @@ export default function PropertiesPanel({ form, selectedId, onUpdate }) {
           )}
           <TabsTrigger value="validation"  data-testid="tab-validation"  className="text-xs px-2.5 py-1.5"><AlertTriangle className="w-3 h-3 mr-1.5" /> Validation</TabsTrigger>
           <TabsTrigger value="advanced"    data-testid="tab-advanced"    className="text-xs px-2.5 py-1.5"><Sparkles className="w-3 h-3 mr-1.5" /> Adv</TabsTrigger>
+          {extrasTab && (
+            <TabsTrigger value={extrasTab.key} data-testid={`tab-${extrasTab.key}`} className="text-xs px-2.5 py-1.5">
+              {extrasTab.icon}{extrasTab.label}
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <div className="flex-1 overflow-y-auto nice-scroll">
@@ -111,17 +134,17 @@ export default function PropertiesPanel({ form, selectedId, onUpdate }) {
           </TabsContent>
           {canHaveDataSource && (
             <TabsContent value="datasource" className="p-5 space-y-4 m-0">
-              <DataSourceTab field={field} update={update} formFields={form.fields || []} />
+              <DataSourceTab field={field} update={update} formFields={formFields} />
             </TabsContent>
           )}
           {canHaveValue && (
             <TabsContent value="lookup" className="p-5 space-y-4 m-0">
-              <LookupTab field={field} update={update} formFields={form.fields || []} />
+              <LookupTab field={field} update={update} formFields={formFields} />
             </TabsContent>
           )}
           {canHaveValue && (
             <TabsContent value="formula" className="p-5 space-y-4 m-0">
-              <FormulaTab field={field} update={update} formFields={form.fields || []} />
+              <FormulaTab field={field} update={update} formFields={formFields} />
             </TabsContent>
           )}
           <TabsContent value="validation" className="p-5 space-y-4 m-0">
@@ -130,9 +153,14 @@ export default function PropertiesPanel({ form, selectedId, onUpdate }) {
           <TabsContent value="advanced" className="p-5 space-y-4 m-0">
             <AdvancedTab field={field} update={update} />
           </TabsContent>
+          {extrasTab && extras && (
+            <TabsContent value={extrasTab.key} className="p-5 space-y-4 m-0">
+              {extras}
+            </TabsContent>
+          )}
         </div>
       </Tabs>
-    </aside>
+    </>
   );
 }
 

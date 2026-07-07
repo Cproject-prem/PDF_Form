@@ -20,6 +20,7 @@ import { makePdfField } from "@/lib/pdfFieldTypes";
 import {
   ArrowLeft, Sparkles, Eye, Globe, Share2, Copy, ZoomIn, ZoomOut, Maximize2,
   Maximize, RotateCw, Undo2, Redo2, Grid3X3, Ruler, Save, Download, Upload, FileJson,
+  ArrowsUpFromLine,
 } from "lucide-react";
 
 const MAX_HIST = 50;
@@ -113,7 +114,13 @@ export default function PdfBuilderPage() {
 
   // ---------- field operations --------------------------------------------
   const onAddField = (type, p, x, y) => {
-    const f = makePdfField(type, p, x, y);
+    let f = makePdfField(type, p, x, y);
+    // Apply uniform height + auto-fit-font defaults so new fields fit the
+    // existing layout without manual sizing.
+    if (tpl.settings?.uniform_height && tpl.settings?.uniform_height_value) {
+      f = { ...f, height: tpl.settings.uniform_height_value };
+    }
+    if (f.font_auto_fit === undefined) f.font_auto_fit = true;
     update({ ...tpl, fields: [...(tpl.fields || []), f] });
     setSelectedId(f.id);
   };
@@ -121,8 +128,19 @@ export default function PdfBuilderPage() {
     onAddField(type, page, 0.1, 0.1);
   };
   const onFieldChange = (fid, patch) => {
-    const next = { ...tpl, fields: tpl.fields.map((f) => f.id === fid ? { ...f, ...patch } : f) };
-    update(next);
+    // If uniform-height is on, force every non-locked resize to keep the
+    // template's common height (unless the field is explicitly locked).
+    const uniform = !!tpl.settings?.uniform_height;
+    const targetH = tpl.settings?.uniform_height_value ?? 0.04;
+    const nextFields = tpl.fields.map((f) => {
+      if (f.id !== fid) return f;
+      let out = { ...f, ...patch };
+      if (uniform && !out.locked && patch && (patch.height !== undefined)) {
+        out.height = targetH; // ignore ad-hoc resize; keep uniform
+      }
+      return out;
+    });
+    update({ ...tpl, fields: nextFields });
   };
   const onDuplicate = (fid) => {
     const f = tpl.fields.find((x) => x.id === fid);
@@ -251,6 +269,27 @@ export default function PdfBuilderPage() {
           <div className="mx-1 w-px h-5 bg-slate-200" />
           <ToolbarBtn testid="tb-grid" title="Grid" active={showGrid} onClick={() => setShowGrid((g) => !g)}><Grid3X3 className="w-4 h-4" /></ToolbarBtn>
           <ToolbarBtn testid="tb-snap" title="Snap to grid" active={snap} onClick={() => setSnap((s) => !s)}><Ruler className="w-4 h-4" /></ToolbarBtn>
+          <ToolbarBtn
+            testid="tb-uniform-height"
+            title="Uniform field height — snaps all fields to the same height so the layout stays tidy."
+            active={!!tpl.settings?.uniform_height}
+            onClick={() => {
+              const enable = !tpl.settings?.uniform_height;
+              const targetH = tpl.settings?.uniform_height_value
+                || (tpl.fields.find((f) => f.height)?.height ?? 0.04);
+              const next = {
+                ...tpl,
+                settings: { ...(tpl.settings || {}), uniform_height: enable, uniform_height_value: targetH },
+                // When enabling, snap ALL non-locked fields to the common height.
+                fields: enable
+                  ? tpl.fields.map((f) => f.locked ? f : { ...f, height: targetH })
+                  : tpl.fields,
+              };
+              update(next);
+            }}
+          >
+            <ArrowsUpFromLine className="w-4 h-4" />
+          </ToolbarBtn>
           <div className="mx-1 w-px h-5 bg-slate-200" />
           <form onSubmit={(e) => { e.preventDefault(); const p = Math.max(1, Math.min((tpl.pages || []).length || 1, Number(pageInput) || 1)); jumpTo(p); }}
                 className="flex items-center gap-1">

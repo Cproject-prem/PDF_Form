@@ -70,6 +70,10 @@ function FillerPage({ pageNum, fields, values, set }) {
 }
 
 function FieldControl({ f, containerW, containerH, value, onChange }) {
+  // Auto-fit font size when enabled — same rule as the builder canvas.
+  const heightPx = f.height * containerH;
+  const autoFitPx = Math.max(9, Math.min(28, heightPx * 0.55));
+  const effectiveFontSize = f.font_auto_fit === false ? (f.font_size || 12) : autoFitPx;
   const style = {
     position: "absolute",
     left: f.x * containerW,
@@ -79,7 +83,7 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
       ? f.height * containerH : undefined,
     minHeight: f.height * containerH,
     zIndex: 10 + (f.z_index || 0),
-    fontSize: f.font_size,
+    fontSize: effectiveFontSize,
     fontFamily: f.font_family,
     color: f.font_color,
   };
@@ -88,7 +92,7 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
   if (["heading", "paragraph", "static_text"].includes(f.type)) {
     return (
       <div style={style} className="px-1">
-        <div style={{ fontSize: f.type === "heading" ? Math.max(f.font_size, 16) : f.font_size }}>
+        <div style={{ fontSize: f.type === "heading" ? Math.max(effectiveFontSize, 16) : effectiveFontSize }}>
           {f.static_text || f.label}
         </div>
       </div>
@@ -108,7 +112,7 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
     value: value ?? "",
     onChange: (e) => onChange(e.target.value),
     className: "w-full h-full bg-white border border-blue-500 rounded px-1.5 outline-none focus:ring-2 focus:ring-blue-300",
-    style: { fontSize: f.font_size, color: f.font_color, textAlign: f.alignment },
+    style: { fontSize: effectiveFontSize, color: f.font_color, textAlign: f.alignment },
   };
 
   switch (f.type) {
