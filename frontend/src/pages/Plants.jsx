@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import {
   Search, MapPin, Zap, Building2, User as UserIcon, Mail, Calendar,
   ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
+  History, ChevronRight, ChevronDown,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -362,6 +363,9 @@ function PlantDetail({ siteCode }) {
             </ul>
           )}
         </Card>
+
+        {/* Edit history timeline */}
+        <PlantEditHistory siteCode={siteCode} />
       </div>
 
       {editOpen && (
@@ -375,6 +379,119 @@ function PlantDetail({ siteCode }) {
         />
       )}
     </AppLayout>
+  );
+}
+
+/* --------------------------- Edit history timeline --------------------- */
+function PlantEditHistory({ siteCode }) {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState(null);
+  const [expanded, setExpanded] = useState({}); // snapshot_id -> bool
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get(`/sites/by-code/${encodeURIComponent(siteCode)}/history`)
+      .then((r) => { if (!cancelled) setRows(r.data?.history || []); })
+      .catch((e) => { if (!cancelled) setError(getErrorMessage(e, "Failed to load history")); });
+    return () => { cancelled = true; };
+  }, [siteCode]);
+
+  const humanize = (k) => k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+  const short = (v) => {
+    if (v === null || v === undefined || v === "") return "—";
+    if (Array.isArray(v)) return v.join(", ");
+    if (typeof v === "object") return JSON.stringify(v);
+    const s = String(v);
+    return s.length > 60 ? s.slice(0, 57) + "…" : s;
+  };
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white mt-4" data-testid="plant-history-card">
+      <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <History className="w-4 h-4 text-slate-500" />
+          <div>
+            <div className="font-heading font-semibold text-slate-900">Edit history</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              Who changed what, and when
+            </div>
+          </div>
+        </div>
+        {rows && (
+          <Badge variant="outline" className="text-xs" data-testid="plant-history-count">
+            {rows.length} {rows.length === 1 ? "edit" : "edits"}
+          </Badge>
+        )}
+      </div>
+      {error ? (
+        <div className="p-6 text-sm text-slate-400">{error}</div>
+      ) : rows === null ? (
+        <div className="p-6 text-sm text-slate-400">Loading history…</div>
+      ) : rows.length === 0 ? (
+        <div className="p-8 text-center text-sm text-slate-400">
+          No edits yet — this plant hasn&apos;t been modified since it was imported.
+        </div>
+      ) : (
+        <ol className="divide-y divide-slate-100" data-testid="plant-history-list">
+          {rows.map((r) => {
+            const isOpen = !!expanded[r.snapshot_id];
+            return (
+              <li key={r.snapshot_id} className="p-4 hover:bg-slate-50">
+                <button
+                  type="button"
+                  onClick={() => setExpanded((s) => ({ ...s, [r.snapshot_id]: !isOpen }))}
+                  className="w-full flex items-start gap-3 text-left"
+                  data-testid={`plant-history-row-${r.snapshot_id}`}
+                >
+                  <div className="mt-0.5">
+                    {isOpen
+                      ? <ChevronDown className="w-4 h-4 text-slate-400" />
+                      : <ChevronRight className="w-4 h-4 text-slate-400" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="text-sm font-medium text-slate-800 truncate">
+                        {r.saved_by_name || r.saved_by_email || "Unknown user"}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {r.change_count === 0
+                          ? "no field changes"
+                          : `${r.change_count} field${r.change_count === 1 ? "" : "s"} changed`}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5">
+                      v{r.version} → v{r.version + 1} · {formatDate(r.saved_at)}
+                    </div>
+                  </div>
+                </button>
+                {isOpen && r.changes && r.changes.length > 0 && (
+                  <div className="mt-3 ml-7 space-y-2">
+                    {r.changes.map((c, i) => (
+                      <div
+                        key={`${r.snapshot_id}-${c.field}-${i}`}
+                        className="text-xs bg-slate-50 rounded-md p-2 border border-slate-100"
+                        data-testid="plant-history-change"
+                      >
+                        <div className="font-medium text-slate-700 mb-1">{humanize(c.field)}</div>
+                        <div className="flex items-center gap-2 text-slate-600">
+                          <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-700 line-through decoration-red-300">
+                            {short(c.from)}
+                          </span>
+                          <ChevronRight className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700">
+                            {short(c.to)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </Card>
   );
 }
 

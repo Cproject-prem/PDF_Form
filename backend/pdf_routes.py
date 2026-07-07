@@ -409,11 +409,17 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
 
 
 # --------------------------------------------------------------------- router factory
-def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"):
-    """Build the router; requires DB + auth deps from the main app."""
+def build_pdf_router(db, get_current_user, get_optional_user,
+                     make_download_token=None, verify_download_token=None,
+                     _api_prefix="/api"):
+    """Build the router; requires DB + auth deps from the main app.
+    make_download_token / verify_download_token are injected from server.py so
+    anonymous submitters can download their filled PDF via a short-lived token.
+    """
     router = APIRouter(prefix="/pdf-forms")
     public = APIRouter(prefix="/public/pdf-forms")
     subs = APIRouter(prefix="/pdf-submissions")
+    pub_subs = APIRouter(prefix="/public/pdf-submissions")
 
     def _owner_query(user) -> Dict[str, Any]:
         from permissions import form_filter, is_super_admin
@@ -601,7 +607,7 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
                         headers={"Content-Disposition":
                                  f'inline; filename="{doc["original_filename"]}"'})
 
-    @public.post("/{slug}/submit", response_model=PDFSubmission)
+    @public.post("/{slug}/submit")
     async def public_submit(slug: str, body: PDFSubmissionIn, request: Request,
                             viewer=Depends(get_optional_user)):
         tpl = await db.pdf_templates.find_one({"slug": slug, "is_deleted": False}, {"_id": 0})
@@ -655,7 +661,33 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
                        "ip": doc.get("ip")})
         except Exception:
             pass
-        return PDFSubmission(**doc)
+        # Short-lived download token for anonymous submitter
+        token = make_download_token(sid, kind="pdf") if make_download_token else None
+        payload = PDFSubmission(**doc).model_dump()
+        if token:
+            payload["download_token"] = token
+        return payload
+
+    # --- Public download of the filled PDF (token-scoped, anonymous-safe) ---
+    @pub_subs.get("/{submission_id}/completed")
+    async def public_download_completed(submission_id: str, token: str):
+        if not verify_download_token:
+            raise HTTPException(500, "Download token verifier not configured")
+        verify_download_token(token, submission_id, kind="pdf")
+        sub = await db.pdf_submissions.find_one({"submission_id": submission_id}, {"_id": 0})
+        if not sub:
+            raise HTTPException(404, "Not found")
+        tpl = await db.pdf_templates.find_one(
+            {"template_id": sub["template_id"], "is_deleted": False}, {"_id": 0},
+        )
+        if not tpl:
+            raise HTTPException(404, "Parent template missing")
+        path = COMPLETED_DIR / (sub.get("completed_filename") or "")
+        if not path.exists():
+            raise HTTPException(404, "Completed PDF missing")
+        return Response(content=path.read_bytes(), media_type="application/pdf",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="{tpl["title"]}-{submission_id}.pdf"'})
 
     # --- Submissions (owner) ---------------------------------------------
     @router.get("/{template_id}/submissions", response_model=List[PDFSubmission])
@@ -818,4 +850,4 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
         ct = "image/png" if fid.lower().endswith(".png") else "image/jpeg"
         return Response(content=path.read_bytes(), media_type=ct)
 
-    return router, public, subs
+    return router, public, subs, pub_subs

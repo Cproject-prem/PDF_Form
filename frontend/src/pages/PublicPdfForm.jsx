@@ -160,7 +160,9 @@ export default function PublicPdfFormPage() {
   }
 
   if (done) {
-    const downloadUrl = `${API}/pdf-submissions/${done.submission_id}/completed`;
+    const downloadUrl = done.download_token
+      ? `${API}/public/pdf-submissions/${done.submission_id}/completed?token=${encodeURIComponent(done.download_token)}`
+      : `${API}/pdf-submissions/${done.submission_id}/completed`;
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
         <div className="bg-white rounded-2xl card-soft p-10 max-w-md text-center">

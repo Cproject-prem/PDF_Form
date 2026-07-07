@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import FieldRenderer from "@/components/builder/FieldRenderer";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { CheckCircle2, Sparkles } from "lucide-react";
+import { CheckCircle2, Sparkles, Download } from "lucide-react";
 
 export default function PublicFormPage() {
   const { slug } = useParams();
@@ -12,7 +12,7 @@ export default function PublicFormPage() {
   const [error, setError] = useState(null);
   const [values, setValues] = useState({});
   const [submitting, setSubmitting] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState(null);
   const lookupCache = useRef({}); // memo of `${source}:${display}:${value}` -> row
 
   useEffect(() => {
@@ -130,12 +130,12 @@ export default function PublicFormPage() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await api.post(`/public/forms/${slug}/submit`, { values });
+      const r = await api.post(`/public/forms/${slug}/submit`, { values });
       if (form?.settings?.redirect_url) {
         window.location.href = form.settings.redirect_url;
         return;
       }
-      setDone(true);
+      setDone(r.data);
     } catch (err) {
       toast.error(err?.response?.data?.detail || "Submission failed");
     } finally { setSubmitting(false); }
@@ -144,12 +144,29 @@ export default function PublicFormPage() {
   if (error) return <div className="min-h-screen flex items-center justify-center text-slate-500">{error}</div>;
   if (!form) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
   if (done) {
+    const downloadUrl = done.download_token && done.submission_id
+      ? `${API}/public/submissions/${done.submission_id}/filled.pdf?token=${encodeURIComponent(done.download_token)}`
+      : null;
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
         <div className="bg-white rounded-2xl card-soft p-10 max-w-md text-center">
           <CheckCircle2 className="w-12 h-12 mx-auto text-emerald-500 mb-3" />
           <h2 className="text-2xl font-heading font-bold tracking-tight">Submission received</h2>
           <p className="text-slate-500 mt-2">{form.settings?.thank_you_message || "Thanks for your submission!"}</p>
+          {done.submission_id && (
+            <p className="text-xs text-slate-400 mt-1">ID: {done.submission_id}</p>
+          )}
+          {downloadUrl && (
+            <a
+              href={downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              data-testid="public-form-download"
+              className="inline-flex items-center gap-2 mt-6 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+            >
+              <Download className="w-4 h-4" /> Download filled PDF
+            </a>
+          )}
         </div>
       </div>
     );

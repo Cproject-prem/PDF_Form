@@ -6,7 +6,8 @@
 3. Consolidated Submissions Hub, Excel/XLSX exports with dual-header rows, Section-9 workflow email attachments. *(iter 3 — done & verified)*
 4. Public submitter view = plain form; Jotform-style split-pane preview moved to builder Edit page. Approval nodes auto-resolve approver email from Site Master. Submitter + vendor_admin download filled PDF. In-app notifications with header bell. *(iter 4 — done)*
 5. Menu routing fix + `getErrorMessage()` helper + seed backfill. Admin gets Users menu. *(iter 4b — done & verified)*
-6. **iter 4c**: Plants (Site Master detail) page, region-based admin RLS driven by Site Master's `region` column, enhanced User Management (create+edit+region dropdown+welcome email+auto-generated temp password), real-time WebSocket notifications. *(this iteration — done)*
+6. **iter 4c**: Plants (Site Master detail) page, region-based admin RLS driven by Site Master's `region` column, enhanced User Management (create+edit+region dropdown+welcome email+auto-generated temp password), real-time WebSocket notifications. *(done)*
+7. **iter 4d**: Anonymous submitter can download filled PDF from success screen (short-lived 24h JWT tied to the submission id); Plant View gets an Edit-History timeline with per-field diffs. *(this iteration — done)*
 
 ## Stack
 FastAPI + Motor/MongoDB + bcrypt + PyJWT + reportlab + openpyxl + simpleeval + pypdf • React 19 (craco) + Tailwind + shadcn/ui + lucide-react + react-pdf + native WebSocket.
@@ -51,6 +52,17 @@ Any match on any of the three grants access, so an admin can be regional, cluste
 
 ## Demo seed additions (iter 4c)
 - `south.admin@example.com / Admin@12345` — admin with `region=South` (region-based access demo).
+
+## Public download tokens (iter 4d)
+- `POST /api/public/forms/{slug}/submit` now returns `download_token` (JWT scope=`download`, kind=`form`, sid, 24h TTL).
+- `POST /api/public/pdf-forms/{slug}/submit` also returns `download_token` (kind=`pdf`).
+- `GET  /api/public/submissions/{sid}/filled.pdf?token=…` — anonymous-safe standard-form filled PDF.
+- `GET  /api/public/pdf-submissions/{sid}/completed?token=…` — anonymous-safe PDF-form completed file.
+- Frontend `PublicForm.jsx` and `PublicPdfForm.jsx` success screens use these tokenised URLs so the "Download filled PDF" button works without auth.
+
+## Plant edit history (iter 4d)
+- `GET /api/sites/by-code/{site_code}/history` — RLS-scoped, returns `{site_id, current_version, history:[{version, saved_at, saved_by_name/email, changes:[{field, from, to}], change_count}]}`. Newest snapshot's diff is computed against the *current* live row; older snapshots diff against the next-newer snapshot.
+- Frontend `PlantEditHistory` component on `/plants/{code}` renders a collapsible timeline with red-strikethrough → green diff pills for each field change.
 
 ## Backlog
 - (P1) Vendor Admin `/team` page — currently uses Users.jsx; needs vendor-scoped filter UI.

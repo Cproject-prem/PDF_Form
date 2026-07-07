@@ -649,6 +649,77 @@ def build_routers(db, get_current_user, hash_password_fn):
         rows = await db.site_versions.find({"site_id": site_id}, {"_id": 0}).sort("saved_at", -1).to_list(50)
         return rows
 
+    @sites.get("/by-code/{site_code}/history")
+    async def site_history_by_code(site_code: str, user=Depends(get_current_user)):
+        """Plant View — edit history timeline for the plant with this code.
+        RLS-aware: any user who can view the plant can see its history.
+        Returns snapshots newest→oldest with saved_by user resolved to name/email
+        and a diff (list of changed fields) versus the immediately-newer snapshot
+        (or the *current* live row for the newest snapshot)."""
+        from permissions import site_filter as _sf, is_super_admin
+        q: Dict[str, Any] = {"site_code": site_code}
+        if not is_super_admin(user):
+            rls = _sf(user)
+            q = {"$and": [q, rls]} if rls else q
+        site = await db.sites.find_one(q, {"_id": 0})
+        if not site:
+            raise HTTPException(404, "Plant not found or out of scope")
+
+        versions = await db.site_versions.find(
+            {"site_id": site.get("site_id")}, {"_id": 0},
+        ).sort("saved_at", -1).to_list(50)
+
+        # Resolve saved_by → user email/name
+        user_ids = list({v.get("saved_by") for v in versions if v.get("saved_by")})
+        users_by_id: Dict[str, Dict[str, Any]] = {}
+        if user_ids:
+            async for u in db.users.find(
+                {"user_id": {"$in": user_ids}}, {"_id": 0, "user_id": 1, "email": 1, "name": 1},
+            ):
+                users_by_id[u["user_id"]] = u
+
+        _skip_diff_keys = {
+            "_id", "updated_at", "updated_by", "version", "created_at",
+            "is_deleted", "assigned_admin_ids", "assigned_vendor_ids",
+        }
+
+        def _diff(old_row: Dict[str, Any], new_row: Dict[str, Any]) -> List[Dict[str, Any]]:
+            keys = set(old_row.keys()) | set(new_row.keys())
+            out = []
+            for k in keys:
+                if k in _skip_diff_keys:
+                    continue
+                ov, nv = old_row.get(k), new_row.get(k)
+                if ov != nv:
+                    out.append({"field": k, "from": ov, "to": nv})
+            return out
+
+        # Each snapshot stores the row *before* an edit. So version[i]["row"]
+        # was replaced by version[i-1]["row"] (or the current live row if i==0).
+        enriched: List[Dict[str, Any]] = []
+        for idx, v in enumerate(versions):
+            snap_row = v.get("row") or {}
+            next_row = versions[idx - 1]["row"] if idx > 0 else site
+            changed = _diff(snap_row, next_row)
+            saved_by = v.get("saved_by")
+            u = users_by_id.get(saved_by) if saved_by else None
+            enriched.append({
+                "snapshot_id": v.get("snapshot_id"),
+                "version": v.get("version"),
+                "saved_at": v.get("saved_at"),
+                "saved_by": saved_by,
+                "saved_by_email": (u or {}).get("email"),
+                "saved_by_name": (u or {}).get("name"),
+                "changes": changed,
+                "change_count": len(changed),
+            })
+        return {
+            "site_id": site.get("site_id"),
+            "site_code": site.get("site_code"),
+            "current_version": site.get("version", 1),
+            "history": enriched,
+        }
+
     @sites.get("/by-code/{site_code}")
     async def get_site_by_code(site_code: str, user=Depends(get_current_user)):
         """Plant View endpoint — fetch one site (with RLS) and enrich with
