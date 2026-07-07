@@ -1,0 +1,63 @@
+# One-command local dev stack for FormForge.
+# Usage:
+#   docker compose up          # foreground
+#   docker compose up -d       # background
+#   docker compose down        # stop everything
+#
+# Services:
+#   - mongo:    MongoDB 7 with a named volume (data survives restarts)
+#   - backend:  FastAPI on http://localhost:8001
+#   - frontend: React (CRA/craco) on http://localhost:3000
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: formforge-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: formforge-backend
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      MONGO_URL: "mongodb://mongo:27017"
+      DB_NAME: "formforge"
+      CORS_ORIGINS: "*"
+      APP_NAME: "formforge"
+      JWT_SECRET: "local-dev-secret-change-me-in-prod"
+      JWT_EXPIRE_HOURS: "168"
+      SEED_ADMIN_EMAIL: "admin@example.com"
+      SEED_ADMIN_PASSWORD: "Admin@12345"
+      SEED_ADMIN_NAME: "Super Admin"
+      MAX_UPLOAD_MB: "25"
+    ports:
+      - "8001:8001"
+    volumes:
+      # Persist uploaded files on the host machine
+      - ./backend/uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: formforge-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      REACT_APP_BACKEND_URL: "http://localhost:8001"
+      WDS_SOCKET_PORT: "3000"
+      ENABLE_HEALTH_CHECK: "false"
+    ports:
+      - "3000:3000"
+
+volumes:
+  mongo_data:

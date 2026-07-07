@@ -16,6 +16,20 @@ node_modules/
 !.yarn/releases
 !.yarn/versions
 
+# Local envs — never commit real secrets
+backend/.env
+frontend/.env
+.env
+
+# Python virtualenv
+backend/.venv
+backend/venv
+backend/__pycache__
+**/__pycache__/
+
+# Uploaded user files (kept on disk, per-submission)
+backend/uploads/local/
+
 # Testing
 /coverage
 
