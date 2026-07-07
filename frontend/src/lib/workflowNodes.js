@@ -62,7 +62,11 @@ export const NODE_TYPES = [
       { key: "body",     label: "HTML body", type: "long", placeholder: "<p>Hi {{values.name}}…</p>" },
       { key: "attachments", label: "Attachments", type: "multi_checkbox",
         options: [
-          { value: "completed_pdf", label: "Completed PDF (PDF form submissions)" },
+          { value: "completed_pdf", label: "Completed PDF (filled)" },
+          { value: "original_pdf",  label: "Original PDF template" },
+          { value: "excel_export",  label: "Excel export (.xlsx)" },
+          { value: "csv_export",    label: "CSV export (.csv)" },
+          { value: "zip_archive",   label: "Bundle all as ZIP archive" },
         ] },
     ], defaults: { attachments: [] } },
   { type: "action.update_submission", kind: "action", label: "Update submission", icon: "Pencil",

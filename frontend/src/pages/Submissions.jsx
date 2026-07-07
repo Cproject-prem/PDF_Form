@@ -60,6 +60,19 @@ export default function SubmissionsPage() {
       });
   };
 
+  const exportXlsx = () => {
+    const token = localStorage.getItem("ff_token");
+    const url = `${API}/forms/${id}/submissions/export.xlsx`;
+    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => r.blob())
+      .then((blob) => {
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `${form?.slug || "submissions"}.xlsx`;
+        link.click();
+      });
+  };
+
   const setSubStatus = async (sub, st) => {
     await api.patch(`/submissions/${sub.submission_id}`, { status: st });
     toast.success(`Marked ${st}`);
@@ -87,6 +100,7 @@ export default function SubmissionsPage() {
             <p className="text-slate-500 mt-1">{subs.length} total submissions</p>
           </div>
           <Button data-testid="export-csv" onClick={exportCsv} variant="outline"><Download className="w-4 h-4 mr-1.5" /> Export CSV</Button>
+          <Button data-testid="export-xlsx" onClick={exportXlsx} variant="outline" className="ml-2"><Download className="w-4 h-4 mr-1.5" /> Export Excel</Button>
         </div>
 
         <Card className="rounded-2xl border-slate-100 card-soft">

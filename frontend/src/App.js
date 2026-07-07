@@ -10,6 +10,7 @@ import FormsPage from "@/pages/Forms";
 import FormBuilderPage from "@/pages/FormBuilder";
 import PublicFormPage from "@/pages/PublicForm";
 import SubmissionsPage from "@/pages/Submissions";
+import SubmissionsHubPage from "@/pages/SubmissionsHub";
 import SettingsPage from "@/pages/Settings";
 import UsersPage from "@/pages/Users";
 import PdfBuilderPage from "@/pages/PdfBuilder";
@@ -53,6 +54,7 @@ function Router() {
       <Route path="/approve/:token" element={<PublicApprovalPage />} />
 
       <Route path="/dashboard" element={<Protected><DashboardPage /></Protected>} />
+      <Route path="/submissions" element={<Protected><SubmissionsHubPage /></Protected>} />
       <Route path="/forms" element={<Protected><FormsPage /></Protected>} />
       <Route path="/forms/:id/build" element={<Protected><FormBuilderPage /></Protected>} />
       <Route path="/forms/:id/submissions" element={<Protected><SubmissionsPage /></Protected>} />

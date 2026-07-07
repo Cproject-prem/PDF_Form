@@ -388,7 +388,8 @@ async def login(body: LoginIn):
     if not user.get("is_active", True):
         raise HTTPException(status_code=403, detail="User disabled")
     token = make_token(user["user_id"], user["role"])
-    user.pop("password_hash", None); user.pop("_id", None)
+    user.pop("password_hash", None)
+    user.pop("_id", None)
     return {"token": token, "user": UserOut(**user)}
 
 @api.post("/auth/google/session")
@@ -473,11 +474,167 @@ async def list_all_submissions(user: User = Depends(get_current_user), q: Option
             else:
                 return []
         query = {"$and": clauses} if len(clauses) > 1 else clauses[0]
-    if form_id: query.setdefault("form_id", form_id)
-    if status:  query["status"] = status
-    if q:       query["values"] = {"$regex": q, "$options": "i"}
+    if form_id:
+        query.setdefault("form_id", form_id)
+    if status:
+        query["status"] = status
+    if q:
+        query["values"] = {"$regex": q, "$options": "i"}
     rows = await db.submissions.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return [Submission(**r) for r in rows]
+
+
+# ---------- Consolidated submissions overview (all forms + PDF forms, grouped) ----------
+@api.get("/submissions/overview")
+async def submissions_overview(user: User = Depends(get_current_user)):
+    """Return submissions grouped form-wise across BOTH standard forms and PDF forms.
+
+    Response shape:
+      [{ kind: "form"|"pdf", form_id, title, slug, count, submissions: [...] }]
+    """
+    from permissions import (
+        normalize_role, form_filter, is_super_admin, submission_filter,
+    )
+    role = normalize_role(user.role)
+    groups: List[Dict[str, Any]] = []
+
+    # --- Standard forms ---------------------------------------------------
+    if is_super_admin(user):
+        form_q: Dict[str, Any] = {}
+    else:
+        form_q = form_filter(user)
+    forms = await db.forms.find(form_q, {"_id": 0}).sort("updated_at", -1).to_list(2000)
+
+    # Restrict which subs a vendor_user can see (only own)
+    sub_q_extra: Dict[str, Any] = {}
+    if role == "vendor_user":
+        sub_q_extra = {"submitted_by": user.user_id}
+    elif role == "vendor_admin" and user.vendor_id:
+        team = await db.users.find(
+            {"vendor_id": user.vendor_id}, {"_id": 0, "user_id": 1},
+        ).to_list(2000)
+        sub_q_extra = {"submitted_by": {"$in": [u["user_id"] for u in team]}}
+
+    for f in forms:
+        sq = {"form_id": f["form_id"], **sub_q_extra}
+        subs = await db.submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
+        groups.append({
+            "kind": "form",
+            "id": f["form_id"],
+            "title": f.get("title") or "Untitled",
+            "slug": f.get("slug"),
+            "status": f.get("status"),
+            "field_summary": [
+                {"id": fd["id"], "label": fd.get("label") or fd["id"], "type": fd.get("type")}
+                for fd in (f.get("fields") or [])
+                if fd.get("type") not in ("heading", "paragraph", "divider")
+            ][:6],
+            "count": len(subs),
+            "submissions": subs,
+        })
+
+    # --- PDF forms --------------------------------------------------------
+    if is_super_admin(user):
+        pdf_q: Dict[str, Any] = {"is_deleted": False}
+    else:
+        from permissions import form_filter as _ff
+        rls = _ff(user)
+        import json as _json
+        rls = _json.loads(_json.dumps(rls).replace('"form_id"', '"template_id"'))
+        pdf_q = {"$and": [{"is_deleted": False}, rls]}
+    pdfs = await db.pdf_templates.find(pdf_q, {"_id": 0}).sort("updated_at", -1).to_list(2000)
+    for t in pdfs:
+        sq = {"template_id": t["template_id"], **sub_q_extra}
+        subs = await db.pdf_submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
+        groups.append({
+            "kind": "pdf",
+            "id": t["template_id"],
+            "title": t.get("title") or "Untitled PDF",
+            "slug": t.get("slug"),
+            "status": t.get("status"),
+            "field_summary": [
+                {"id": fd.get("id"), "label": fd.get("label") or fd.get("name") or fd.get("id"), "type": fd.get("type")}
+                for fd in (t.get("fields") or [])
+                if fd.get("type") not in ("heading", "paragraph", "static_text", "divider", "hidden")
+            ][:6],
+            "count": len(subs),
+            "submissions": subs,
+        })
+    # Sort groups: those with subs first, then alphabetical
+    groups.sort(key=lambda g: (-g["count"], g["title"].lower()))
+    return groups
+
+
+# ---------- Excel (.xlsx) export ----------
+def _xlsx_val(v):
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        return ", ".join(str(x) for x in v)
+    if isinstance(v, dict):
+        # display friendly for file/upload/signature dicts
+        if "filename" in v:
+            return str(v.get("filename"))
+        return str(v)
+    if isinstance(v, str) and v.startswith("data:image"):
+        return "[signature image]"
+    return v
+
+
+@api.get("/forms/{form_id}/submissions/export.xlsx")
+async def export_submissions_xlsx(form_id: str, user: User = Depends(get_current_user)):
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    form = await _get_form_for_user(form_id, user)
+    rows = await db.submissions.find({"form_id": form_id}, {"_id": 0}) \
+        .sort("created_at", 1).to_list(5000)
+    fields = [f for f in (form.get("fields") or [])
+              if f.get("type") not in ("heading", "paragraph", "divider")]
+    field_ids = [f["id"] for f in fields]
+    field_labels = {f["id"]: (f.get("label") or f["id"]) for f in fields}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (form.get("title") or "Submissions")[:31]
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="2563EB")
+    sub_font = Font(italic=True, color="475569")
+    # Row 1 = human-friendly labels
+    label_row = ["Submission ID", "Status", "Submitted At", "Submitted By"] + \
+                [field_labels[fid] for fid in field_ids]
+    # Row 2 = machine-friendly keys/IDs
+    key_row = ["submission_id", "status", "created_at", "submitted_by"] + field_ids
+
+    ws.append(label_row)
+    ws.append(key_row)
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+    for cell in ws[2]:
+        cell.font = sub_font
+
+    for r in rows:
+        vals = r.get("values") or {}
+        ws.append(
+            [r.get("submission_id"), r.get("status"), r.get("created_at"),
+             r.get("submitted_by") or ""] +
+            [_xlsx_val(vals.get(fid, "")) for fid in field_ids],
+        )
+    # simple column autosize
+    for i, col in enumerate(ws.columns, start=1):
+        w = max((len(str(c.value or "")) for c in col), default=8)
+        ws.column_dimensions[col[0].column_letter].width = min(max(w + 2, 12), 48)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    safe_slug = form.get("slug") or form_id
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{safe_slug}-submissions.xlsx"'},
+    )
+
 
 # ---------- Users (admin) ----------
 @api.get("/users", response_model=List[UserOut])
@@ -520,18 +677,27 @@ class UserUpdateIn(BaseModel):
 @api.patch("/users/{user_id}", response_model=UserOut)
 async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(require_role("super_admin"))):
     updates = {}
-    if body.name is not None: updates["name"] = body.name
+    if body.name is not None:
+        updates["name"] = body.name
     if body.role is not None:
-        if body.role not in ROLES: raise HTTPException(400, "Invalid role")
+        if body.role not in ROLES:
+            raise HTTPException(400, "Invalid role")
         updates["role"] = body.role
-    if body.is_active is not None: updates["is_active"] = body.is_active
-    if body.password: updates["password_hash"] = hash_password(body.password)
-    if body.vendor_id is not None: updates["vendor_id"] = body.vendor_id or None
-    if body.cluster_manager_name is not None: updates["cluster_manager_name"] = body.cluster_manager_name or None
-    if body.assignments is not None: updates["assignments"] = body.assignments
-    if not updates: raise HTTPException(400, "No fields")
+    if body.is_active is not None:
+        updates["is_active"] = body.is_active
+    if body.password:
+        updates["password_hash"] = hash_password(body.password)
+    if body.vendor_id is not None:
+        updates["vendor_id"] = body.vendor_id or None
+    if body.cluster_manager_name is not None:
+        updates["cluster_manager_name"] = body.cluster_manager_name or None
+    if body.assignments is not None:
+        updates["assignments"] = body.assignments
+    if not updates:
+        raise HTTPException(400, "No fields")
     res = await db.users.update_one({"user_id": user_id}, {"$set": updates})
-    if not res.matched_count: raise HTTPException(404, "User not found")
+    if not res.matched_count:
+        raise HTTPException(404, "User not found")
     doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     return UserOut(**doc)
 
@@ -663,7 +829,8 @@ async def public_get_form(slug: str):
 async def public_submit(slug: str, body: SubmissionIn, request: Request,
                         viewer: Optional[User] = Depends(get_optional_user)):
     form = await db.forms.find_one({"slug": slug, "is_deleted": False}, {"_id": 0})
-    if not form: raise HTTPException(404, "Form not found")
+    if not form:
+        raise HTTPException(404, "Form not found")
     if form.get("status") != "published":
         raise HTTPException(403, "Form is not accepting submissions")
     # required-field validation
@@ -692,6 +859,7 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
         vendor_name = body.values.get("vendor_name") or body.values.get("vendor")
         await _ft(db, "form_submitted",
                   {"submission_id": sid,
+                   "submission_kind": "form",
                    "form_id": form["form_id"], "form_name": form.get("title"),
                    "form_type": "form",
                    "site_name": site_name,
@@ -713,7 +881,8 @@ async def list_submissions(form_id: str, user: User = Depends(get_current_user))
 @api.get("/submissions/{submission_id}", response_model=Submission)
 async def get_submission(submission_id: str, user: User = Depends(get_current_user)):
     sub = await db.submissions.find_one({"submission_id": submission_id}, {"_id": 0})
-    if not sub: raise HTTPException(404, "Not found")
+    if not sub:
+        raise HTTPException(404, "Not found")
     await _get_form_for_user(sub["form_id"], user)
     return Submission(**sub)
 
@@ -724,7 +893,8 @@ class SubmissionStatusIn(BaseModel):
 async def update_submission_status(submission_id: str, body: SubmissionStatusIn,
                                    user: User = Depends(get_current_user)):
     sub = await db.submissions.find_one({"submission_id": submission_id}, {"_id": 0})
-    if not sub: raise HTTPException(404, "Not found")
+    if not sub:
+        raise HTTPException(404, "Not found")
     await _get_form_for_user(sub["form_id"], user)
     if body.status not in ("submitted", "approved", "rejected"):
         raise HTTPException(400, "Invalid status")
@@ -735,7 +905,8 @@ async def update_submission_status(submission_id: str, body: SubmissionStatusIn,
 @api.delete("/submissions/{submission_id}")
 async def delete_submission(submission_id: str, user: User = Depends(get_current_user)):
     sub = await db.submissions.find_one({"submission_id": submission_id}, {"_id": 0})
-    if not sub: raise HTTPException(404, "Not found")
+    if not sub:
+        raise HTTPException(404, "Not found")
     await _get_form_for_user(sub["form_id"], user)
     await db.submissions.delete_one({"submission_id": submission_id})
     return {"ok": True}

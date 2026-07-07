@@ -710,6 +710,70 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
                         headers={"Content-Disposition":
                                  f'attachment; filename="{tpl["original_filename"]}"'})
 
+    # --- Excel export (per PDF template) ---------------------------------
+    @router.get("/{template_id}/submissions/export.xlsx")
+    async def export_pdf_subs_xlsx(template_id: str, user=Depends(get_current_user)):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        tpl = await _get_template_for_user(template_id, user)
+        rows = await db.pdf_submissions.find({"template_id": template_id}, {"_id": 0}) \
+            .sort("created_at", 1).to_list(5000)
+        skip_types = ("heading", "paragraph", "static_text", "divider", "hidden")
+        fields = [f for f in (tpl.get("fields") or []) if f.get("type") not in skip_types]
+        field_ids = [f["id"] for f in fields]
+        field_labels = {f["id"]: (f.get("label") or f.get("name") or f["id"]) for f in fields}
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = (tpl.get("title") or "Submissions")[:31]
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill("solid", fgColor="7C3AED")
+        sub_font = Font(italic=True, color="475569")
+        label_row = ["Submission ID", "Status", "Submitted At", "Submitted By"] + \
+                    [field_labels[fid] for fid in field_ids]
+        key_row = ["submission_id", "status", "created_at", "submitted_by"] + field_ids
+        ws.append(label_row)
+        ws.append(key_row)
+        for cell in ws[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+        for cell in ws[2]:
+            cell.font = sub_font
+
+        def _val(v):
+            if v is None:
+                return ""
+            if isinstance(v, (list, tuple)):
+                return ", ".join(str(x) for x in v)
+            if isinstance(v, dict):
+                if "filename" in v:
+                    return str(v["filename"])
+                return str(v)
+            if isinstance(v, str) and v.startswith("data:image"):
+                return "[signature image]"
+            return v
+
+        for r in rows:
+            vals = r.get("values") or {}
+            ws.append(
+                [r.get("submission_id"), r.get("status"), r.get("created_at"),
+                 r.get("submitted_by_name") or r.get("submitted_by_email") or r.get("submitted_by") or ""] +
+                [_val(vals.get(fid, "")) for fid in field_ids],
+            )
+        for col in ws.columns:
+            w = max((len(str(c.value or "")) for c in col), default=8)
+            ws.column_dimensions[col[0].column_letter].width = min(max(w + 2, 12), 48)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        safe_slug = tpl.get("slug") or template_id
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{safe_slug}-submissions.xlsx"'},
+        )
+
     # --- Image asset upload (for image/signature fields in builder) -------
     @router.post("/assets/upload")
     async def upload_asset(file: UploadFile = File(...), user=Depends(get_current_user)):

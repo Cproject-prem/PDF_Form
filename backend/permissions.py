@@ -41,11 +41,16 @@ def normalize_role(role: str) -> str:
     Existing 'vendor' accounts (pre-new-permission-model) act as `vendor_user`.
     'member' / 'user' map to `admin` (limited assigned-resource access).
     """
-    if role == SUPER_ADMIN: return SUPER_ADMIN
-    if role == ADMIN: return ADMIN
-    if role == VENDOR_ADMIN: return VENDOR_ADMIN
-    if role in (VENDOR_USER, "vendor"): return VENDOR_USER
-    if role in ("member", "user"): return ADMIN
+    if role == SUPER_ADMIN:
+        return SUPER_ADMIN
+    if role == ADMIN:
+        return ADMIN
+    if role == VENDOR_ADMIN:
+        return VENDOR_ADMIN
+    if role in (VENDOR_USER, "vendor"):
+        return VENDOR_USER
+    if role in ("member", "user"):
+        return ADMIN
     return ADMIN  # safe default
 
 
@@ -98,8 +103,10 @@ def site_filter(user) -> Dict[str, Any]:
     if role == ADMIN:
         cm = user_cluster_manager_name(user)
         clauses: List[Dict[str, Any]] = []
-        if uid: clauses.append({"assigned_admin_ids": uid})
-        if cm:  clauses.append({"cluster_manager_name": cm})
+        if uid:
+            clauses.append({"assigned_admin_ids": uid})
+        if cm:
+            clauses.append({"cluster_manager_name": cm})
         if not clauses:
             return {"site_id": "__none__"}  # admin with no assignment -> nothing
         return clauses[0] if len(clauses) == 1 else {"$or": clauses}
@@ -148,7 +155,8 @@ def form_filter(user) -> Dict[str, Any]:
 
     if role in (VENDOR_ADMIN, VENDOR_USER):
         clauses: List[Dict[str, Any]] = []
-        if vid: clauses.append({"assigned_vendor_ids": vid})
+        if vid:
+            clauses.append({"assigned_vendor_ids": vid})
         if role == VENDOR_USER and uid:
             clauses.append({"assigned_vendor_user_ids": uid})
         # legacy: user.assignments.forms keeps working
@@ -266,7 +274,8 @@ def capabilities_for(user) -> Dict[str, bool]:
         "manage_team_users": False,
     }
     if role == SUPER_ADMIN:
-        for k in base: base[k] = True
+        for k in base:
+            base[k] = True
         return base
     if role == ADMIN:
         base.update({
@@ -295,11 +304,11 @@ def capabilities_for(user) -> Dict[str, bool]:
 def menu_for(user) -> List[Dict[str, str]]:
     role = normalize_role(getattr(user, "role", ""))
     if role == SUPER_ADMIN:
-        return _menu(["dashboard", "forms", "pdf-forms", "submissions", "pdf-submissions",
+        return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "workflow-analytics", "approvals", "site-master", "vendors",
                       "master-data", "reports", "audit-logs", "users", "smtp", "settings"])
     if role == ADMIN:
-        return _menu(["dashboard", "forms", "pdf-forms", "submissions", "pdf-submissions",
+        return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "approvals", "site-master", "vendors", "reports"])
     if role == VENDOR_ADMIN:
         return _menu(["manpower", "forms", "submissions", "team"])

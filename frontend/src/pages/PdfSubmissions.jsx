@@ -83,6 +83,12 @@ export default function PdfSubmissionsPage() {
       tpl?.original_filename || "original.pdf",
     );
 
+  const exportXlsx = () =>
+    authedDownload(
+      `${API}/pdf-forms/${id}/submissions/export.xlsx`,
+      `${(tpl?.slug || id)}-submissions.xlsx`,
+    );
+
   const printPdf = async (sub) => {
     const token = localStorage.getItem("ff_token");
     const r = await fetch(`${API}/pdf-submissions/${sub.submission_id}/completed`, {
@@ -128,13 +134,22 @@ export default function PdfSubmissionsPage() {
             <p className="text-slate-500 mt-1">{subs.length} total submissions</p>
           </div>
           {tpl && (
-            <Button
-              data-testid="pdf-download-original"
-              onClick={downloadOriginal}
-              variant="outline"
-            >
-              <Download className="w-4 h-4 mr-1.5" /> Download Original PDF
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                data-testid="pdf-export-xlsx"
+                onClick={exportXlsx}
+                variant="outline"
+              >
+                <Download className="w-4 h-4 mr-1.5" /> Export Excel
+              </Button>
+              <Button
+                data-testid="pdf-download-original"
+                onClick={downloadOriginal}
+                variant="outline"
+              >
+                <Download className="w-4 h-4 mr-1.5" /> Download Original PDF
+              </Button>
+            </div>
           )}
         </div>
 

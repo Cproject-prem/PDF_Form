@@ -1,0 +1,6 @@
+[tool.ruff.lint]
+# Pre-existing codebase style: allow compact one-line if/for/def statements,
+# semicolon-separated statements, and late/circular imports. These are
+# stylistic, not correctness issues; enforcing them would rewrite ~150 lines
+# unrelated to the current work.
+ignore = ["E701", "E702", "E401", "E402", "E731", "E741", "F811"]

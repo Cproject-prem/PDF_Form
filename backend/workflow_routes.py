@@ -707,21 +707,156 @@ class WorkflowEngine:
             bcc = _split_emails(cfg.get("bcc", ""))
             attachments_cfg = cfg.get("attachments") or []
             attachments: List[Dict[str, Any]] = []
-            # supported keys: 'completed_pdf' resolves to the completed PDF of
-            # the triggering submission (only valid for pdf-form submissions)
+
             sid = variables.get("submission_id")
-            if sid and "completed_pdf" in attachments_cfg:
-                sub = await self.db.pdf_submissions.find_one(
-                    {"submission_id": sid}, {"_id": 0, "completed_filename": 1},
-                )
-                if sub and sub.get("completed_filename"):
-                    upload_dir = os.environ.get("UPLOAD_DIR", "/app/backend/uploads")
-                    path = f"{upload_dir}/completed/{sub['completed_filename']}"
+            sub_kind = variables.get("submission_kind")  # "pdf" or "form"
+            form_id = variables.get("form_id")
+            template_id = variables.get("template_id") or (form_id if sub_kind == "pdf" else None)
+
+            # --- Resolve the submission + parent form/template up front ---
+            sub_doc: Optional[Dict[str, Any]] = None
+            parent: Optional[Dict[str, Any]] = None
+            if sid:
+                if sub_kind == "pdf":
+                    sub_doc = await self.db.pdf_submissions.find_one({"submission_id": sid}, {"_id": 0})
+                    if sub_doc:
+                        parent = await self.db.pdf_templates.find_one(
+                            {"template_id": sub_doc.get("template_id")}, {"_id": 0},
+                        )
+                else:
+                    sub_doc = await self.db.submissions.find_one({"submission_id": sid}, {"_id": 0})
+                    if sub_doc:
+                        parent = await self.db.forms.find_one(
+                            {"form_id": sub_doc.get("form_id")}, {"_id": 0},
+                        )
+
+            upload_dir = os.environ.get("UPLOAD_DIR", "/app/backend/uploads")
+            slug_base = (parent or {}).get("slug") or sid or "submission"
+
+            # 1) Completed PDF (PDF-form submissions only)
+            if "completed_pdf" in attachments_cfg and sub_doc and sub_doc.get("completed_filename"):
+                path = f"{upload_dir}/completed/{sub_doc['completed_filename']}"
+                attachments.append({
+                    "filename": f"completed-{sid}.pdf",
+                    "path": path,
+                    "mimetype": "application/pdf",
+                })
+
+            # 2) Original PDF template file (PDF-form submissions only)
+            if "original_pdf" in attachments_cfg and parent and parent.get("storage_filename"):
+                path = f"{upload_dir}/pdf/{parent['storage_filename']}"
+                attachments.append({
+                    "filename": parent.get("original_filename") or f"original-{template_id}.pdf",
+                    "path": path,
+                    "mimetype": "application/pdf",
+                })
+
+            # 3) Excel export of THIS submission's row
+            if "excel_export" in attachments_cfg and sub_doc and parent:
+                try:
+                    from openpyxl import Workbook
+                    from openpyxl.styles import Font, PatternFill
+                    skip = ("heading", "paragraph", "static_text", "divider", "hidden")
+                    fields = [f for f in (parent.get("fields") or []) if f.get("type") not in skip]
+                    ids = [f["id"] for f in fields]
+                    labels = {f["id"]: (f.get("label") or f.get("name") or f["id"]) for f in fields}
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = ((parent.get("title") or "Submission")[:31])
+                    hf = Font(bold=True, color="FFFFFF")
+                    hb = PatternFill("solid", fgColor="2563EB")
+                    ws.append(["Submission ID", "Status", "Submitted At"] + [labels[i] for i in ids])
+                    ws.append(["submission_id", "status", "created_at"] + ids)
+                    for cell in ws[1]:
+                        cell.font = hf
+                        cell.fill = hb
+                    for cell in ws[2]:
+                        cell.font = Font(italic=True, color="475569")
+                    vals = sub_doc.get("values") or {}
+
+                    def _v(x):
+                        if x is None:
+                            return ""
+                        if isinstance(x, (list, tuple)):
+                            return ", ".join(str(y) for y in x)
+                        if isinstance(x, dict):
+                            return x.get("filename") or str(x)
+                        if isinstance(x, str) and x.startswith("data:image"):
+                            return "[signature image]"
+                        return x
+                    ws.append(
+                        [sub_doc.get("submission_id"), sub_doc.get("status"), sub_doc.get("created_at")] +
+                        [_v(vals.get(i, "")) for i in ids],
+                    )
+                    from io import BytesIO
+                    buf = BytesIO()
+                    wb.save(buf)
                     attachments.append({
-                        "filename": f"completed-{sid}.pdf",
-                        "path": path,
-                        "mimetype": "application/pdf",
+                        "filename": f"{slug_base}-{sid}.xlsx",
+                        "content": buf.getvalue(),
+                        "mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     })
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("excel attachment generation failed: %s", exc)
+
+            # 4) CSV export of THIS submission's row
+            if "csv_export" in attachments_cfg and sub_doc and parent:
+                try:
+                    import csv as _csv
+                    import io as _io
+                    skip = ("heading", "paragraph", "static_text", "divider", "hidden")
+                    fields = [f for f in (parent.get("fields") or []) if f.get("type") not in skip]
+                    ids = [f["id"] for f in fields]
+                    labels = {f["id"]: (f.get("label") or f.get("name") or f["id"]) for f in fields}
+                    sio = _io.StringIO()
+                    w = _csv.writer(sio)
+                    w.writerow(["submission_id", "status", "created_at"] + [labels[i] for i in ids])
+                    vals = sub_doc.get("values") or {}
+                    def _csv_v(x):
+                        if x is None:
+                            return ""
+                        if isinstance(x, (list, tuple)):
+                            return ", ".join(str(y) for y in x)
+                        if isinstance(x, dict):
+                            return x.get("filename") or str(x)
+                        return x
+                    w.writerow(
+                        [sub_doc.get("submission_id"), sub_doc.get("status"), sub_doc.get("created_at")] +
+                        [_csv_v(vals.get(i, "")) for i in ids],
+                    )
+                    attachments.append({
+                        "filename": f"{slug_base}-{sid}.csv",
+                        "content": sio.getvalue().encode("utf-8"),
+                        "mimetype": "text/csv",
+                    })
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("csv attachment generation failed: %s", exc)
+
+            # 5) ZIP bundle of the above (Completed PDF + Original PDF + Excel + CSV)
+            if "zip_archive" in attachments_cfg and attachments:
+                try:
+                    import zipfile
+                    from io import BytesIO
+                    zbuf = BytesIO()
+                    with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for att in attachments:
+                            data = att.get("content")
+                            if not data and att.get("path"):
+                                try:
+                                    with open(att["path"], "rb") as fh:
+                                        data = fh.read()
+                                except OSError:
+                                    continue
+                            if data:
+                                zf.writestr(att["filename"], data)
+                    attachments = [{
+                        "filename": f"{slug_base}-{sid}.zip",
+                        "content": zbuf.getvalue(),
+                        "mimetype": "application/zip",
+                    }]
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("zip attachment generation failed: %s", exc)
+
             req = EmailRequest(
                 to=to, cc=cc, bcc=bcc,
                 subject=str(cfg.get("subject", "")),
