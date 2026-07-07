@@ -34,7 +34,7 @@ from email import encoders
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict
 from simpleeval import SimpleEval, InvalidExpression, FunctionNotDefined, NameNotDefined
 
@@ -629,7 +629,7 @@ class WorkflowEngine:
             {"execution_id": execution_id}, {"$push": {"logs": entry}},
         )
 
-    async def _finish(self, execution_id: str, status: str, error: Optional[str] = None) -> None:
+    async def _finish(self, execution_id: str, status: str, error: Optional[str] = None) -> None:  # noqa: F811
         ex = _clean(await self.db.workflow_executions.find_one({"execution_id": execution_id}))
         if not ex:
             return

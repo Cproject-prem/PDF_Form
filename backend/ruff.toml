@@ -1,0 +1,4 @@
+[lint]
+# Pre-existing codebase style: allow compact one-line if/for/def statements
+# and semicolon-separated statements. These are stylistic, not correctness issues.
+ignore = ["E701", "E702", "E401", "E731", "E741", "E402"]

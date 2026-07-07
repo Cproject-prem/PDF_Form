@@ -35,8 +35,6 @@ from fastapi import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 from pypdf import PdfReader, PdfWriter
-from reportlab.lib.colors import HexColor
-from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas as rl_canvas
 
 logger = logging.getLogger("jotform.pdf")

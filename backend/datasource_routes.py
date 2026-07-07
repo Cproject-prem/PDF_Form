@@ -22,7 +22,7 @@ import csv as _csv
 import io
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import requests
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile

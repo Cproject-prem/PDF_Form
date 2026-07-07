@@ -288,7 +288,8 @@ class TestPublicApproval:
         # the link. We pull the email body via db is not available over API.
         # Workaround: use a special debug endpoint? None exists. So we skip if we cannot recover the token.
         # Recoverable via direct mongo cli:
-        import subprocess, json as _json
+        import subprocess
+        import json as _json
         out = subprocess.check_output([
             "mongosh", "--quiet", "test_database",
             "--eval",

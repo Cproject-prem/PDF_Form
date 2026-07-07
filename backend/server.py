@@ -5,7 +5,7 @@ Routes are all prefixed with /api. Auth uses JWT (HS256) for primary login
 and supports Emergent Google OAuth as a secondary login path. Files are
 stored via the Emergent Object Storage integration.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Header, Query, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -14,7 +14,15 @@ from pydantic import BaseModel, Field, EmailStr, ConfigDict
 from typing import List, Optional, Any, Dict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-import os, uuid, logging, bcrypt, jwt, io, csv, requests, mimetypes
+import os
+import uuid
+import logging
+import bcrypt
+import jwt
+import io
+import csv
+import requests
+import mimetypes
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -920,7 +928,7 @@ api.include_router(_pdf_public_router)
 api.include_router(_pdf_sub_router)
 
 # ---------- Workflow Automation ----------
-from workflow_routes import build_workflow_routers, fire_trigger, seed_workflow_templates
+from workflow_routes import build_workflow_routers
 (_wf_router, _apv_router, _audit_router, _wfa_router, _smtp_router, _pub_apv_router) = \
     build_workflow_routers(db, get_current_user)
 api.include_router(_wf_router)
@@ -931,7 +939,7 @@ api.include_router(_smtp_router)
 api.include_router(_pub_apv_router)
 
 # ---------- Vendor Management / Site Master / Master Data ----------
-from vendor_routes import build_routers as _build_vendor_routers, seed_demo_sites
+from vendor_routes import build_routers as _build_vendor_routers
 _vendors_r, _vusers_r, _sites_r, _master_r, _lookup_r, _pub_lookup_r = _build_vendor_routers(
     db, get_current_user, hash_password,
 )
