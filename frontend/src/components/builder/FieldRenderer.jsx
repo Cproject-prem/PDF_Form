@@ -131,6 +131,28 @@ export default function FieldRenderer({ field, value, onChange, mode = "fill", i
           )}
         />
       );
+    case "tick": {
+      const checked = value === true || value === "true" || value === 1;
+      const tickLabel = field.tick_label || field.placeholder || "Yes";
+      return (
+        <div className="space-y-1.5">
+          {renderLabel()}
+          <label
+            className={`flex items-center gap-2.5 text-sm select-none ${disabled ? "opacity-60" : "cursor-pointer"}`}
+            data-testid={`tick-${field.id}`}
+          >
+            <Checkbox
+              checked={checked}
+              disabled={disabled}
+              onCheckedChange={(v) => onChange?.(!!v)}
+              className="data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-600"
+            />
+            <span className="text-slate-700">{tickLabel}</span>
+          </label>
+          {renderDesc()}
+        </div>
+      );
+    }
     case "rating": {
       const v = Number(value || 0);
       return (

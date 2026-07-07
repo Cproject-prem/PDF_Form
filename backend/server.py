@@ -1332,6 +1332,19 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
         if f.get("type") in ("heading", "paragraph", "divider"):
             continue
         v = (sub.get("values") or {}).get(f["id"], "")
+        if f.get("type") == "tick":
+            # Render a visible checkmark (ZapfDingbats char 4 = heavy check).
+            checked = v is True or v == "true" or v == 1 or v == "1"
+            tick_label = f.get("tick_label") or "Yes"
+            if checked:
+                v_html = ('<font name="ZapfDingbats" size="13" color="#059669">4</font>'
+                          f'&nbsp;&nbsp;{tick_label}')
+            else:
+                v_html = ('<font name="ZapfDingbats" size="13" color="#94A3B8">8</font>'
+                          '&nbsp;&nbsp;<font color="#94A3B8">Not confirmed</font>')
+            rows.append([Paragraph(str(f.get("label") or f["id"]), label_style),
+                         Paragraph(v_html, val_style)])
+            continue
         if isinstance(v, (list, tuple)):
             v = ", ".join(str(x) for x in v)
         elif isinstance(v, dict):

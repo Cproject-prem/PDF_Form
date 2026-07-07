@@ -194,6 +194,20 @@ function GeneralTab({ field, update, isDisplay }) {
               <Input value={field.placeholder || ""} onChange={(e) => update({ placeholder: e.target.value })} data-testid="prop-placeholder" />
             </div>
           )}
+          {field.type === "tick" && (
+            <div>
+              <Label className="text-xs">Tick label</Label>
+              <Input
+                value={field.tick_label || ""}
+                onChange={(e) => update({ tick_label: e.target.value })}
+                placeholder="e.g. Yes, I agree"
+                data-testid="prop-tick-label"
+              />
+              <div className="text-[11px] text-slate-400 mt-1">
+                Shown next to the checkbox. Appears with a ✓ in the filled PDF.
+              </div>
+            </div>
+          )}
           <div>
             <Label className="text-xs">Description</Label>
             <Textarea rows={2} value={field.description || ""} onChange={(e) => update({ description: e.target.value })} data-testid="prop-description" />

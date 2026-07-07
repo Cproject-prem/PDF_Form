@@ -52,7 +52,7 @@ MAX_PDF_MB = int(os.environ.get("MAX_PDF_MB", "50"))
 # Field types supported by the PDF Form Builder
 PDF_FIELD_TYPES = {
     "short_text", "long_text", "number", "date", "time", "email", "phone",
-    "dropdown", "checkbox", "radio", "signature", "initial", "image",
+    "dropdown", "checkbox", "radio", "tick", "signature", "initial", "image",
     "file", "qr_code", "barcode", "heading", "paragraph", "static_text",
     "divider", "auto_number", "calculation", "hidden",
 }
@@ -375,6 +375,14 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                                        line_h, f.font_family, f.font_size, f.font_color, "left")
                     else:
                         _draw_checkbox(c, bool(val), x, top_y, h, f.font_color)
+                elif ftype == "tick":
+                    # Single yes/no with an inline label next to the box.
+                    checked = val is True or val == "true" or val == 1 or val == "1"
+                    box = max(min(h, f.font_size * 1.2), 12)
+                    _draw_checkbox(c, checked, x, top_y, box, f.font_color)
+                    lbl = getattr(f, "tick_label", None) or (f.placeholder or "Yes")
+                    _draw_text(c, lbl, x + box + 4, top_y, w - box - 8, box,
+                               f.font_family, f.font_size, f.font_color, "left")
                 elif ftype == "qr_code":
                     _draw_qr(c, val, x, top_y, w, h)
                 elif ftype == "barcode":

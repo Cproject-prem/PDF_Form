@@ -140,6 +140,7 @@ function makeField(type) {
     dropdown:   { label: "Dropdown", options: ["Option A", "Option B"] },
     checkbox:   { label: "Checkbox", options: ["Option A", "Option B"] },
     radio:      { label: "Radio",    options: ["Option A", "Option B"] },
+    tick:       { label: "I confirm", tick_label: "Yes, I agree" },
     file:       { label: "Upload File" },
     url:        { label: "Website", placeholder: "https://" },
     rating:     { label: "Rating" },
@@ -152,5 +153,6 @@ function makeField(type) {
     description: "", required: false, read_only: false, default_value: null,
     options: defaults.options || [], validation: {}, width: "full",
     rich_text: defaults.rich_text || "",
+    tick_label: defaults.tick_label || "",
   };
 }

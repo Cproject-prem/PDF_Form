@@ -1,7 +1,7 @@
 // Field type catalog — used by builder palette and renderers.
 import {
   Type, AlignLeft, Hash, Mail, Phone, Calendar, Clock, ChevronDown, CheckSquare,
-  Circle, Upload, Link as LinkIcon, Star, Heading1, Pilcrow, Minus
+  Circle, Upload, Link as LinkIcon, Star, Heading1, Pilcrow, Minus, CheckCircle2
 } from "lucide-react";
 
 export const FIELD_TYPES = [
@@ -15,6 +15,7 @@ export const FIELD_TYPES = [
   { type: "dropdown",   label: "Dropdown",   icon: ChevronDown, group: "Choices", defaults: { label: "Dropdown", options: ["Option A", "Option B"] } },
   { type: "checkbox",   label: "Checkbox",   icon: CheckSquare, group: "Choices", defaults: { label: "Checkbox", options: ["Option A", "Option B"] } },
   { type: "radio",      label: "Radio",      icon: Circle, group: "Choices", defaults: { label: "Radio", options: ["Option A", "Option B"] } },
+  { type: "tick",       label: "Tick",       icon: CheckCircle2, group: "Choices", defaults: { label: "I confirm", tick_label: "Yes, I agree" } },
   { type: "file",       label: "File Upload", icon: Upload, group: "Advanced", defaults: { label: "Upload File" } },
   { type: "url",        label: "URL",        icon: LinkIcon, group: "Basic", defaults: { label: "Website", placeholder: "https://" } },
   { type: "rating",     label: "Rating",     icon: Star, group: "Advanced", defaults: { label: "Rating" } },
