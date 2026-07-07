@@ -911,6 +911,111 @@ async def delete_submission(submission_id: str, user: User = Depends(get_current
     await db.submissions.delete_one({"submission_id": submission_id})
     return {"ok": True}
 
+
+# ---------- Submitter-facing "download filled PDF" for standard forms ----
+async def _can_view_own_submission(user: User, sub: Dict[str, Any]) -> bool:
+    """Submitter + their vendor_admin can view. Also anyone who has RLS
+    access to the parent form (already enforced by _get_form_for_user)."""
+    from permissions import normalize_role, is_super_admin
+    if is_super_admin(user):
+        return True
+    if sub.get("submitted_by") == user.user_id:
+        return True
+    role = normalize_role(user.role)
+    if role == "vendor_admin" and user.vendor_id:
+        # look up submitter's vendor
+        submitter = await db.users.find_one(
+            {"user_id": sub.get("submitted_by")},
+            {"_id": 0, "vendor_id": 1},
+        )
+        if submitter and submitter.get("vendor_id") == user.vendor_id:
+            return True
+    return False
+
+
+@api.get("/submissions/{submission_id}/filled.pdf")
+async def download_filled_pdf(submission_id: str, user: User = Depends(get_current_user)):
+    """Generate a printable PDF of a standard-form submission.
+
+    Visible to: submitter, their vendor_admin, form owners (via RLS),
+    super_admin. Uses reportlab — one field per row, labeled."""
+    sub = await db.submissions.find_one({"submission_id": submission_id}, {"_id": 0})
+    if not sub:
+        raise HTTPException(404, "Submission not found")
+    # Auth: either the submitter/vendor_admin OR anyone who can view the form
+    allowed = await _can_view_own_submission(user, sub)
+    if not allowed:
+        try:
+            await _get_form_for_user(sub["form_id"], user)
+            allowed = True
+        except HTTPException:
+            allowed = False
+    if not allowed:
+        raise HTTPException(403, "You do not have permission to download this submission")
+
+    form = await db.forms.find_one({"form_id": sub["form_id"], "is_deleted": False}, {"_id": 0})
+    if not form:
+        raise HTTPException(404, "Parent form missing")
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    )
+    from reportlab.lib import colors
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=18*mm, rightMargin=18*mm,
+                            topMargin=18*mm, bottomMargin=18*mm)
+    styles = getSampleStyleSheet()
+    h_style = ParagraphStyle("h", parent=styles["Heading1"], fontSize=18, spaceAfter=6)
+    meta_style = ParagraphStyle("meta", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#64748B"))
+    label_style = ParagraphStyle("lbl", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#334155"))
+    val_style = ParagraphStyle("val", parent=styles["Normal"], fontSize=11, textColor=colors.HexColor("#0F172A"))
+
+    elems = [
+        Paragraph(form.get("title") or "Submission", h_style),
+        Paragraph(
+            f"Submission ID: {sub['submission_id']} · Status: {sub.get('status','submitted')}"
+            f" · {sub.get('created_at','')}",
+            meta_style,
+        ),
+        Spacer(1, 8),
+    ]
+    rows = []
+    for f in form.get("fields") or []:
+        if f.get("type") in ("heading", "paragraph", "divider"):
+            continue
+        v = (sub.get("values") or {}).get(f["id"], "")
+        if isinstance(v, (list, tuple)):
+            v = ", ".join(str(x) for x in v)
+        elif isinstance(v, dict):
+            v = v.get("filename") or str(v)
+        elif isinstance(v, str) and v.startswith("data:image"):
+            v = "[signature image]"
+        rows.append([Paragraph(str(f.get("label") or f["id"]), label_style),
+                     Paragraph(str(v) if v not in (None, "") else "—", val_style)])
+    if rows:
+        table = Table(rows, colWidths=[55*mm, 115*mm])
+        table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        elems.append(table)
+    doc.build(elems)
+    buf.seek(0)
+    fname = f"{form.get('slug') or form['form_id']}-{submission_id}.pdf"
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 @api.get("/forms/{form_id}/submissions/export.csv")
 async def export_submissions_csv(form_id: str, user: User = Depends(get_current_user)):
     form = await _get_form_for_user(form_id, user)
@@ -1128,6 +1233,10 @@ api.include_router(build_formula_router(db, get_current_user))
 # ---------- Extended Data Sources (REST API / JSON / CSV / Excel / Another Form / Workflow Variable) ----------
 from datasource_routes import build_datasource_router
 api.include_router(build_datasource_router(db, get_current_user))
+
+# ---------- In-app Notifications (bell icon) ----------
+from notifications import build_notifications_router
+api.include_router(build_notifications_router(db, get_current_user))
 
 # Mount router
 app.include_router(api)

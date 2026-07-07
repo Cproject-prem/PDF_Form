@@ -97,6 +97,7 @@ SITE_COLUMNS = [
     "state", "district", "location", "latitude", "longitude",
     "ac_capacity", "dc_capacity", "inverter_capacity",
     "vendor_name", "vendor_login_user", "vendor_email",
+    "approver_email", "cluster_manager_name",
     "cluster", "region", "site_status",
     "commission_date", "om_start_date", "warranty_end_date",
     "remarks",
@@ -110,7 +111,10 @@ SITE_COLUMN_LABELS = {
     "ac_capacity": "AC Capacity (MW)", "dc_capacity": "DC Capacity (MW)",
     "inverter_capacity": "Inverter Capacity (MW)",
     "vendor_name": "Vendor Name", "vendor_login_user": "Vendor Login User",
-    "vendor_email": "Vendor Email", "cluster": "Cluster", "region": "Region",
+    "vendor_email": "Vendor Email",
+    "approver_email": "Approver Email",
+    "cluster_manager_name": "Cluster Manager",
+    "cluster": "Cluster", "region": "Region",
     "site_status": "Site Status", "commission_date": "Commission Date",
     "om_start_date": "O&M Start Date", "warranty_end_date": "Warranty End Date",
     "remarks": "Remarks",
@@ -365,10 +369,12 @@ def build_routers(db, get_current_user, hash_password_fn):
             raise HTTPException(404, "Vendor user not found")
         await _require_vendor_user_editor(user, target["vendor_id"])
         upd: Dict[str, Any] = {}
-        if body.name is not None: upd["name"] = body.name
+        if body.name is not None:
+            upd["name"] = body.name
         if body.role is not None and body.role in ("vendor", "vendor_admin"):
             upd["role"] = body.role
-        if body.is_active is not None: upd["is_active"] = body.is_active
+        if body.is_active is not None:
+            upd["is_active"] = body.is_active
         if body.password:
             upd["password_hash"] = hash_password_fn(body.password)
         if upd:
@@ -531,7 +537,8 @@ def build_routers(db, get_current_user, hash_password_fn):
         for cell in ws[1]:
             cell.font = cell.font.copy(bold=True)
         buf = io.BytesIO()
-        wb.save(buf); buf.seek(0)
+        wb.save(buf)
+        buf.seek(0)
         return StreamingResponse(
             buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": 'attachment; filename="sites-template.xlsx"'},
@@ -550,7 +557,8 @@ def build_routers(db, get_current_user, hash_password_fn):
         for cell in ws[1]:
             cell.font = cell.font.copy(bold=True)
         buf = io.BytesIO()
-        wb.save(buf); buf.seek(0)
+        wb.save(buf)
+        buf.seek(0)
         return StreamingResponse(
             buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": 'attachment; filename="sites-export.xlsx"'},
@@ -778,7 +786,8 @@ def build_routers(db, get_current_user, hash_password_fn):
             return [str(data.get(column, ""))] if data.get(column) else []
         if source == "logged_in_vendor":
             vid = getattr(user, "vendor_id", None)
-            if not vid: return []
+            if not vid:
+                return []
             v = await db.vendors.find_one({"vendor_id": vid}, {"_id": 0})
             return [str(v.get(column, ""))] if v and v.get(column) else []
         if source == "vendors":
@@ -967,6 +976,7 @@ DEMO_SITES = [
      "latitude": 14.099, "longitude": 77.275,
      "ac_capacity": 50, "dc_capacity": 65, "inverter_capacity": 50,
      "vendor_name": "SunOps Pvt Ltd", "vendor_email": "ops@sunops.example.com",
+     "approver_email": "approver.alpha@example.com",
      "cluster": "South-1", "region": "South", "site_status": "operational",
      "cluster_manager_name": "Rahul Verma",
      "commission_date": "2023-04-01"},
@@ -976,6 +986,7 @@ DEMO_SITES = [
      "latitude": 8.95, "longitude": 77.79,
      "ac_capacity": 30, "dc_capacity": 0, "inverter_capacity": 30,
      "vendor_name": "WindWorks", "vendor_email": "ops@windworks.example.com",
+     "approver_email": "approver.bravo@example.com",
      "cluster": "South-2", "region": "South", "site_status": "operational",
      "cluster_manager_name": "Rahul Verma",
      "commission_date": "2022-09-10"},
@@ -985,6 +996,7 @@ DEMO_SITES = [
      "latitude": 22.83, "longitude": 69.69,
      "ac_capacity": 25, "dc_capacity": 32, "inverter_capacity": 25,
      "vendor_name": "SunOps Pvt Ltd", "vendor_email": "ops@sunops.example.com",
+     "approver_email": "approver.charlie@example.com",
      "cluster": "West-1", "region": "West", "site_status": "commissioning",
      "cluster_manager_name": "Priya Sharma",
      "commission_date": "2024-11-15"},
@@ -1003,6 +1015,11 @@ async def seed_demo_sites(db) -> None:
             await db.sites.update_many(
                 {"site_code": r["site_code"], "cluster_manager_name": {"$in": [None, ""]}},
                 {"$set": {"cluster_manager_name": r["cluster_manager_name"]}},
+            )
+        if r.get("approver_email"):
+            await db.sites.update_many(
+                {"site_code": r["site_code"], "approver_email": {"$in": [None, ""]}},
+                {"$set": {"approver_email": r["approver_email"]}},
             )
     if await db.sites.count_documents({}) > 0:
         return

@@ -3,6 +3,7 @@ import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
 import { ROLE_LABELS } from "@/lib/utils2";
+import NotificationsBell from "@/components/layout/NotificationsBell";
 import {
   LayoutDashboard, FileStack, FileType2, Inbox, FileSignature, Workflow,
   BarChart3, ShieldCheck, MapPin, Building2, Database, ScrollText, Users as UsersIcon,
@@ -116,8 +117,13 @@ export default function AppLayout({ children, fullWidth = false }) {
           </DropdownMenu>
         </div>
       </aside>
-      <main className={`flex-1 ${fullWidth ? "" : "p-8"} overflow-x-hidden`}>
-        {children}
+      <main className={`flex-1 flex flex-col overflow-x-hidden`}>
+        <div className="h-12 shrink-0 border-b border-slate-100 bg-white flex items-center justify-end px-4 gap-2">
+          <NotificationsBell />
+        </div>
+        <div className={`flex-1 ${fullWidth ? "" : "p-8"} overflow-x-hidden`}>
+          {children}
+        </div>
       </main>
     </div>
   );

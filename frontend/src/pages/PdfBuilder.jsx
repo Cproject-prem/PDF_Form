@@ -6,6 +6,7 @@ import PdfCanvas from "@/components/pdfbuilder/PdfCanvas";
 import PdfThumbnails from "@/components/pdfbuilder/PdfThumbnails";
 import PdfProperties from "@/components/pdfbuilder/PdfProperties";
 import PdfFiller from "@/components/pdfbuilder/PdfFiller";
+import FieldRenderer from "@/components/builder/FieldRenderer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -358,15 +359,49 @@ export default function PdfBuilderPage() {
         />
       </div>
 
-      {/* Preview */}
+      {/* Preview — Jotform-style split-pane: form view left, PDF preview right */}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-5xl h-[88vh] flex flex-col">
-          <DialogHeader>
-            <DialogTitle>Preview</DialogTitle>
-            <DialogDescription>This is how the form looks to people filling it out.</DialogDescription>
+        <DialogContent className="max-w-[95vw] w-[95vw] h-[92vh] flex flex-col p-0">
+          <DialogHeader className="px-6 pt-5 pb-3 border-b border-slate-100">
+            <DialogTitle>Preview · Jotform-style split view</DialogTitle>
+            <DialogDescription>
+              Form fields on the left, original PDF on the right — this is how you verify field placement.
+              Public submitters see only the left pane.
+            </DialogDescription>
           </DialogHeader>
-          <div className="flex-1 overflow-hidden -mx-6 -mb-6 mt-2 rounded-b-2xl">
-            <PdfFiller fileUrl={fileUrl} fields={tpl.fields} values={previewValues} onChange={setPreviewValues} />
+          <div className="flex-1 overflow-hidden flex" data-testid="pdf-builder-split-preview">
+            {/* LEFT: form-view */}
+            <div className="w-[45%] shrink-0 border-r border-slate-100 overflow-y-auto nice-scroll bg-slate-50">
+              <div className="max-w-xl mx-auto py-8 px-4">
+                <div className="bg-white rounded-2xl card-soft p-6">
+                  <h2 className="text-xl font-heading font-bold tracking-tight text-slate-900">
+                    {tpl?.title || "PDF Form"}
+                  </h2>
+                  {tpl?.description && <p className="text-sm text-slate-500 mt-1">{tpl.description}</p>}
+                  <div className="mt-5 space-y-4">
+                    {(tpl?.fields || [])
+                      .filter((f) => !["heading","paragraph","static_text","divider","hidden"].includes(f.type))
+                      .map((f) => (
+                        <FieldRenderer
+                          key={f.id}
+                          field={f}
+                          value={previewValues[f.id]}
+                          onChange={(v) => setPreviewValues((s) => ({ ...s, [f.id]: v }))}
+                          onLookupFill={(patch) => setPreviewValues((s) => ({ ...s, ...patch }))}
+                          mode="fill"
+                        />
+                      ))}
+                  </div>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-3 text-center">
+                  Preview — no data will be saved.
+                </p>
+              </div>
+            </div>
+            {/* RIGHT: PDF preview */}
+            <div className="flex-1 overflow-hidden bg-slate-100" data-testid="pdf-builder-preview-pane">
+              <PdfFiller fileUrl={fileUrl} fields={tpl.fields} values={previewValues} onChange={setPreviewValues} />
+            </div>
           </div>
         </DialogContent>
       </Dialog>

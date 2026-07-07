@@ -100,11 +100,18 @@ export default function SubmissionsHubPage() {
     authedDownload(url, `${g.slug || g.id}-submissions.xlsx`);
   };
   const downloadCompleted = (g, sub) => {
-    if (g.kind !== "pdf") return;
-    authedDownload(
-      `${API}/pdf-submissions/${sub.submission_id}/completed`,
-      `${g.slug || g.id}-${sub.submission_id}.pdf`,
-    );
+    if (g.kind === "pdf") {
+      authedDownload(
+        `${API}/pdf-submissions/${sub.submission_id}/completed`,
+        `${g.slug || g.id}-${sub.submission_id}.pdf`,
+      );
+    } else {
+      // Standard form → generate a filled PDF on the fly
+      authedDownload(
+        `${API}/submissions/${sub.submission_id}/filled.pdf`,
+        `${g.slug || g.id}-${sub.submission_id}.pdf`,
+      );
+    }
   };
 
   return (
@@ -262,6 +269,17 @@ export default function SubmissionsHubPage() {
                                       title="Completed PDF"
                                       onClick={() => downloadCompleted(g, s)}
                                       data-testid={`hub-pdf-${s.submission_id}`}
+                                    >
+                                      <Download className="w-4 h-4" />
+                                    </Button>
+                                  )}
+                                  {g.kind === "form" && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      title="Filled PDF"
+                                      onClick={() => downloadCompleted(g, s)}
+                                      data-testid={`hub-filled-${s.submission_id}`}
                                     >
                                       <Download className="w-4 h-4" />
                                     </Button>

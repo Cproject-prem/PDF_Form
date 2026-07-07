@@ -673,6 +673,19 @@ function FieldEditor({ field, value, onChange, allNodes }) {
       </div>
     );
   }
+  if (field.type === "boolean") {
+    return (
+      <label className="flex items-center gap-2 cursor-pointer text-sm">
+        <input
+          type="checkbox"
+          checked={value !== false}
+          onChange={(e) => onChange(e.target.checked)}
+          data-testid={`cfg-${field.key}`}
+        />
+        <span className="text-slate-700">{field.label}</span>
+      </label>
+    );
+  }
   if (field.type === "json") {
     return (
       <div>

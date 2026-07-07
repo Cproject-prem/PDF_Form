@@ -109,21 +109,25 @@ export const NODE_TYPES = [
 
   // ---------- Approval ----------
   { type: "approval.sequential", kind: "approval", label: "Sequential approval", icon: "ListChecks",
-    description: "Routes through approvers one by one until everyone approves or one rejects.",
+    description: "Routes through approvers one by one. Approver is auto-resolved from the submission's Site Master row (approver_email). Add CC as needed.",
     fields: [
       { key: "subject",    label: "Subject",       type: "string", placeholder: "Please review submission {{submission_id}}" },
       { key: "description", label: "Description",  type: "long" },
-      { key: "approvers",  label: "Approvers (comma-separated emails)", type: "string", placeholder: "manager@example.com, hr@example.com" },
+      { key: "auto_from_site", label: "Auto-resolve approver from Site Master (approver_email)", type: "boolean" },
+      { key: "approvers",  label: "Approvers override (only if auto-resolve is off)", type: "string", placeholder: "manager@example.com" },
+      { key: "cc",         label: "CC (comma-separated)", type: "string", placeholder: "hr@example.com, ops@example.com" },
       { key: "due_days",   label: "Due in N days", type: "number" },
-    ], defaults: { mode: "sequential" } },
+    ], defaults: { mode: "sequential", auto_from_site: true, cc: "" } },
   { type: "approval.parallel", kind: "approval", label: "Parallel approval", icon: "GitMerge",
-    description: "Sends to all approvers at once; everyone must approve.",
+    description: "Sends to all approvers at once; everyone must approve. Site-resolved approver acts as the primary.",
     fields: [
       { key: "subject", label: "Subject", type: "string" },
       { key: "description", label: "Description", type: "long" },
-      { key: "approvers", label: "Approvers", type: "string", placeholder: "a@x.com, b@x.com" },
+      { key: "auto_from_site", label: "Auto-resolve approver from Site Master", type: "boolean" },
+      { key: "approvers", label: "Additional approvers", type: "string", placeholder: "a@x.com, b@x.com" },
+      { key: "cc",        label: "CC", type: "string" },
       { key: "due_days",  label: "Due in N days", type: "number" },
-    ], defaults: { mode: "parallel" } },
+    ], defaults: { mode: "parallel", auto_from_site: true, cc: "" } },
 
   // ---------- Logic ----------
   { type: "logic.delay", kind: "logic", label: "Wait / delay", icon: "Clock",

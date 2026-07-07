@@ -597,6 +597,49 @@ class WorkflowEngine:
             "approver": (approval_doc.get("decisions") or [{}])[-1].get("approver"),
             "comment": (approval_doc.get("decisions") or [{}])[-1].get("comment", ""),
         }
+
+        # ---- Notify submitter (and their vendor_admin) of the decision ----
+        try:
+            sid = variables.get("submission_id")
+            kind = variables.get("submission_kind")
+            submitter_id = None
+            submitter_vendor = None
+            if sid:
+                col = "pdf_submissions" if kind == "pdf" else "submissions"
+                sub = await self.db[col].find_one({"submission_id": sid}, {"_id": 0})
+                if sub:
+                    submitter_id = sub.get("submitted_by")
+                    if submitter_id:
+                        u = await self.db.users.find_one(
+                            {"user_id": submitter_id}, {"_id": 0, "vendor_id": 1},
+                        )
+                        if u:
+                            submitter_vendor = u.get("vendor_id")
+            from notifications import create_notification
+            title = f"Submission {decision_handle}"
+            body = variables["approval"].get("comment") or f"By {variables['approval'].get('approver') or 'reviewer'}"
+            link = "/submissions"
+            if submitter_id:
+                await create_notification(
+                    self.db, user_id=submitter_id, kind="approval_decided",
+                    title=title, body=body, link=link,
+                    submission_id=sid, approval_id=approval_doc.get("approval_id"),
+                )
+            # Also notify the vendor_admin of the submitter's vendor tree
+            if submitter_vendor:
+                admins = await self.db.users.find(
+                    {"vendor_id": submitter_vendor, "role": "vendor_admin"},
+                    {"_id": 0, "user_id": 1},
+                ).to_list(50)
+                for a in admins:
+                    await create_notification(
+                        self.db, user_id=a["user_id"], kind="approval_decided",
+                        title=title, body=body, link=link,
+                        submission_id=sid, approval_id=approval_doc.get("approval_id"),
+                    )
+        except Exception as _e:  # noqa: BLE001
+            log.warning("post-decision notification failed: %s", _e)
+
         await self.db.workflow_executions.update_one(
             {"execution_id": execution_id},
             {"$set": {"status": "running", "variables": variables}},
@@ -941,9 +984,30 @@ class WorkflowEngine:
 
     async def _create_approval(self, execution_id: str, node: Dict[str, Any],
                                cfg: Dict[str, Any], variables: Dict[str, Any]) -> Dict[str, Any]:
+        # ---- Resolve approvers ----
+        # New behavior (Section 9): if the approval node is configured with
+        # `auto_from_site: true` (default), we auto-populate the approver email
+        # from the site's `approver_email` column, based on the site name
+        # inside the triggering submission. Manual `approvers` still work as
+        # a fallback (super-admin can override in the workflow config).
         approvers = cfg.get("approvers") or []
         if isinstance(approvers, str):
             approvers = [a.strip() for a in approvers.split(",") if a.strip()]
+        cc_list = cfg.get("cc") or []
+        if isinstance(cc_list, str):
+            cc_list = [a.strip() for a in cc_list.split(",") if a.strip()]
+
+        auto_from_site = cfg.get("auto_from_site", True)
+        site_name = variables.get("site_name")
+        if not approvers and auto_from_site and site_name:
+            site = await self.db.sites.find_one(
+                {"$or": [{"site_name": site_name}, {"asset_id": site_name}, {"site_code": site_name}]},
+                {"_id": 0, "approver_email": 1, "site_name": 1},
+            )
+            if site and site.get("approver_email"):
+                approvers = [site["approver_email"]]
+                variables.setdefault("resolved_approver", site["approver_email"])
+
         mode = "sequential" if node.get("type") == "approval.sequential" else (cfg.get("mode") or "sequential")
         due_days = int(cfg.get("due_days", 0) or 0)
         due_at = (datetime.now(timezone.utc) + timedelta(days=due_days)).isoformat() if due_days else None
@@ -953,9 +1017,14 @@ class WorkflowEngine:
             "workflow_id": (await self.db.workflow_executions.find_one({"execution_id": execution_id}, {"_id": 0, "workflow_id": 1}))["workflow_id"],
             "node_id": node["id"],
             "submission_id": variables.get("submission_id"),
-            "subject": cfg.get("subject") or "Approval needed",
+            "submission_kind": variables.get("submission_kind"),
+            "form_id": variables.get("form_id"),
+            "form_name": variables.get("form_name"),
+            "site_name": site_name,
+            "subject": cfg.get("subject") or f"Approval needed: {variables.get('form_name') or 'submission'}",
             "description": cfg.get("description") or "",
             "approvers": approvers,
+            "cc": cc_list,
             "mode": mode,
             "current_index": 0,
             "status": "pending",
@@ -983,9 +1052,28 @@ class WorkflowEngine:
                 html = _approval_email_html(approval["subject"], approval["description"], review_url, approve_url, reject_url)
                 await _send_email(
                     self.db,
-                    EmailRequest(to=[email], subject=f"[Approval] {approval['subject']}", body_html=html),
+                    EmailRequest(
+                        to=[email], cc=list(cc_list),
+                        subject=f"[Approval] {approval['subject']}", body_html=html,
+                    ),
                     execution_id=execution_id,
                 )
+
+        # ---- In-app notifications for each approver + CC recipient ----
+        try:
+            from notifications import notify_users_by_email
+            all_emails = list(dict.fromkeys(list(recipients) + list(cc_list)))
+            await notify_users_by_email(
+                self.db, all_emails,
+                kind="approval_pending",
+                title=f"Approval needed: {approval['subject']}",
+                body=f"Site: {site_name or '—'} · Form: {variables.get('form_name') or '—'}",
+                link="/approvals",
+                submission_id=approval.get("submission_id"),
+                approval_id=approval["approval_id"],
+            )
+        except Exception as _e:  # noqa: BLE001
+            log.warning("approval notification failed: %s", _e)
         return approval
 
 

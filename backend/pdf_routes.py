@@ -684,12 +684,37 @@ def build_pdf_router(db, get_current_user, get_optional_user, _api_prefix="/api"
         await db.pdf_submissions.delete_one({"submission_id": submission_id})
         return {"ok": True}
 
+    async def _can_view_submission(user, sub: Dict[str, Any]) -> bool:
+        """Submitter + their vendor_admin can view a PDF submission's completed
+        PDF; anyone with RLS access to the parent template can also view."""
+        from permissions import normalize_role, is_super_admin
+        if is_super_admin(user):
+            return True
+        if sub.get("submitted_by") == getattr(user, "user_id", None):
+            return True
+        role = normalize_role(getattr(user, "role", ""))
+        if role == "vendor_admin" and getattr(user, "vendor_id", None):
+            submitter = await db.users.find_one(
+                {"user_id": sub.get("submitted_by")},
+                {"_id": 0, "vendor_id": 1},
+            )
+            if submitter and submitter.get("vendor_id") == user.vendor_id:
+                return True
+        return False
+
     @subs.get("/{submission_id}/completed")
     async def download_completed(submission_id: str, user=Depends(get_current_user)):
         sub = await db.pdf_submissions.find_one({"submission_id": submission_id}, {"_id": 0})
         if not sub:
             raise HTTPException(404, "Not found")
-        tpl = await _get_template_for_user(sub["template_id"], user)
+        # Allow submitter + vendor_admin fall-through in addition to RLS
+        tpl = None
+        if await _can_view_submission(user, sub):
+            tpl = await db.pdf_templates.find_one(
+                {"template_id": sub["template_id"], "is_deleted": False}, {"_id": 0},
+            )
+        if not tpl:
+            tpl = await _get_template_for_user(sub["template_id"], user)
         path = COMPLETED_DIR / (sub.get("completed_filename") or "")
         if not path.exists():
             raise HTTPException(404, "Completed PDF missing")
