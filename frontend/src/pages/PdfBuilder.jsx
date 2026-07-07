@@ -418,6 +418,36 @@ export default function PdfBuilderPage() {
           ) : (
             <div className="space-y-4">
               <div>
+                <Label className="text-xs">Public view mode</Label>
+                <div className="grid grid-cols-2 gap-2 mt-1" data-testid="pdf-view-mode-group">
+                  {[
+                    { v: "form", label: "Form view", hint: "Clean form fields, mobile-friendly" },
+                    { v: "pdf",  label: "PDF view",  hint: "Show the original PDF with fillable overlays" },
+                  ].map((opt) => {
+                    const active = (tpl.settings?.public_view_mode || "form") === opt.v;
+                    return (
+                      <button
+                        key={opt.v}
+                        type="button"
+                        data-testid={`pdf-view-mode-${opt.v}`}
+                        onClick={() => update({
+                          ...tpl,
+                          settings: { ...(tpl.settings || {}), public_view_mode: opt.v },
+                        })}
+                        className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+                          active
+                            ? "border-blue-500 bg-blue-50 text-blue-800 ring-1 ring-blue-500"
+                            : "border-slate-200 hover:border-slate-300 text-slate-700 bg-white"
+                        }`}
+                      >
+                        <div className="font-medium">{opt.label}</div>
+                        <div className="text-[10px] text-slate-500 mt-0.5">{opt.hint}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div>
                 <Label className="text-xs">Public URL</Label>
                 <div className="flex gap-2 mt-1">
                   <Input data-testid="pdf-share-url" readOnly value={publicUrl} />

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, API } from "@/lib/api";
 import FieldRenderer from "@/components/builder/FieldRenderer";
+import PdfOverlayFill from "@/components/pdfbuilder/PdfOverlayFill";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { CheckCircle2, Sparkles, Download, FileType2 } from "lucide-react";
@@ -186,9 +187,13 @@ export default function PublicPdfFormPage() {
     );
   }
 
+  const viewMode = tpl.settings?.public_view_mode || "form";
+  const isPdfView = viewMode === "pdf";
+  const containerMax = isPdfView ? "max-w-5xl" : "max-w-2xl";
+
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="max-w-2xl mx-auto py-10 px-4">
+      <div className={`${containerMax} mx-auto py-10 px-4`}>
         <div className="flex items-center gap-2 mb-4 text-slate-500 text-sm">
           <Sparkles className="w-4 h-4 text-blue-600" />
           <span>Powered by FormForge</span>
@@ -196,7 +201,7 @@ export default function PublicPdfFormPage() {
             <FileType2 className="w-3 h-3" /> PDF
           </span>
         </div>
-        <form onSubmit={submit} className="bg-white rounded-2xl card-soft p-8" data-testid="public-pdf-form">
+        <form onSubmit={submit} className="bg-white rounded-2xl card-soft p-6 sm:p-8" data-testid="public-pdf-form">
           {tpl.settings?.show_progress !== false && progressFields.length > 0 && (
             <div className="mb-6">
               <div className="flex justify-between text-xs text-slate-500 mb-1">
@@ -209,19 +214,34 @@ export default function PublicPdfFormPage() {
           )}
           <h1 className="text-3xl font-heading font-bold tracking-tight text-slate-900">{tpl.title}</h1>
           {tpl.description && <p className="text-sm text-slate-500 mt-2">{tpl.description}</p>}
-          <div className="mt-6 space-y-5">
-            {formFields.map((f) => (
-              <FieldRenderer
-                key={f.id}
-                field={f}
-                value={values[f.id]}
-                onChange={(v) => setValues((s) => ({ ...s, [f.id]: v }))}
-                onLookupFill={(patch) => setValues((s) => ({ ...s, ...patch }))}
-                mode="fill"
-                isPublic
+
+          {isPdfView ? (
+            <div className="mt-6">
+              <PdfOverlayFill
+                fileUrl={`${API}/public/pdf-forms/${slug}/file`}
+                fields={tpl.fields || []}
+                values={values}
+                onChange={(fid, v) => setValues((s) => ({ ...s, [fid]: v }))}
               />
-            ))}
-          </div>
+              <p className="text-[11px] text-slate-400 mt-2">
+                Click any highlighted field on the PDF to fill it in.
+              </p>
+            </div>
+          ) : (
+            <div className="mt-6 space-y-5">
+              {formFields.map((f) => (
+                <FieldRenderer
+                  key={f.id}
+                  field={f}
+                  value={values[f.id]}
+                  onChange={(v) => setValues((s) => ({ ...s, [f.id]: v }))}
+                  onLookupFill={(patch) => setValues((s) => ({ ...s, ...patch }))}
+                  mode="fill"
+                  isPublic
+                />
+              ))}
+            </div>
+          )}
           <Button
             data-testid="public-pdf-submit"
             type="submit"

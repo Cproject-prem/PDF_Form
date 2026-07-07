@@ -142,6 +142,7 @@ class PDFTemplatePatch(BaseModel):
     is_archived: Optional[bool] = None
     status: Optional[str] = None
     title: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 class PDFSubmissionIn(BaseModel):
