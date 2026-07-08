@@ -1,6 +1,9 @@
 import React, { useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { authPdfFile } from "@/lib/pdfWorker";
+import { api, API } from "@/lib/api";
+import { Upload, FileType2, X } from "lucide-react";
+import { toast } from "sonner";
 
 /**
  * Read-only PDF viewer with fillable overlay inputs for the public submitter.
@@ -141,8 +144,194 @@ function OverlayInput({ field, box, value, onChange, disabled }) {
         </label>
       );
     }
+    case "file":
+    case "image":
+      return (
+        <FileUploadOverlay
+          field={field}
+          style={style}
+          value={value}
+          onChange={onChange}
+          disabled={disabled}
+          acceptImages={field.type === "image"}
+        />
+      );
+    case "signature":
+      return (
+        <SignatureOverlay
+          field={field}
+          style={style}
+          value={value}
+          onChange={onChange}
+          disabled={disabled}
+        />
+      );
     default:
       // short_text, phone, url, and everything else — plain text input
       return <input type="text" className={baseCls} {...commonProps} />;
   }
+}
+
+/* --------------------- Upload widget (file / image) --------------------- */
+function FileUploadOverlay({ field, style, value, onChange, disabled, acceptImages }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const isImage = value && typeof value === "object" &&
+    (value.content_type || "").startsWith("image/");
+  const previewUrl = isImage ? `${API}/files/${value.file_id}` : null;
+
+  const handlePick = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      const r = await api.post("/public/upload", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      onChange({
+        file_id: r.data.file_id,
+        filename: r.data.filename,
+        size: r.data.size,
+        content_type: r.data.content_type,
+      });
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = () => onChange(null);
+
+  return (
+    <div
+      data-testid={`pdf-overlay-${field.id}`}
+      style={style}
+      className="relative border border-blue-400/70 bg-blue-50/40 rounded-sm flex items-center overflow-hidden"
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={acceptImages ? "image/*" : undefined}
+        disabled={disabled}
+        onChange={(e) => handlePick(e.target.files?.[0])}
+        className="hidden"
+      />
+      {previewUrl && (
+        // Show thumbnail so the submitter sees exactly what will land in the PDF
+        <img
+          src={previewUrl}
+          alt=""
+          className="absolute inset-0 w-full h-full object-contain bg-white"
+        />
+      )}
+      {!value && (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={disabled || busy}
+          className="flex items-center gap-1 px-1.5 text-blue-700 hover:text-blue-800 w-full h-full justify-center"
+        >
+          <Upload className="w-3 h-3" />
+          <span className="truncate" style={{ fontSize: Math.max(9, style.fontSize - 2) }}>
+            {busy ? "Uploading…" : acceptImages ? "Add image" : "Add file"}
+          </span>
+        </button>
+      )}
+      {value && !previewUrl && (
+        <div className="flex items-center gap-1 px-1.5 w-full">
+          <FileType2 className="w-3 h-3 text-blue-600 shrink-0" />
+          <span className="truncate text-blue-800 flex-1"
+                style={{ fontSize: Math.max(9, style.fontSize - 2) }}>
+            {value.filename}
+          </span>
+        </div>
+      )}
+      {value && !disabled && (
+        <button
+          type="button"
+          onClick={clear}
+          className="absolute -top-2 -right-2 bg-white shadow rounded-full p-0.5 border border-slate-200 z-10"
+          title="Remove"
+        >
+          <X className="w-3 h-3 text-slate-600" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+/* --------------------- Signature overlay (draw) --------------------- */
+function SignatureOverlay({ field, style, value, onChange, disabled }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+
+  const point = (e) => {
+    const c = canvasRef.current;
+    const rect = c.getBoundingClientRect();
+    const x = ("touches" in e ? e.touches[0].clientX : e.clientX) - rect.left;
+    const y = ("touches" in e ? e.touches[0].clientY : e.clientY) - rect.top;
+    return { x: (x / rect.width) * c.width, y: (y / rect.height) * c.height };
+  };
+  const start = (e) => {
+    if (disabled) return;
+    drawing.current = true;
+    const { x, y } = point(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+  const draw = (e) => {
+    if (!drawing.current) return;
+    const { x, y } = point(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#0F172A";
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+  const end = () => {
+    if (!drawing.current) return;
+    drawing.current = false;
+    onChange(canvasRef.current.toDataURL("image/png"));
+  };
+  const clear = () => {
+    const c = canvasRef.current;
+    c.getContext("2d").clearRect(0, 0, c.width, c.height);
+    onChange("");
+  };
+
+  return (
+    <div
+      data-testid={`pdf-overlay-${field.id}`}
+      style={style}
+      className="relative border border-blue-400/70 bg-white rounded-sm"
+    >
+      <canvas
+        ref={canvasRef}
+        width={400}
+        height={120}
+        className="w-full h-full cursor-crosshair touch-none"
+        onMouseDown={start}
+        onMouseMove={draw}
+        onMouseUp={end}
+        onMouseLeave={end}
+        onTouchStart={start}
+        onTouchMove={draw}
+        onTouchEnd={end}
+      />
+      {value && !disabled && (
+        <button
+          type="button"
+          onClick={clear}
+          className="absolute -top-2 -right-2 bg-white shadow rounded-full p-0.5 border border-slate-200"
+          title="Clear signature"
+        >
+          <X className="w-3 h-3 text-slate-600" />
+        </button>
+      )}
+    </div>
+  );
 }

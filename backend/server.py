@@ -1771,6 +1771,7 @@ _pdf_tpl_router, _pdf_public_router, _pdf_sub_router, _pdf_pub_sub_router = buil
     make_download_token=make_download_token,
     verify_download_token=verify_download_token,
     organize_submission_files=_organize_submission_files,
+    uploads_root=LOCAL_UPLOAD_ROOT,
 )
 api.include_router(_pdf_tpl_router)
 api.include_router(_pdf_public_router)

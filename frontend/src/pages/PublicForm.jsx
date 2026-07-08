@@ -1,10 +1,12 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import { useParams } from "react-router-dom";
 import { api, API } from "@/lib/api";
 import FieldRenderer from "@/components/builder/FieldRenderer";
+import { Document, Page } from "react-pdf";
+import { authPdfFile } from "@/lib/pdfWorker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { CheckCircle2, Sparkles, Download } from "lucide-react";
+import { CheckCircle2, Sparkles, Download, Eye } from "lucide-react";
 
 export default function PublicFormPage() {
   const { slug } = useParams();
@@ -147,6 +149,9 @@ export default function PublicFormPage() {
     const downloadUrl = done.download_token && done.submission_id
       ? `${API}/public/submissions/${done.submission_id}/filled.pdf?token=${encodeURIComponent(done.download_token)}`
       : null;
+    if (downloadUrl) {
+      return <FormSuccessScreen form={form} done={done} downloadUrl={downloadUrl} />;
+    }
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
         <div className="bg-white rounded-2xl card-soft p-10 max-w-md text-center">
@@ -155,17 +160,6 @@ export default function PublicFormPage() {
           <p className="text-slate-500 mt-2">{form.settings?.thank_you_message || "Thanks for your submission!"}</p>
           {done.submission_id && (
             <p className="text-xs text-slate-400 mt-1">ID: {done.submission_id}</p>
-          )}
-          {downloadUrl && (
-            <a
-              href={downloadUrl}
-              target="_blank"
-              rel="noreferrer"
-              data-testid="public-form-download"
-              className="inline-flex items-center gap-2 mt-6 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
-            >
-              <Download className="w-4 h-4" /> Download filled PDF
-            </a>
           )}
         </div>
       </div>
@@ -205,3 +199,77 @@ export default function PublicFormPage() {
     </div>
   );
 }
+
+/* -------------------- Success screen with PDF preview -------------------- */
+function FormSuccessScreen({ form, done, downloadUrl }) {
+  const [numPages, setNumPages] = useState(0);
+  const [showPreview, setShowPreview] = useState(true);
+  const file = useMemo(() => authPdfFile(downloadUrl), [downloadUrl]);
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <div className="max-w-4xl mx-auto py-10 px-4">
+        <div className="bg-white rounded-2xl card-soft p-6 sm:p-8">
+          <div className="flex items-start gap-4">
+            <CheckCircle2 className="w-10 h-10 text-emerald-500 shrink-0" />
+            <div className="flex-1">
+              <h2 className="text-2xl font-heading font-bold tracking-tight">Submission received</h2>
+              <p className="text-slate-500 mt-1 text-sm">
+                {form.settings?.thank_you_message || "Thanks for your submission!"}
+              </p>
+              <p className="text-xs text-slate-400 mt-1">Submission ID: {done.submission_id}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 mt-6">
+            <a
+              href={downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              data-testid="public-form-download"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium"
+            >
+              <Download className="w-4 h-4" /> Download filled PDF
+            </a>
+            <button
+              type="button"
+              onClick={() => setShowPreview((s) => !s)}
+              data-testid="public-form-toggle-preview"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 hover:border-slate-300 text-slate-700 text-sm font-medium"
+            >
+              <Eye className="w-4 h-4" /> {showPreview ? "Hide preview" : "Show preview"}
+            </button>
+          </div>
+
+          {showPreview && (
+            <div
+              className="mt-6 bg-slate-100 rounded-xl overflow-auto max-h-[75vh] nice-scroll"
+              data-testid="public-form-preview"
+            >
+              <div className="py-4 flex flex-col items-center gap-4">
+                <Document
+                  file={file}
+                  onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+                  loading={<div className="text-slate-400 text-sm py-10">Generating preview…</div>}
+                  error={<div className="text-red-500 text-sm py-10">Preview unavailable</div>}
+                >
+                  {Array.from({ length: numPages }, (_, i) => i + 1).map((n) => (
+                    <Page
+                      key={n}
+                      pageNumber={n}
+                      width={Math.min(900, window.innerWidth - 80)}
+                      renderTextLayer={false}
+                      renderAnnotationLayer={false}
+                      className="shadow-sm ring-1 ring-slate-200"
+                    />
+                  ))}
+                </Document>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+

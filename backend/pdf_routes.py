@@ -318,12 +318,56 @@ def _draw_checkbox(c: rl_canvas.Canvas, checked: bool, x: float, y: float, size:
 
 
 def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: Dict[str, Any],
-                           output_path: Path) -> None:
+                           output_path: Path, uploads_root: Optional[Path] = None,
+                           submission_id: Optional[str] = None) -> None:
     """Overlay field values on the original PDF and save to output_path.
     Original PDF is never modified; we merge a per-page overlay layer.
+
+    If `uploads_root` + `submission_id` are given, any file/image field whose
+    value is `{file_id, filename, ...}` and points to an image is embedded
+    into the PDF at the field's position (instead of just its filename).
     """
     reader = PdfReader(str(template_path))
     writer = PdfWriter()
+
+    def _resolve_image_bytes(val: Any) -> Optional[bytes]:
+        """Return raw image bytes for supported inputs (data-URL or uploaded
+        file ref); else None."""
+        # 1. data-URL (signatures)
+        if isinstance(val, str) and val.startswith("data:image"):
+            try:
+                return base64.b64decode(val.split(",", 1)[1])
+            except Exception:
+                return None
+        # 2. uploaded file ref
+        if isinstance(val, dict) and val.get("file_id"):
+            fname = (val.get("filename") or "").lower()
+            ct = (val.get("content_type") or "").lower()
+            ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
+            if not (ct.startswith("image/") or ext in {"png", "jpg", "jpeg", "gif", "webp", "bmp"}):
+                return None
+            if not uploads_root:
+                return None
+            candidates = []
+            if submission_id:
+                candidates.append(uploads_root / "submissions" / submission_id / (val.get("filename") or ""))
+            if ext:
+                candidates.append(uploads_root / "tmp" / f"{val['file_id']}.{ext}")
+            for p in candidates:
+                if p and p.exists():
+                    try:
+                        return p.read_bytes()
+                    except Exception:
+                        pass
+            # Fallback: search by basename anywhere under uploads/
+            try:
+                fallback_root = uploads_root.parent
+                for cand in fallback_root.rglob(val.get("filename") or "__none__"):
+                    if cand.is_file():
+                        return cand.read_bytes()
+            except Exception:
+                pass
+        return None
 
     # group fields per page
     by_page: Dict[int, List[PDFField]] = {}
@@ -389,18 +433,29 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                 elif ftype == "barcode":
                     _draw_barcode(c, val, x, top_y, w, h)
                 elif ftype == "image":
-                    if isinstance(val, str) and val.startswith("data:image"):
+                    img_bytes = _resolve_image_bytes(val)
+                    if img_bytes:
                         try:
-                            b64 = val.split(",", 1)[1]
                             from reportlab.lib.utils import ImageReader
-                            img = ImageReader(io.BytesIO(base64.b64decode(b64)))
+                            img = ImageReader(io.BytesIO(img_bytes))
                             c.drawImage(img, x, top_y - h, width=w, height=h,
                                         mask="auto", preserveAspectRatio=True, anchor="sw")
                         except Exception as e:
                             logger.warning(f"image render failed: {e}")
                 elif ftype == "file":
-                    _draw_text(c, f"[file] {val}" if val else "", x, top_y, w, h,
-                               f.font_family, f.font_size, f.font_color, f.alignment)
+                    img_bytes = _resolve_image_bytes(val)
+                    if img_bytes:
+                        try:
+                            from reportlab.lib.utils import ImageReader
+                            img = ImageReader(io.BytesIO(img_bytes))
+                            c.drawImage(img, x, top_y - h, width=w, height=h,
+                                        mask="auto", preserveAspectRatio=True, anchor="sw")
+                        except Exception as e:
+                            logger.warning(f"file image render failed: {e}")
+                    else:
+                        fname = val.get("filename") if isinstance(val, dict) else (val or "")
+                        _draw_text(c, f"[file] {fname}" if fname else "", x, top_y, w, h,
+                                   f.font_family, f.font_size, f.font_color, f.alignment)
                 elif ftype == "hidden":
                     continue
                 else:
@@ -421,6 +476,7 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
 def build_pdf_router(db, get_current_user, get_optional_user,
                      make_download_token=None, verify_download_token=None,
                      organize_submission_files=None,
+                     uploads_root: Optional[Path] = None,
                      _api_prefix="/api"):
     """Build the router; requires DB + auth deps from the main app.
     make_download_token / verify_download_token are injected from server.py so
@@ -641,7 +697,8 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         out_path = COMPLETED_DIR / out_name
         try:
             field_models = [PDFField(**f) for f in tpl.get("fields", [])]
-            generate_completed_pdf(src, field_models, body.values, out_path)
+            generate_completed_pdf(src, field_models, body.values, out_path,
+                                   uploads_root=uploads_root, submission_id=sid)
         except Exception as e:
             logger.exception("PDF generation failed")
             raise HTTPException(500, f"PDF generation failed: {e}")
