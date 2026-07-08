@@ -163,10 +163,17 @@ def form_filter(user) -> Dict[str, Any]:
             clauses.append({"assigned_vendor_ids": vid})
         if role == VENDOR_USER and uid:
             clauses.append({"assigned_vendor_user_ids": uid})
-        # legacy: user.assignments.forms keeps working
-        legacy = user_assignments(user).get("forms") or []
-        if legacy:
-            clauses.append({"form_id": {"$in": legacy}})
+        # legacy per-user assignments — accept BOTH `forms` and `pdf_forms`
+        # since this filter is shared between the `forms` and `pdf_templates`
+        # collections (matched by form_id / template_id respectively).
+        assignments = user_assignments(user)
+        legacy_ids = list({
+            *(assignments.get("forms") or []),
+            *(assignments.get("pdf_forms") or []),
+        })
+        if legacy_ids:
+            clauses.append({"form_id":     {"$in": legacy_ids}})
+            clauses.append({"template_id": {"$in": legacy_ids}})
         return {"$or": clauses} if clauses else {"form_id": "__none__"}
 
     return {"form_id": "__none__"}
@@ -199,8 +206,9 @@ def can_view_form(user, form_doc: Dict[str, Any]) -> bool:
         return True
     if uid and uid in (form_doc.get("assigned_vendor_user_ids") or []):
         return True
-    legacy = user_assignments(user).get("forms") or []
-    if form_doc.get("form_id") in legacy or form_doc.get("template_id") in legacy:
+    assignments = user_assignments(user)
+    legacy_ids = set((assignments.get("forms") or []) + (assignments.get("pdf_forms") or []))
+    if form_doc.get("form_id") in legacy_ids or form_doc.get("template_id") in legacy_ids:
         return True
     return False
 
@@ -373,9 +381,9 @@ def menu_for(user) -> List[Dict[str, str]]:
                       "plants", "site-master", "vendors",
                       "master-data", "users", "welcome-email", "reports"])
     if role == VENDOR_ADMIN:
-        return _menu(["manpower", "forms", "submissions", "plants", "team"])
+        return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "team"])
     if role == VENDOR_USER:
-        return _menu(["forms", "submissions", "plants"])
+        return _menu(["forms", "pdf-forms", "submissions", "plants"])
     return _menu(["forms"])
 
 
