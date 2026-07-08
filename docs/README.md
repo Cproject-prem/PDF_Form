@@ -19,6 +19,7 @@ Full project documentation, organised as **15 topic folders**. Each folder conta
 | 13 | `13_Deployment` | Docker / bare-metal / production setups + env vars |
 | 14 | `14_Future_Features` | Prioritised backlog (P0/P1/P2) |
 | 15 | `15_Change_Log` | Version history, newest first |
+| 16 | `16_Security` | Hardening measures, deployment checklist |
 
 ## How to use these docs
 

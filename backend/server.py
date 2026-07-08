@@ -35,6 +35,20 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(me
 MONGO_URL = os.environ['MONGO_URL']
 DB_NAME = os.environ['DB_NAME']
 JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
+
+# ---------- Startup security enforcement ----------
+from security import (  # noqa: E402
+    enforce_startup_security,
+    LOGIN_LIMITER,
+    PUBLIC_SUBMIT_LIMITER,
+    UPLOAD_LIMITER,
+    check_rate_limit,
+    _client_ip,
+    validate_password_strength,
+    validate_upload,
+    SecurityHeadersMiddleware,
+)
+enforce_startup_security(dict(os.environ))
 JWT_ALGO = 'HS256'
 JWT_EXPIRE_HOURS = int(os.environ.get('JWT_EXPIRE_HOURS', 168))
 APP_NAME = os.environ.get('APP_NAME', 'jotform-clone')
@@ -486,15 +500,26 @@ async def register(body: RegisterIn):
     return {"token": token, "user": UserOut(**{k: v for k, v in user_doc.items() if k != "password_hash"})}
 
 @api.post("/auth/login")
-async def login(body: LoginIn):
-    user = await db.users.find_one({"email": body.email.lower()})
+async def login(body: LoginIn, request: Request):
+    ip = _client_ip(request)
+    email = body.email.lower()
+    # Rate limit BOTH by IP and by (IP + email) so distributed guessing is
+    # bounded and per-account guessing is bounded.
+    check_rate_limit(LOGIN_LIMITER, f"login:ip:{ip}",        "login")
+    check_rate_limit(LOGIN_LIMITER, f"login:email:{email}",  "login")
+    user = await db.users.find_one({"email": email})
     if not user or not user.get("password_hash") or not check_password(body.password, user["password_hash"]):
+        logger.warning(f"failed_login email={email} ip={ip}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user.get("is_active", True):
         raise HTTPException(status_code=403, detail="User disabled")
+    # Successful login → reset that email's window so a legit user isn't
+    # locked out by their own prior typos.
+    LOGIN_LIMITER.reset(f"login:email:{email}")
     token = make_token(user["user_id"], user["role"])
     user.pop("password_hash", None)
     user.pop("_id", None)
+    logger.info(f"login_success email={email} role={user.get('role')} ip={ip}")
     return {"token": token, "user": UserOut(**user)}
 
 @api.post("/auth/google/session")
@@ -837,6 +862,10 @@ async def create_user(body: UserCreateIn, user: User = Depends(_require_user_edi
         raise HTTPException(status_code=409, detail="Email taken")
     temp_password = body.password or _gen_temp_password()
     generated = body.password is None
+    # Strength check ONLY when the caller supplied a password.
+    # Auto-generated ones already meet the policy (see _gen_temp_password).
+    if not generated:
+        validate_password_strength(temp_password)
     uid = f"user_{uuid.uuid4().hex[:12]}"
     doc = {
         "user_id": uid, "email": email, "name": body.name, "role": body.role,
@@ -1168,6 +1197,7 @@ async def public_get_form(slug: str):
 @api.post("/public/forms/{slug}/submit")
 async def public_submit(slug: str, body: SubmissionIn, request: Request,
                         viewer: Optional[User] = Depends(get_optional_user)):
+    check_rate_limit(PUBLIC_SUBMIT_LIMITER, f"submit:ip:{_client_ip(request)}", "submit")
     form = await db.forms.find_one({"slug": slug, "is_deleted": False}, {"_id": 0})
     if not form:
         raise HTTPException(404, "Form not found")
@@ -1423,13 +1453,15 @@ ALLOWED_EXTS = {"pdf", "doc", "docx", "png", "jpg", "jpeg", "zip", "rar",
                 "mp4", "xlsx", "csv", "txt", "gif", "webp"}
 
 @api.post("/upload")
-async def upload(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+async def upload(request: Request, file: UploadFile = File(...), user: User = Depends(get_current_user)):
+    check_rate_limit(UPLOAD_LIMITER, f"upload:user:{user.user_id}", "upload")
     data = await file.read()
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(413, f"File exceeds {MAX_UPLOAD_MB}MB limit")
     ext = (file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin").lower()
     if ext not in ALLOWED_EXTS:
         raise HTTPException(400, f"Extension '{ext}' not allowed")
+    validate_upload(file.filename, data)
     file_id = uuid.uuid4().hex
     # Land in the tmp bucket first — moved into submissions/{sid}/ once the
     # submission that references this file is actually created.
@@ -1448,14 +1480,16 @@ async def upload(file: UploadFile = File(...), user: User = Depends(get_current_
             "url": f"/api/files/{file_id}"}
 
 @api.post("/public/upload")
-async def public_upload(file: UploadFile = File(...)):
+async def public_upload(request: Request, file: UploadFile = File(...)):
     """Anonymous uploads for public form submissions."""
+    check_rate_limit(UPLOAD_LIMITER, f"upload:ip:{_client_ip(request)}", "upload")
     data = await file.read()
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(413, f"File exceeds {MAX_UPLOAD_MB}MB limit")
     ext = (file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin").lower()
     if ext not in ALLOWED_EXTS:
         raise HTTPException(400, f"Extension '{ext}' not allowed")
+    validate_upload(file.filename, data)
     file_id = uuid.uuid4().hex
     path = f"tmp/{file_id}.{ext}"
     ct = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
@@ -1705,7 +1739,14 @@ app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=[o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Security headers (HSTS, CSP, X-Frame-Options, etc.).
+# HSTS only when SECURITY_HTTPS=true — locally we serve HTTP.
+app.add_middleware(
+    SecurityHeadersMiddleware,
+    enable_hsts=os.environ.get("SECURITY_HTTPS", "false").lower() == "true",
 )
