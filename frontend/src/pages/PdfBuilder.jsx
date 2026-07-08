@@ -36,7 +36,7 @@ export default function PdfBuilderPage() {
   const [pageInput, setPageInput] = useState("1");
   const [selectedId, setSelectedId] = useState(null);
   const [showGrid, setShowGrid] = useState(false);
-  const [snap, setSnap] = useState(true);
+  const [snap, setSnap] = useState(false);
   const [history, setHistory] = useState([]);
   const [future, setFuture] = useState([]);
   const [saving, setSaving] = useState(false);

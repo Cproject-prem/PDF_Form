@@ -317,6 +317,23 @@ def _draw_checkbox(c: rl_canvas.Canvas, checked: bool, x: float, y: float, size:
         c.line(bx + box / 2 - 1, by + 2, bx + box - 2, by + box - 2)
 
 
+def _draw_tick_only(c: rl_canvas.Canvas, x: float, y: float, w: float, h: float,
+                    color_hex: str = "#111827") -> None:
+    """Draw ONLY a check mark (no surrounding box) sized to the field bounds.
+    Used when the source PDF already has an unchecked box printed on the
+    page — we just stamp a tick on top instead of drawing a second box."""
+    r, g, b = _hex_to_rgb(color_hex)
+    c.setFillColorRGB(r, g, b)
+    # Use ZapfDingbats char '4' — a heavy check mark that scales nicely.
+    # Font size = the smaller of the field's width and height, minus a small pad.
+    fs = max(6, min(w, h) * 0.95)
+    c.setFont("ZapfDingbats", fs)
+    # Center inside the field's box (reportlab's y is baseline; nudge down by ~15% of fs)
+    cx = x + w / 2 - fs * 0.35
+    cy = y - h + h / 2 - fs * 0.30
+    c.drawString(cx, cy, "\x34")  # ZapfDingbats heavy check mark
+
+
 def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: Dict[str, Any],
                            output_path: Path, uploads_root: Optional[Path] = None,
                            submission_id: Optional[str] = None) -> None:
@@ -419,15 +436,26 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                             _draw_text(c, opt, x + line_h + 4, oy, w - line_h - 8,
                                        line_h, f.font_family, f.font_size, f.font_color, "left")
                     else:
-                        _draw_checkbox(c, bool(val), x, top_y, h, f.font_color)
+                        # Single Yes/No checkbox: DO NOT draw our own box — the
+                        # source PDF usually already has one printed. Just
+                        # stamp a check mark centred inside the field bounds
+                        # when the value is truthy.
+                        checked = val is True or val == "true" or val == 1 or val == "1"
+                        if checked:
+                            _draw_tick_only(c, x, top_y, w, h, f.font_color)
                 elif ftype == "tick":
-                    # Single yes/no with an inline label next to the box.
+                    # Single yes/no — same treatment as single checkbox: stamp
+                    # only the tick, no box (so we don't overlap the PDF's
+                    # own printed square).
                     checked = val is True or val == "true" or val == 1 or val == "1"
-                    box = max(min(h, f.font_size * 1.2), 12)
-                    _draw_checkbox(c, checked, x, top_y, box, f.font_color)
-                    lbl = getattr(f, "tick_label", None) or (f.placeholder or "Yes")
-                    _draw_text(c, lbl, x + box + 4, top_y, w - box - 8, box,
-                               f.font_family, f.font_size, f.font_color, "left")
+                    if checked:
+                        _draw_tick_only(c, x, top_y, w, h, f.font_color)
+                    # Optional inline label next to the tick, if the field
+                    # width is wide enough for it.
+                    lbl = getattr(f, "tick_label", None) or ""
+                    if lbl and w > h * 2:
+                        _draw_text(c, lbl, x + h + 4, top_y, w - h - 8, h,
+                                   f.font_family, f.font_size, f.font_color, "left")
                 elif ftype == "qr_code":
                     _draw_qr(c, val, x, top_y, w, h)
                 elif ftype == "barcode":
