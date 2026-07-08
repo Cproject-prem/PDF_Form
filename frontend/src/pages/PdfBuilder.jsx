@@ -17,6 +17,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from "@/components/ui/dialog";
 import { QRCodeCanvas } from "qrcode.react";
+import VendorAccessGrid from "@/components/VendorAccessGrid";
 import { makePdfField } from "@/lib/pdfFieldTypes";
 import {
   ArrowLeft, Sparkles, Eye, Globe, Share2, Copy, ZoomIn, ZoomOut, Maximize2,
@@ -463,6 +464,14 @@ export default function PdfBuilderPage() {
               </div>
               <div className="flex justify-center bg-slate-50 rounded-xl p-4">
                 <QRCodeCanvas value={publicUrl} size={160} />
+              </div>
+              <div className="pt-3 border-t border-slate-100">
+                <VendorAccessGrid
+                  resource="pdf-form"
+                  resourceId={tpl.template_id}
+                  value={tpl.assigned_vendor_ids || []}
+                  onChange={(arr) => update({ ...tpl, assigned_vendor_ids: arr })}
+                />
               </div>
             </div>
           )}

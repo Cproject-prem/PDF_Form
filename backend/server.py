@@ -653,11 +653,52 @@ async def submissions_overview(user: User = Depends(get_current_user)):
         # region/cluster-scoped submission filter (empty for global admins)
         sub_q_extra = await async_submission_filter(db, user)
 
+    async def _enrich(subs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Attach submitter + vendor display fields to each row so the
+        admin UI can render a full 'Submitter' card. Non-admin viewers get
+        the same enrichment — RLS already limits which rows they see, so
+        showing the submitter's name inside those rows is fine."""
+        if not subs:
+            return subs
+        uid_list = list({s.get("submitted_by") for s in subs if s.get("submitted_by")})
+        users_by_id: Dict[str, Dict[str, Any]] = {}
+        if uid_list:
+            async for u in db.users.find(
+                {"user_id": {"$in": uid_list}},
+                {"_id": 0, "user_id": 1, "email": 1, "name": 1, "role": 1, "vendor_id": 1, "region": 1},
+            ):
+                users_by_id[u["user_id"]] = u
+        vendor_ids = list({(users_by_id.get(u) or {}).get("vendor_id") for u in uid_list})
+        vendor_ids += [s.get("vendor_id") for s in subs if s.get("vendor_id")]
+        vendor_ids = [v for v in set(vendor_ids) if v]
+        vendors_by_id: Dict[str, str] = {}
+        if vendor_ids:
+            async for v in db.vendors.find(
+                {"vendor_id": {"$in": vendor_ids}},
+                {"_id": 0, "vendor_id": 1, "vendor_name": 1},
+            ):
+                vendors_by_id[v["vendor_id"]] = v.get("vendor_name")
+        for s in subs:
+            u = users_by_id.get(s.get("submitted_by") or "") if s.get("submitted_by") else None
+            if u:
+                s.setdefault("submitted_by_email", u.get("email"))
+                s.setdefault("submitted_by_name",  u.get("name"))
+                s.setdefault("submitter_role",     u.get("role"))
+                if u.get("vendor_id"):
+                    s.setdefault("vendor_id", u["vendor_id"])
+                if u.get("region") and not s.get("region"):
+                    s["region"] = u["region"]
+            vid = s.get("vendor_id")
+            if vid and vid in vendors_by_id:
+                s["vendor_name"] = vendors_by_id[vid]
+        return subs
+
     for f in forms:
         sq = {"form_id": f["form_id"]}
         if sub_q_extra:
             sq = {"$and": [sq, sub_q_extra]}
         subs = await db.submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
+        subs = await _enrich(subs)
         groups.append({
             "kind": "form",
             "id": f["form_id"],
@@ -687,6 +728,7 @@ async def submissions_overview(user: User = Depends(get_current_user)):
         if sub_q_extra:
             sq = {"$and": [sq, sub_q_extra]}
         subs = await db.pdf_submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
+        subs = await _enrich(subs)
         groups.append({
             "kind": "pdf",
             "id": t["template_id"],

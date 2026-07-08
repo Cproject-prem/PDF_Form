@@ -315,20 +315,75 @@ export default function SubmissionsHubPage() {
             </DialogTitle>
           </DialogHeader>
           {detail && (
-            <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl max-h-[60vh] overflow-y-auto">
-              {(detail.group.field_summary || []).map((f) => (
-                <div key={f.id} className="p-3 grid grid-cols-3 gap-2 text-sm">
-                  <div className="text-slate-500 col-span-1">{f.label}</div>
-                  <div className="col-span-2 text-slate-800 break-words">
-                    {renderVal(detail.sub.values?.[f.id])}
+            <div className="space-y-4">
+              <SubmitterCard sub={detail.sub} />
+              <div className="divide-y divide-slate-100 border border-slate-100 rounded-xl max-h-[45vh] overflow-y-auto">
+                {(detail.group.field_summary || []).map((f) => (
+                  <div key={f.id} className="p-3 grid grid-cols-3 gap-2 text-sm">
+                    <div className="text-slate-500 col-span-1">{f.label}</div>
+                    <div className="col-span-2 text-slate-800 break-words">
+                      {renderVal(detail.sub.values?.[f.id])}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           )}
         </DialogContent>
       </Dialog>
     </AppLayout>
+  );
+}
+
+/* ------------------- Submitter details card -------------------
+   Shown on the submission detail dialog. Visible to admins /
+   super_admins (data returned by the backend already scopes what
+   non-admin viewers can see). */
+function SubmitterCard({ sub }) {
+  const name  = sub.submitted_by_name || sub.submitter_name;
+  const email = sub.submitted_by_email || sub.submitter_email;
+  const uid   = sub.submitted_by || sub.user_id;
+  const role  = sub.submitter_role || sub.role;
+  const vendor = sub.vendor_name || sub.vendor_id;
+  const site  = sub.site_name || sub.site_code;
+  const region = sub.region;
+  const ip = sub.ip;
+  const ua = sub.user_agent;
+  const when = sub.created_at || sub.submitted_at;
+
+  const item = (label, value, mono = false) => value ? (
+    <div className="flex gap-3 text-xs">
+      <div className="w-24 shrink-0 text-slate-500">{label}</div>
+      <div className={`flex-1 text-slate-800 break-all ${mono ? "font-mono" : ""}`}>{value}</div>
+    </div>
+  ) : null;
+
+  return (
+    <div className="rounded-xl border border-slate-100 bg-slate-50/50 p-4" data-testid="submitter-card">
+      <div className="flex items-center gap-2 mb-3">
+        <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-700 font-medium flex items-center justify-center text-sm">
+          {(name || email || "?").slice(0, 1).toUpperCase()}
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-slate-900 truncate">
+            {name || email || "Anonymous submission"}
+          </div>
+          <div className="text-[11px] text-slate-500 truncate">
+            {email || uid || "no account — public submission"}
+          </div>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        {item("Role",     role)}
+        {item("Vendor",   vendor)}
+        {item("Site",     site)}
+        {item("Region",   region)}
+        {item("User ID",  uid, true)}
+        {item("Submitted", when)}
+        {item("IP",       ip, true)}
+        {item("Agent",    ua)}
+      </div>
+    </div>
   );
 }
 

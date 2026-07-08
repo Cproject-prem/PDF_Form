@@ -19,6 +19,7 @@ import {
   ArrowLeft, Eye, Globe, Save, Share2, Smartphone, Tablet, Monitor, Copy, Sparkles
 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
+import VendorAccessGrid from "@/components/VendorAccessGrid";
 
 export default function FormBuilderPage() {
   const { id } = useParams();
@@ -196,6 +197,14 @@ export default function FormBuilderPage() {
               </div>
               <div className="flex justify-center bg-slate-50 rounded-xl p-4">
                 <QRCodeCanvas value={publicUrl} size={160} />
+              </div>
+              <div className="pt-3 border-t border-slate-100">
+                <VendorAccessGrid
+                  resource="form"
+                  resourceId={form.form_id}
+                  value={form.assigned_vendor_ids || []}
+                  onChange={(arr) => onUpdate({ ...form, assigned_vendor_ids: arr })}
+                />
               </div>
             </div>
           )}
