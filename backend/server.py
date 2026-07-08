@@ -1356,9 +1356,76 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image,
     )
     from reportlab.lib import colors
+    import base64 as _b64
+
+    # ---- image embedding helpers ------------------------------------------
+    IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+    MAX_IMG_W = 100 * mm    # thumbnail cell width
+    MAX_IMG_H = 70 * mm
+
+    def _load_uploaded_image(file_ref: Dict[str, Any]):
+        """Return a reportlab Image flowable for a `{file_id, filename, ...}`
+        ref if it points to an image on disk; else return None."""
+        fid = file_ref.get("file_id")
+        if not fid:
+            return None
+        ct = (file_ref.get("content_type") or "").lower()
+        fname = (file_ref.get("filename") or "").lower()
+        ext = fname.rsplit(".", 1)[-1] if "." in fname else ""
+        if not (ct.startswith("image/") or ext in IMAGE_EXTS):
+            return None
+        # Locate the file bytes on disk. We honour the same paths that
+        # _organize_submission_files creates, plus the legacy fallback.
+        candidates = [
+            LOCAL_UPLOAD_ROOT / "submissions" / sub["submission_id"] / (file_ref.get("filename") or ""),
+            LOCAL_UPLOAD_ROOT / "tmp" / f"{fid}.{ext}" if ext else None,
+        ]
+        for p in candidates:
+            if p and p.exists():
+                try:
+                    return _fit_image(str(p))
+                except Exception as _e:  # noqa: BLE001
+                    logger.warning(f"image embed failed for {p}: {_e}")
+                    return None
+        # Fallback: search by basename anywhere under uploads/
+        try:
+            fallback_root = Path(str(LOCAL_UPLOAD_ROOT).replace("/local", ""))
+            for cand in fallback_root.rglob(file_ref.get("filename") or "__none__"):
+                if cand.is_file():
+                    return _fit_image(str(cand))
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _fit_image(path_str: str) -> "Image":
+        img = Image(path_str)
+        iw, ih = img.imageWidth, img.imageHeight
+        if iw <= 0 or ih <= 0:
+            return img
+        scale = min(MAX_IMG_W / iw, MAX_IMG_H / ih, 1.0)
+        img.drawWidth  = iw * scale
+        img.drawHeight = ih * scale
+        img.hAlign = "LEFT"
+        return img
+
+    def _load_datauri_image(uri: str):
+        """Signature/inline data-URLs → embed as an image cell."""
+        try:
+            header, b64 = uri.split(",", 1)
+            data = _b64.b64decode(b64)
+            tmp = LOCAL_UPLOAD_ROOT / "tmp" / f"__inline_{uuid.uuid4().hex[:10]}.png"
+            tmp.write_bytes(data)
+            img = _fit_image(str(tmp))
+            # cleanup after reportlab has read it (we defer with a marker attr)
+            img._ff_tmpfile = tmp
+            return img
+        except Exception as _e:  # noqa: BLE001
+            logger.warning(f"data-URI decode failed: {_e}")
+            return None
+    # ------------------------------------------------------------------------
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
@@ -1369,6 +1436,7 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
     meta_style = ParagraphStyle("meta", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#64748B"))
     label_style = ParagraphStyle("lbl", parent=styles["Normal"], fontSize=9, textColor=colors.HexColor("#334155"))
     val_style = ParagraphStyle("val", parent=styles["Normal"], fontSize=11, textColor=colors.HexColor("#0F172A"))
+    caption_style = ParagraphStyle("cap", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#64748B"))
 
     elems = [
         Paragraph(form.get("title") or "Submission", h_style),
@@ -1380,12 +1448,12 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
         Spacer(1, 8),
     ]
     rows = []
+    inline_tmps: list = []
     for f in form.get("fields") or []:
         if f.get("type") in ("heading", "paragraph", "divider"):
             continue
         v = (sub.get("values") or {}).get(f["id"], "")
         if f.get("type") == "tick":
-            # Render a visible checkmark (ZapfDingbats char 4 = heavy check).
             checked = v is True or v == "true" or v == 1 or v == "1"
             tick_label = f.get("tick_label") or "Yes"
             if checked:
@@ -1397,14 +1465,32 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
             rows.append([Paragraph(str(f.get("label") or f["id"]), label_style),
                          Paragraph(v_html, val_style)])
             continue
-        if isinstance(v, (list, tuple)):
-            v = ", ".join(str(x) for x in v)
-        elif isinstance(v, dict):
+
+        # File/image uploads — try to embed the actual image
+        if isinstance(v, dict) and v.get("file_id"):
+            img_flow = _load_uploaded_image(v)
+            if img_flow is not None:
+                # Stack image + a small filename caption underneath
+                cap = Paragraph(v.get("filename") or "", caption_style)
+                cell = [img_flow, Spacer(1, 2), cap]
+                rows.append([Paragraph(str(f.get("label") or f["id"]), label_style), cell])
+                continue
+            # Non-image file → just show filename as text
             v = v.get("filename") or str(v)
         elif isinstance(v, str) and v.startswith("data:image"):
-            v = "[signature image]"
+            img_flow = _load_datauri_image(v)
+            if img_flow is not None:
+                if getattr(img_flow, "_ff_tmpfile", None):
+                    inline_tmps.append(img_flow._ff_tmpfile)
+                rows.append([Paragraph(str(f.get("label") or f["id"]), label_style), img_flow])
+                continue
+            v = "[image]"
+        elif isinstance(v, (list, tuple)):
+            v = ", ".join(str(x) for x in v)
+
         rows.append([Paragraph(str(f.get("label") or f["id"]), label_style),
                      Paragraph(str(v) if v not in (None, "") else "—", val_style)])
+
     if rows:
         table = Table(rows, colWidths=[55*mm, 115*mm])
         table.setStyle(TableStyle([
@@ -1415,6 +1501,12 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
         ]))
         elems.append(table)
     doc.build(elems)
+    # Best-effort cleanup of any inline temp files we spawned
+    for p in inline_tmps:
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
     buf.seek(0)
     fname = f"{form.get('slug') or form['form_id']}-{sub['submission_id']}.pdf"
     return Response(
