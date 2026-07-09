@@ -771,7 +771,9 @@ async def export_submissions_xlsx(form_id: str, user: User = Depends(get_current
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     form = await _get_form_for_user(form_id, user)
-    rows = await db.submissions.find({"form_id": form_id}, {"_id": 0}) \
+    scope = await _submission_scope_query(user)
+    xls_q = {"$and": [{"form_id": form_id}, scope]} if scope else {"form_id": form_id}
+    rows = await db.submissions.find(xls_q, {"_id": 0}) \
         .sort("created_at", 1).to_list(5000)
     fields = [f for f in (form.get("fields") or [])
               if f.get("type") not in ("heading", "paragraph", "divider")]
@@ -1310,8 +1312,39 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
 @api.get("/forms/{form_id}/submissions", response_model=List[Submission])
 async def list_submissions(form_id: str, user: User = Depends(get_current_user)):
     await _get_form_for_user(form_id, user)
-    rows = await db.submissions.find({"form_id": form_id}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    scope = await _submission_scope_query(user)
+    query = {"$and": [{"form_id": form_id}, scope]} if scope else {"form_id": form_id}
+    rows = await db.submissions.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return [Submission(**r) for r in rows]
+
+async def _submission_scope_query(user: User) -> Dict[str, Any]:
+    """Return a Mongo query fragment that restricts a submissions collection
+    (standard `submissions` OR `pdf_submissions`) to the rows the given user
+    is allowed to see.
+
+    * super_admin / access_override → {} (no restriction)
+    * admin → async_submission_filter (region / cluster / assigned scope)
+    * vendor_admin → submissions submitted by any user of the same vendor
+    * vendor_user → only their own submissions
+    """
+    from permissions import (
+        normalize_role, is_super_admin, has_access_override,
+        async_submission_filter,
+    )
+    if is_super_admin(user) or has_access_override(user):
+        return {}
+    role = normalize_role(getattr(user, "role", ""))
+    if role == "admin":
+        return await async_submission_filter(db, user)
+    if role == "vendor_admin" and user.vendor_id:
+        team = await db.users.find(
+            {"vendor_id": user.vendor_id}, {"_id": 0, "user_id": 1},
+        ).to_list(2000)
+        return {"submitted_by": {"$in": [u["user_id"] for u in team]}}
+    if role == "vendor_user" and user.user_id:
+        return {"submitted_by": user.user_id}
+    return {"submission_id": "__none__"}
+
 
 @api.get("/submissions/{submission_id}", response_model=Submission)
 async def get_submission(submission_id: str, user: User = Depends(get_current_user)):
@@ -1319,6 +1352,8 @@ async def get_submission(submission_id: str, user: User = Depends(get_current_us
     if not sub:
         raise HTTPException(404, "Not found")
     await _get_form_for_user(sub["form_id"], user)
+    if not await _submission_in_user_scope(user, sub):
+        raise HTTPException(403, "You do not have permission to view this submission")
     return Submission(**sub)
 
 class SubmissionStatusIn(BaseModel):
@@ -1331,6 +1366,8 @@ async def update_submission_status(submission_id: str, body: SubmissionStatusIn,
     if not sub:
         raise HTTPException(404, "Not found")
     await _get_form_for_user(sub["form_id"], user)
+    if not await _submission_in_user_scope(user, sub):
+        raise HTTPException(403, "You do not have permission to modify this submission")
     if body.status not in ("submitted", "approved", "rejected"):
         raise HTTPException(400, "Invalid status")
     await db.submissions.update_one({"submission_id": submission_id}, {"$set": {"status": body.status}})
@@ -1343,8 +1380,35 @@ async def delete_submission(submission_id: str, user: User = Depends(get_current
     if not sub:
         raise HTTPException(404, "Not found")
     await _get_form_for_user(sub["form_id"], user)
+    if not await _submission_in_user_scope(user, sub):
+        raise HTTPException(403, "You do not have permission to delete this submission")
     await db.submissions.delete_one({"submission_id": submission_id})
     return {"ok": True}
+
+
+async def _submission_in_user_scope(user: User, sub: Dict[str, Any]) -> bool:
+    """Return True if this specific submission row is inside the user's
+    row-level-scope. Uses the same logic as `_submission_scope_query` but
+    evaluates it against a single already-fetched submission document."""
+    from permissions import normalize_role, is_super_admin, has_access_override
+    if is_super_admin(user) or has_access_override(user):
+        return True
+    role = normalize_role(getattr(user, "role", ""))
+    if role == "admin":
+        # Admins already have form-level access; region/cluster scope is
+        # enforced elsewhere via async_submission_filter on list endpoints.
+        return True
+    uid = getattr(user, "user_id", None)
+    if role == "vendor_user":
+        return sub.get("submitted_by") == uid
+    if role == "vendor_admin" and user.vendor_id:
+        if sub.get("submitted_by") == uid:
+            return True
+        submitter = await db.users.find_one(
+            {"user_id": sub.get("submitted_by")}, {"_id": 0, "vendor_id": 1},
+        )
+        return bool(submitter and submitter.get("vendor_id") == user.vendor_id)
+    return False
 
 
 # ---------- Submitter-facing "download filled PDF" for standard forms ----

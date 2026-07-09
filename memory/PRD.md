@@ -71,3 +71,16 @@ Any match on any of the three grants access, so an admin can be regional, cluste
 - (P1) Configurable welcome-email template UI at `/settings/welcome-email` (backend already reads `db.workspace_settings["welcome_email"]`).
 - (P2) SQL data source against PostgreSQL.
 - (P2) Enriched Approval UI cards with form/site badges.
+
+## iter 5 — Access-Override + Strict Form-Edit Lock (Feb 2026)
+- **Backend**
+  - `permissions.py`: new `has_access_override(user)` + `can_create_form(user)` + `require_can_create_form(user)`; `can_edit_form`, `can_view_form`, `site_filter`, `form_filter`, `submission_filter`, `async_submission_filter` and `capabilities_for` all honour the override flag (treats holder as super-admin).
+  - `site_filter` for vendor tier now uses `$or` on `vendor_id` OR `assigned_vendor_ids` (share-based visibility).
+  - `POST /api/forms`, `POST /api/forms/{id}/duplicate`, `POST /api/pdf-forms/upload`, `POST /api/pdf-forms/{id}/duplicate` now return **403** for vendor tier (require_can_create_form).
+  - New `User.access_override: bool`. `PATCH /api/users/{id}` accepts `access_override` — only super-admin may toggle (403 otherwise).
+  - **Per-form submission RLS (bug fix)**: `GET /api/forms/{id}/submissions`, `.../export.xlsx`, `GET/PATCH/DELETE /api/submissions/{sid}`, and the identical PDF endpoints in `pdf_routes.py` now scope rows by role (super_admin/override → all, admin → region/cluster, vendor_admin → team-vendor, vendor_user → own).
+- **Frontend**
+  - `Users.jsx`: super-admin only sees "Grant Add-on Access override" checkbox in the Create + Edit dialogs; ScopePill renders an `OVERRIDE` badge for such users.
+  - `Forms.jsx`: `canEditForms` boolean = `role in [super_admin, admin] || access_override`; hides Create button, empty-state CTA, and all Edit / Duplicate / Archive / Delete card + menu items when false.
+  - `App.js`: `/forms/:id/build`, `/pdf-forms/:id/build`, `/workflows/:id/build` gated by `BUILDER_ROLES = ["super_admin","admin"]`; `Protected` respects `user.access_override` as an escape hatch.
+- **Verification**: backend testing agent ran 13 pytest scenarios (12 pass, 1 flaky due to test-parallelism, not product); curl E2E confirms vendor_admin `list submissions` on a shared form drops from 16 → 0 (or team-only rows) — the reported "still others submissions shown in vendor access" bug is fixed.

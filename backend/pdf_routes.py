@@ -800,7 +800,9 @@ def build_pdf_router(db, get_current_user, get_optional_user,
     @router.get("/{template_id}/submissions", response_model=List[PDFSubmission])
     async def list_subs(template_id: str, user=Depends(get_current_user)):
         await _get_template_for_user(template_id, user)
-        rows = await db.pdf_submissions.find({"template_id": template_id}, {"_id": 0}) \
+        scope = await _pdf_submission_scope_query(user)
+        q = {"$and": [{"template_id": template_id}, scope]} if scope else {"template_id": template_id}
+        rows = await db.pdf_submissions.find(q, {"_id": 0}) \
             .sort("created_at", -1).to_list(2000)
         return [PDFSubmission(**r) for r in rows]
 
@@ -810,6 +812,8 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         if not sub:
             raise HTTPException(404, "Submission not found")
         await _get_template_for_user(sub["template_id"], user)
+        if not await _pdf_submission_in_user_scope(user, sub):
+            raise HTTPException(403, "You do not have permission to view this submission")
         return PDFSubmission(**sub)
 
     @subs.delete("/{submission_id}")
@@ -818,10 +822,57 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         if not sub:
             raise HTTPException(404, "Not found")
         await _get_template_for_user(sub["template_id"], user)
+        if not await _pdf_submission_in_user_scope(user, sub):
+            raise HTTPException(403, "You do not have permission to delete this submission")
         if sub.get("completed_filename"):
             (COMPLETED_DIR / sub["completed_filename"]).unlink(missing_ok=True)
         await db.pdf_submissions.delete_one({"submission_id": submission_id})
         return {"ok": True}
+
+    async def _pdf_submission_scope_query(user) -> Dict[str, Any]:
+        """Row-level filter for pdf_submissions. Mirrors the standard-form
+        `_submission_scope_query` helper in server.py so vendors only see
+        their own team's PDF submissions, admins see region/cluster scope,
+        super-admin / access_override see all."""
+        from permissions import (
+            normalize_role, is_super_admin, has_access_override,
+            async_submission_filter,
+        )
+        if is_super_admin(user) or has_access_override(user):
+            return {}
+        role = normalize_role(getattr(user, "role", ""))
+        if role == "admin":
+            return await async_submission_filter(db, user)
+        vid = getattr(user, "vendor_id", None)
+        uid = getattr(user, "user_id", None)
+        if role == "vendor_admin" and vid:
+            team = await db.users.find(
+                {"vendor_id": vid}, {"_id": 0, "user_id": 1},
+            ).to_list(2000)
+            return {"submitted_by": {"$in": [u["user_id"] for u in team]}}
+        if role == "vendor_user" and uid:
+            return {"submitted_by": uid}
+        return {"submission_id": "__none__"}
+
+    async def _pdf_submission_in_user_scope(user, sub: Dict[str, Any]) -> bool:
+        from permissions import normalize_role, is_super_admin, has_access_override
+        if is_super_admin(user) or has_access_override(user):
+            return True
+        role = normalize_role(getattr(user, "role", ""))
+        if role == "admin":
+            return True
+        uid = getattr(user, "user_id", None)
+        vid = getattr(user, "vendor_id", None)
+        if role == "vendor_user":
+            return sub.get("submitted_by") == uid
+        if role == "vendor_admin" and vid:
+            if sub.get("submitted_by") == uid:
+                return True
+            submitter = await db.users.find_one(
+                {"user_id": sub.get("submitted_by")}, {"_id": 0, "vendor_id": 1},
+            )
+            return bool(submitter and submitter.get("vendor_id") == vid)
+        return False
 
     async def _can_view_submission(user, sub: Dict[str, Any]) -> bool:
         """Submitter + their vendor_admin can view a PDF submission's completed
@@ -880,7 +931,9 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill
         tpl = await _get_template_for_user(template_id, user)
-        rows = await db.pdf_submissions.find({"template_id": template_id}, {"_id": 0}) \
+        scope = await _pdf_submission_scope_query(user)
+        xls_q = {"$and": [{"template_id": template_id}, scope]} if scope else {"template_id": template_id}
+        rows = await db.pdf_submissions.find(xls_q, {"_id": 0}) \
             .sort("created_at", 1).to_list(5000)
         skip_types = ("heading", "paragraph", "static_text", "divider", "hidden")
         fields = [f for f in (tpl.get("fields") or []) if f.get("type") not in skip_types]
