@@ -741,25 +741,45 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         site = await db.sites.find_one(q, {"_id": 0})
         if not site:
             raise HTTPException(404, "Plant not found or out of scope")
-        # Recent submissions across BOTH standard and PDF forms that mention
-        # this site (by site_name or site_code in the submission values).
+
+        # Recent submissions that mention this plant.  We can NOT rely on the
+        # submission having a specific key like `values.site_name` because
+        # form-designers use arbitrary field IDs (e.g. `dropdown-1738`,
+        # `plant`, `Plant Name` …).  Instead scan every value in each
+        # submission's `values` object for a match against any of the
+        # plant's canonical identifiers.
+        match_values = [
+            site.get("site_name"), site.get("site_code"),
+            site.get("asset_id"), site.get("site_id"),
+        ]
+        match_values = [m for m in match_values if m]
+        if not match_values:
+            return {"site": site, "recent_submissions": []}
+
+        value_scan = {
+            "$expr": {
+                "$anyElementTrue": {
+                    "$map": {
+                        "input": {"$objectToArray": {"$ifNull": ["$values", {}]}},
+                        "as": "kv",
+                        "in": {"$in": ["$$kv.v", match_values]},
+                    }
+                }
+            }
+        }
+
         recent: List[Dict[str, Any]] = []
         for col in ("submissions", "pdf_submissions"):
-            match_ids: List[Any] = [site.get("site_name"), site.get("site_code"), site.get("asset_id")]
-            match_ids = [m for m in match_ids if m]
-            or_clauses = []
-            for key in ("site_name", "site_code", "asset_id"):
-                for mid in match_ids:
-                    or_clauses.append({f"values.{key}": mid})
-            if not or_clauses:
-                continue
             rows = await db[col].find(
-                {"$or": or_clauses},
+                value_scan,
                 {"_id": 0, "submission_id": 1, "form_id": 1, "template_id": 1,
-                 "created_at": 1, "status": 1, "submitted_by": 1},
-            ).sort("created_at", -1).limit(20).to_list(20)
+                 "created_at": 1, "status": 1, "submitted_by": 1, "values": 1},
+            ).sort("created_at", -1).limit(50).to_list(50)
             for r in rows:
                 r["kind"] = "pdf" if col == "pdf_submissions" else "form"
+                # drop the heavy `values` blob from the wire payload — only
+                # kept above so the $expr can run server-side.
+                r.pop("values", None)
                 recent.append(r)
         recent.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         return {"site": site, "recent_submissions": recent[:20]}
