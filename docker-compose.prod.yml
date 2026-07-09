@@ -1,0 +1,63 @@
+# =============================================================================
+# FormForge — production overlay for docker compose
+# =============================================================================
+#
+# Use with the base compose file to publish the app on a public DNS:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Prerequisites (see /app/deploy/README.md for the full checklist):
+#   1. Copy your TLS certs into ./deploy/certs/{fullchain,privkey}.pem
+#   2. Edit ./deploy/nginx.conf and change `server_name` to your DNS
+#   3. In backend/.env set:
+#        - JWT_SECRET (32+ char hex, freshly generated)
+#        - CORS_ORIGINS="https://your.domain"   ← same DNS as nginx
+#        - SECURITY_STRICT="true"
+#        - SECURITY_HTTPS="true"
+#   4. In frontend/.env set:
+#        - REACT_APP_BACKEND_URL=""   (empty — same-origin via nginx)
+#   5. Rebuild frontend: `docker compose build frontend`
+# =============================================================================
+
+services:
+  # ----- FastAPI (unchanged, still on port 8001 inside the compose network) -
+  backend:
+    ports: []              # no direct host publish — nginx is the front door
+    restart: unless-stopped
+    environment:
+      SECURITY_STRICT: "true"
+      SECURITY_HTTPS: "true"
+
+  # ----- React (built once, served as static files by nginx) ---------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        # An empty backend URL makes the browser use the same origin as the
+        # page — nginx then proxies /api → backend. This is the recommended
+        # DNS-friendly configuration.
+        REACT_APP_BACKEND_URL: ""
+    ports: []
+    restart: "no"
+    volumes:
+      - frontend_build:/output
+    command: ["sh", "-c", "cp -r /build/. /output/ && echo done"]
+
+  # ----- nginx reverse-proxy + TLS termination ------------------------------
+  nginx:
+    image: nginx:1.27-alpine
+    depends_on: [backend, frontend]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # React static build produced by the `frontend` container (shared
+      # named volume — see the `frontend_build` volume below).
+      - frontend_build:/usr/share/nginx/html:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+    restart: unless-stopped
+
+volumes:
+  frontend_build:

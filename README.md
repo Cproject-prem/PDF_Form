@@ -213,15 +213,26 @@ asyncio.run(main())
 
 ## Production notes
 
-This repo is optimised for **local self-hosting**. Before deploying to
-production you should:
+This repo is optimised for **local self-hosting**. For a full DNS / HTTPS
+deployment (e.g. `https://formforge.mycompany.com`) follow the step-by-step
+guide at **[`deploy/README.md`](deploy/README.md)** — includes:
 
-- Set a real `JWT_SECRET` (32+ char random hex)
+- One-command Let's Encrypt TLS certificate
+- Sample nginx reverse-proxy config with WebSocket support
+- Production docker-compose overlay (`docker-compose.prod.yml`)
+- Backup / restore cron examples
+
+Manual production checklist (if you're not using the docker overlay):
+
+- Set a real `JWT_SECRET` (32+ char random hex — `openssl rand -hex 32`)
 - Change all seeded passwords (`SEED_ADMIN_PASSWORD` and the demo vendor accounts)
 - Front the backend with HTTPS (nginx / caddy / traefik)
-- Configure `CORS_ORIGINS` to your real frontend domain, not `*`
+- Configure `CORS_ORIGINS` to your real frontend domain, **not** `*`
+- Set `SECURITY_STRICT="true"` and `SECURITY_HTTPS="true"`
+- In `frontend/.env` set `REACT_APP_BACKEND_URL=""` (empty) so the browser
+  uses the same origin as the page — cleanest for DNS setups
 - Configure SMTP (`SMTP_HOST`, etc.) if you want workflow emails to be delivered
-- Back up `backend/uploads/local/` and MongoDB regularly
+- Back up `backend/uploads/local/` and MongoDB regularly (see `backup.py`)
 
 ---
 

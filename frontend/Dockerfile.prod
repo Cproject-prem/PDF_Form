@@ -1,0 +1,30 @@
+# =============================================================================
+# FormForge — Production frontend build
+# =============================================================================
+# Multi-stage: build the static React bundle, then hand it off to the nginx
+# container via a bind-mount (see docker-compose.prod.yml).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml build frontend
+#
+# Build arg REACT_APP_BACKEND_URL is baked into the bundle at build time
+# because Create-React-App can only read env vars during `yarn build`.
+# An EMPTY value tells the app to use the current browser origin — the
+# recommended DNS pattern.
+# =============================================================================
+
+FROM node:20-bookworm-slim AS builder
+
+ARG REACT_APP_BACKEND_URL=""
+ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
+
+WORKDIR /app
+COPY package.json yarn.lock* ./
+RUN corepack enable && yarn install --frozen-lockfile || yarn install
+
+COPY . .
+RUN yarn build
+
+# ------ Runtime stage: minimal image just to ship the /build folder ---------
+FROM alpine:3.20
+COPY --from=builder /app/build /build
+CMD ["sh", "-c", "cp -r /build/. /output/ && echo 'Frontend build copied — nginx will serve it.'"]
