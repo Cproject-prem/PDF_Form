@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { authPdfFile } from "@/lib/pdfWorker";
 import SignaturePadField from "@/components/pdfbuilder/SignaturePadField";
+import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -131,37 +132,19 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
     case "dropdown":
       return (
         <div style={style}>
-          <select {...common}>
-            <option value="">{f.placeholder || "Select…"}</option>
-            {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
-          </select>
+          <DropdownControl f={f} common={common} />
         </div>
       );
-    case "checkbox": {
-      const arr = Array.isArray(value) ? value : [];
+    case "checkbox":
       return (
         <div style={style} className="px-1 space-y-1">
-          {(f.options || []).map((o) => (
-            <label key={o} className="flex items-center gap-2 text-sm">
-              <input type="checkbox" data-testid={`fill-${f.id}-${slug(o)}`}
-                     checked={arr.includes(o)}
-                     onChange={(e) => onChange(e.target.checked ? [...arr, o] : arr.filter((x) => x !== o))} />
-              <span>{o}</span>
-            </label>
-          ))}
+          <CheckboxControl f={f} value={value} onChange={onChange} />
         </div>
       );
-    }
     case "radio":
       return (
         <div style={style} className="px-1 space-y-1">
-          {(f.options || []).map((o) => (
-            <label key={o} className="flex items-center gap-2 text-sm">
-              <input type="radio" name={f.id} data-testid={`fill-${f.id}-${slug(o)}`}
-                     checked={value === o} onChange={() => onChange(o)} />
-              <span>{o}</span>
-            </label>
-          ))}
+          <RadioControl f={f} value={value} onChange={onChange} />
         </div>
       );
     case "signature":
@@ -196,6 +179,81 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
 }
 
 function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-"); }
+
+// Load options from the field's `data_source` (Site Master / Vendors / Master
+// Data) when the field is configured as a lookup — mirrors the standard-form
+// behaviour in `FieldRenderer.jsx`.  Falls back to `field.options` for manual.
+function useDynamicOptions(field) {
+  const ds = field?.data_source;
+  const isLookup = ds?.kind === "lookup" && ds?.source && (ds?.display || ds?.return);
+  const [opts, setOpts] = useState(field?.options || []);
+  const lookupBase = typeof window !== "undefined" && localStorage.getItem("ff_token")
+    ? "/lookup" : "/public/lookup";
+  useEffect(() => {
+    if (!isLookup) { setOpts(field?.options || []); return; }
+    const column = ds.display || ds.return;
+    api.get(
+      `${lookupBase}/options?source=${encodeURIComponent(ds.source)}` +
+      `&column=${encodeURIComponent(column)}` +
+      `${ds.show_all_sites ? "&show_all=true" : ""}`,
+    )
+      .then((r) => setOpts(r.data || []))
+      .catch(() => setOpts([]));
+  }, [isLookup, ds?.source, ds?.display, ds?.return, ds?.show_all_sites, field?.options, lookupBase]);
+  return opts;
+}
+
+// Dropdown / Checkbox / Radio controls that resolve dynamic data-source
+// options via `useDynamicOptions` and render inside the PDF overlay.
+function DropdownControl({ f, common }) {
+  const opts = useDynamicOptions(f);
+  return (
+    <select {...common}>
+      <option value="">{f.placeholder || "Select…"}</option>
+      {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+    </select>
+  );
+}
+
+function CheckboxControl({ f, value, onChange }) {
+  const opts = useDynamicOptions(f);
+  const arr = Array.isArray(value) ? value : [];
+  return (
+    <>
+      {opts.map((o) => (
+        <label key={o} className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            data-testid={`fill-${f.id}-${slug(o)}`}
+            checked={arr.includes(o)}
+            onChange={(e) => onChange(e.target.checked ? [...arr, o] : arr.filter((x) => x !== o))}
+          />
+          <span>{o}</span>
+        </label>
+      ))}
+    </>
+  );
+}
+
+function RadioControl({ f, value, onChange }) {
+  const opts = useDynamicOptions(f);
+  return (
+    <>
+      {opts.map((o) => (
+        <label key={o} className="flex items-center gap-2 text-sm">
+          <input
+            type="radio"
+            name={f.id}
+            data-testid={`fill-${f.id}-${slug(o)}`}
+            checked={value === o}
+            onChange={() => onChange(o)}
+          />
+          <span>{o}</span>
+        </label>
+      ))}
+    </>
+  );
+}
 
 function FileToDataUrl({ accept, current, onChange, testid }) {
   const handle = (e) => {
