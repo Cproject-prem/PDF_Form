@@ -553,6 +553,8 @@ def build_pdf_router(db, get_current_user, get_optional_user,
     async def upload_pdf(file: UploadFile = File(...),
                          title: Optional[str] = Form(None),
                          user=Depends(get_current_user)):
+        from permissions import require_can_create_form
+        require_can_create_form(user)
         data = await file.read()
         if not data:
             raise HTTPException(400, "Empty file")
@@ -659,6 +661,8 @@ def build_pdf_router(db, get_current_user, get_optional_user,
 
     @router.post("/{template_id}/duplicate", response_model=PDFTemplate)
     async def duplicate_template(template_id: str, user=Depends(get_current_user)):
+        from permissions import require_can_create_form
+        require_can_create_form(user)
         existing = await _get_template_for_user(template_id, user)
         new_id = f"pdftpl_{uuid.uuid4().hex[:12]}"
         new_storage = f"{uuid.uuid4().hex}.pdf"

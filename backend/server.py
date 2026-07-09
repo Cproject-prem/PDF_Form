@@ -194,6 +194,7 @@ class User(BaseModel):
     cluster_manager_name: Optional[str] = None  # for admin role — links to Site.cluster_manager_name
     region: Optional[str] = None  # for admin role — links to Site.region (regional access scope)
     assignments: Optional[Dict[str, List[str]]] = None  # {forms:[], pdf_forms:[], sites:[], workflows:[]}
+    access_override: bool = False  # add-on flag → grants Super-Admin-level access
 
 class UserOut(BaseModel):
     user_id: str
@@ -207,6 +208,7 @@ class UserOut(BaseModel):
     cluster_manager_name: Optional[str] = None
     region: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
+    access_override: bool = False
 
 class RegisterIn(BaseModel):
     email: EmailStr
@@ -872,6 +874,7 @@ class UserCreateIn(BaseModel):
     vendor_id: Optional[str] = None
     cluster_manager_name: Optional[str] = None
     region: Optional[str] = None
+    access_override: bool = False
     send_welcome_email: bool = True
 
 def _gen_temp_password(n: int = 10) -> str:
@@ -909,6 +912,8 @@ async def create_user(body: UserCreateIn, user: User = Depends(_require_user_edi
     if not generated:
         validate_password_strength(temp_password)
     uid = f"user_{uuid.uuid4().hex[:12]}"
+    # Only super_admin may grant `access_override` at creation.
+    override_flag = bool(body.access_override) and normalize_role(user.role) == "super_admin"
     doc = {
         "user_id": uid, "email": email, "name": body.name, "role": body.role,
         "password_hash": hash_password(temp_password), "picture": None,
@@ -916,6 +921,7 @@ async def create_user(body: UserCreateIn, user: User = Depends(_require_user_edi
         "vendor_id": body.vendor_id or None,
         "cluster_manager_name": body.cluster_manager_name or None,
         "region": body.region or None,
+        "access_override": override_flag,
     }
     await db.users.insert_one(doc)
 
@@ -981,6 +987,7 @@ class UserUpdateIn(BaseModel):
     cluster_manager_name: Optional[str] = None
     region: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
+    access_override: Optional[bool] = None
 
 @api.patch("/users/{user_id}", response_model=UserOut)
 async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_require_user_editor)):
@@ -1021,6 +1028,11 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_re
         updates["region"] = body.region or None
     if body.assignments is not None:
         updates["assignments"] = body.assignments
+    if body.access_override is not None:
+        # Only super_admin can toggle the access override.
+        if actor_role != "super_admin":
+            raise HTTPException(403, "Only super_admin can toggle Add-on access override")
+        updates["access_override"] = bool(body.access_override)
     if not updates:
         raise HTTPException(400, "No fields")
     res = await db.users.update_one({"user_id": user_id}, {"$set": updates})
@@ -1141,6 +1153,8 @@ async def list_forms(user: User = Depends(get_current_user),
 
 @api.post("/forms", response_model=Form)
 async def create_form(body: FormIn, user: User = Depends(get_current_user)):
+    from permissions import require_can_create_form
+    require_can_create_form(user)
     now = datetime.now(timezone.utc).isoformat()
     fid = f"form_{uuid.uuid4().hex[:12]}"
     doc = body.model_dump()
@@ -1205,6 +1219,8 @@ async def patch_form(form_id: str, body: FormPatch, user: User = Depends(get_cur
 
 @api.post("/forms/{form_id}/duplicate", response_model=Form)
 async def duplicate_form(form_id: str, user: User = Depends(get_current_user)):
+    from permissions import require_can_create_form
+    require_can_create_form(user)
     existing = await _get_form_for_user(form_id, user)
     new_id = f"form_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()

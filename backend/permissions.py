@@ -84,6 +84,19 @@ def user_cluster_manager_name(user) -> Optional[str]:
     return getattr(user, "cluster_manager_name", None)
 
 
+def has_access_override(user) -> bool:
+    """`access_override` is an explicit add-on flag on the user document.
+
+    When set, the user gets Super-Admin-level access:
+      • can view and edit every form / PDF template
+      • bypasses region / vendor / site filters (sees everything)
+
+    Use for shift-managers or on-call approvers that need to help across
+    the organisation without changing their base role.
+    """
+    return bool(getattr(user, "access_override", False))
+
+
 # ----------------------------------------------------------------------------
 # Site Master row-level filter
 # ----------------------------------------------------------------------------
@@ -103,7 +116,7 @@ def site_filter(user) -> Dict[str, Any]:
     """
     role = normalize_role(getattr(user, "role", ""))
     uid = getattr(user, "user_id", None)
-    if role == SUPER_ADMIN:
+    if role == SUPER_ADMIN or has_access_override(user):
         return {}
 
     if role == ADMIN:
@@ -124,11 +137,22 @@ def site_filter(user) -> Dict[str, Any]:
         vid = user_vendor_id(user)
         if not vid:
             return {"site_id": "__none__"}
-        clauses: List[Dict[str, Any]] = [{"vendor_id": vid}]
+        # Vendors see sites where they are (a) the legacy owner (vendor_id
+        # column) OR (b) explicitly assigned via `assigned_vendor_ids`.
+        clauses: List[Dict[str, Any]] = [
+            {"$or": [
+                {"vendor_id": vid},
+                {"assigned_vendor_ids": vid},
+            ]}
+        ]
         if role == VENDOR_USER:
             assigned_sites = user_assignments(user).get("sites") or []
             if assigned_sites:
-                clauses = [{"$or": [{"vendor_id": vid}, {"site_id": {"$in": assigned_sites}}]}]
+                clauses = [{"$or": [
+                    {"vendor_id": vid},
+                    {"assigned_vendor_ids": vid},
+                    {"site_id": {"$in": assigned_sites}},
+                ]}]
         # Also allow vendor_email match for backwards compat
         email = getattr(user, "email", None)
         if email:
@@ -148,7 +172,7 @@ def form_filter(user) -> Dict[str, Any]:
     role = normalize_role(getattr(user, "role", ""))
     uid = getattr(user, "user_id", None)
     vid = user_vendor_id(user)
-    if role == SUPER_ADMIN:
+    if role == SUPER_ADMIN or has_access_override(user):
         return {}
 
     if role == ADMIN:
@@ -180,7 +204,14 @@ def form_filter(user) -> Dict[str, Any]:
 
 
 def can_edit_form(user, form_doc: Dict[str, Any]) -> bool:
-    """True if the user may write to this form/pdf-template doc."""
+    """True if the user may write to this form/pdf-template doc.
+
+    Only super_admin, admin (cluster managers) and users flagged with
+    `access_override` may edit forms.  Vendor tier is read-only for
+    form definitions — they can still fill and submit them.
+    """
+    if has_access_override(user):
+        return True
     role = normalize_role(getattr(user, "role", ""))
     if role == SUPER_ADMIN:
         return True
@@ -191,8 +222,18 @@ def can_edit_form(user, form_doc: Dict[str, Any]) -> bool:
     return False
 
 
+def can_create_form(user) -> bool:
+    """True if the user may create a brand-new form/pdf-template."""
+    if has_access_override(user):
+        return True
+    role = normalize_role(getattr(user, "role", ""))
+    return role in (SUPER_ADMIN, ADMIN)
+
+
 def can_view_form(user, form_doc: Dict[str, Any]) -> bool:
     """True if the user may read this form/pdf-template."""
+    if has_access_override(user):
+        return True
     role = normalize_role(getattr(user, "role", ""))
     if role == SUPER_ADMIN:
         return True
@@ -229,7 +270,7 @@ def submission_filter(user) -> Dict[str, Any]:
     role = normalize_role(getattr(user, "role", ""))
     uid = getattr(user, "user_id", None)
     vid = user_vendor_id(user)
-    if role == SUPER_ADMIN:
+    if role == SUPER_ADMIN or has_access_override(user):
         return {}
     if role == ADMIN:
         return {}
@@ -252,7 +293,10 @@ async def async_submission_filter(db, user) -> Dict[str, Any]:
     Non-admin roles fall back to the sync filter.
     """
     role = normalize_role(getattr(user, "role", ""))
-    if role != ADMIN:
+    if role != ADMIN or has_access_override(user):
+        # access_override → treated as super_admin (see everything)
+        if has_access_override(user):
+            return {}
         return submission_filter(user)
 
     # No region / cluster set → the admin can see everything (they can
@@ -300,6 +344,12 @@ def require_can_edit_form(user, form_doc: Dict[str, Any]) -> None:
         raise HTTPException(403, "You do not have permission to edit this form.")
 
 
+def require_can_create_form(user) -> None:
+    if not can_create_form(user):
+        raise HTTPException(403, "Only Admin, Super Admin (or users with the "
+                                  "Add-on access override) can create forms.")
+
+
 def require_can_view_form(user, form_doc: Dict[str, Any]) -> None:
     if not can_view_form(user, form_doc):
         raise HTTPException(403, "You do not have permission to view this form.")
@@ -318,6 +368,7 @@ def require_master_data_editor(user) -> None:
 
 def capabilities_for(user) -> Dict[str, bool]:
     role = normalize_role(getattr(user, "role", ""))
+    override = has_access_override(user)
     base = {
         "manage_users": False,
         "manage_vendors": False,
@@ -338,9 +389,12 @@ def capabilities_for(user) -> Dict[str, bool]:
         "view_all_submissions": False,
         "view_own_submissions": True,
         "manage_team_users": False,
+        "access_override": override,
     }
-    if role == SUPER_ADMIN:
+    if role == SUPER_ADMIN or override:
         for k in base:
+            if k == "access_override":
+                continue
             base[k] = True
         return base
     if role == ADMIN:

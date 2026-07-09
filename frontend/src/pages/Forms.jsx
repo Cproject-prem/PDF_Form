@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +23,9 @@ import {
 import { formatDate } from "@/lib/utils2";
 
 export default function FormsPage() {
+  const { user: me } = useAuth();
+  const canEditForms =
+    ["super_admin", "admin"].includes(me?.role) || !!me?.access_override;
   const [forms, setForms] = useState([]);
   const [pdfTemplates, setPdfTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -129,7 +133,12 @@ export default function FormsPage() {
           </div>
           <Dialog open={chooserOpen} onOpenChange={setChooserOpen}>
             <DialogTrigger asChild>
-              <Button data-testid="create-form-btn" className="bg-blue-600 hover:bg-blue-700 rounded-lg h-10">
+              <Button
+                data-testid="create-form-btn"
+                className="bg-blue-600 hover:bg-blue-700 rounded-lg h-10"
+                disabled={!canEditForms}
+                style={!canEditForms ? { display: "none" } : undefined}
+              >
                 <Plus className="w-4 h-4 mr-2" /> Create New Form
               </Button>
             </DialogTrigger>
@@ -249,7 +258,7 @@ export default function FormsPage() {
             </div>
             <h3 className="text-lg font-heading font-semibold">No forms yet</h3>
             <p className="text-sm text-slate-500 mt-1">Create your first form to start collecting submissions.</p>
-            <Button data-testid="empty-create-btn" onClick={() => setChooserOpen(true)} className="mt-4 bg-blue-600 hover:bg-blue-700">
+            <Button data-testid="empty-create-btn" onClick={() => setChooserOpen(true)} disabled={!canEditForms} style={!canEditForms ? { display: "none" } : undefined} className="mt-4 bg-blue-600 hover:bg-blue-700">
               <Plus className="w-4 h-4 mr-2" /> Create New Form
             </Button>
           </Card>
@@ -281,11 +290,17 @@ export default function FormsPage() {
                         <DropdownMenu>
                           <DropdownMenuTrigger className="p-1 rounded-md hover:bg-slate-100"><MoreHorizontal className="w-4 h-4 text-slate-500" /></DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => nav(`/pdf-forms/${t.template_id}/build`)}><Pencil className="w-4 h-4 mr-2" /> Edit</DropdownMenuItem>
+                            {canEditForms && (
+                              <DropdownMenuItem onClick={() => nav(`/pdf-forms/${t.template_id}/build`)}><Pencil className="w-4 h-4 mr-2" /> Edit</DropdownMenuItem>
+                            )}
                             <DropdownMenuItem onClick={() => nav(`/pdf-forms/${t.template_id}/submissions`)}><PieChart className="w-4 h-4 mr-2" /> Submissions</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => pdfDuplicate(t)}><Copy className="w-4 h-4 mr-2" /> Duplicate</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => pdfArchive(t)}><Archive className="w-4 h-4 mr-2" /> {t.is_archived ? "Restore" : "Archive"}</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => pdfDelete(t)} className="text-red-600"><Trash2 className="w-4 h-4 mr-2" /> Delete</DropdownMenuItem>
+                            {canEditForms && (
+                              <>
+                                <DropdownMenuItem onClick={() => pdfDuplicate(t)}><Copy className="w-4 h-4 mr-2" /> Duplicate</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => pdfArchive(t)}><Archive className="w-4 h-4 mr-2" /> {t.is_archived ? "Restore" : "Archive"}</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => pdfDelete(t)} className="text-red-600"><Trash2 className="w-4 h-4 mr-2" /> Delete</DropdownMenuItem>
+                              </>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </div>
@@ -299,9 +314,11 @@ export default function FormsPage() {
                         <span>Updated {formatDate(t.updated_at)}</span>
                       </div>
                       <div className="flex items-center gap-2 mt-4">
-                        <Button data-testid={`pdf-edit-${t.template_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/pdf-forms/${t.template_id}/build`)}>
-                          <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit
-                        </Button>
+                        {canEditForms && (
+                          <Button data-testid={`pdf-edit-${t.template_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/pdf-forms/${t.template_id}/build`)}>
+                            <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit
+                          </Button>
+                        )}
                         <Button data-testid={`pdf-subs-${t.template_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/pdf-forms/${t.template_id}/submissions`)}>
                           <PieChart className="w-3.5 h-3.5 mr-1.5" /> Subs
                         </Button>
@@ -342,12 +359,18 @@ export default function FormsPage() {
                   <DropdownMenu>
                     <DropdownMenuTrigger className="p-1 rounded-md hover:bg-slate-100"><MoreHorizontal className="w-4 h-4 text-slate-500" /></DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => nav(`/forms/${f.form_id}/build`)}><Pencil className="w-4 h-4 mr-2" /> Edit</DropdownMenuItem>
+                      {canEditForms && (
+                        <DropdownMenuItem onClick={() => nav(`/forms/${f.form_id}/build`)}><Pencil className="w-4 h-4 mr-2" /> Edit</DropdownMenuItem>
+                      )}
                       <DropdownMenuItem onClick={() => nav(`/forms/${f.form_id}/submissions`)}><PieChart className="w-4 h-4 mr-2" /> Submissions</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => toggleFav(f)}><Star className="w-4 h-4 mr-2" /> {f.is_favorite ? "Unfavorite" : "Favorite"}</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => duplicate(f)}><Copy className="w-4 h-4 mr-2" /> Duplicate</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => archive(f)}><Archive className="w-4 h-4 mr-2" /> {f.is_archived ? "Restore" : "Archive"}</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => del(f)} className="text-red-600"><Trash2 className="w-4 h-4 mr-2" /> Delete</DropdownMenuItem>
+                      {canEditForms && (
+                        <>
+                          <DropdownMenuItem onClick={() => duplicate(f)}><Copy className="w-4 h-4 mr-2" /> Duplicate</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => archive(f)}><Archive className="w-4 h-4 mr-2" /> {f.is_archived ? "Restore" : "Archive"}</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => del(f)} className="text-red-600"><Trash2 className="w-4 h-4 mr-2" /> Delete</DropdownMenuItem>
+                        </>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -372,9 +395,11 @@ export default function FormsPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-4">
-                  <Button data-testid={`edit-${f.form_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/forms/${f.form_id}/build`)}>
-                    <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit
-                  </Button>
+                  {canEditForms && (
+                    <Button data-testid={`edit-${f.form_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/forms/${f.form_id}/build`)}>
+                      <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit
+                    </Button>
+                  )}
                   <Button data-testid={`view-subs-${f.form_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/forms/${f.form_id}/submissions`)}>
                     <PieChart className="w-3.5 h-3.5 mr-1.5" /> Subs
                   </Button>

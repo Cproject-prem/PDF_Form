@@ -242,9 +242,17 @@ function ScopePill({ user }) {
   if (user.region) items.push({ label: "Region", value: user.region });
   if (user.cluster_manager_name) items.push({ label: "Cluster mgr", value: user.cluster_manager_name });
   if (user.vendor_id) items.push({ label: "Vendor", value: user.vendor_id });
-  if (items.length === 0) return <span className="text-slate-400">—</span>;
+  if (items.length === 0 && !user.access_override) return <span className="text-slate-400">—</span>;
   return (
     <div className="flex flex-wrap gap-1">
+      {user.access_override && (
+        <span
+          data-testid={`user-override-${user.email}`}
+          className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold"
+        >
+          OVERRIDE
+        </span>
+      )}
       {items.map((i) => (
         <span key={i.label} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">
           <span className="text-slate-400 mr-1">{i.label}:</span>{i.value}
@@ -256,9 +264,12 @@ function ScopePill({ user }) {
 
 /* --------------------------- Create dialog --------------------------- */
 function CreateUserDialog({ open, onOpenChange, availableRoles, regions, clusterMgrs, vendors, onCreated }) {
+  const { user: me } = useAuth();
+  const canGrantOverride = me?.role === "super_admin";
   const emptyForm = () => ({
     name: "", email: "", password: "", role: availableRoles[0] || "user",
     region: "", cluster_manager_name: "", vendor_id: "",
+    access_override: false,
     autoGenerate: true, send_welcome_email: true,
   });
   const [form, setForm] = useState(emptyForm());
@@ -279,6 +290,7 @@ function CreateUserDialog({ open, onOpenChange, availableRoles, regions, cluster
       region: form.region || null,
       cluster_manager_name: form.cluster_manager_name || null,
       vendor_id: form.vendor_id || null,
+      access_override: !!form.access_override,
     };
     if (!form.autoGenerate) body.password = form.password;
     try {
@@ -357,6 +369,24 @@ function CreateUserDialog({ open, onOpenChange, availableRoles, regions, cluster
             </div>
           )}
           <div className="border-t border-slate-100 pt-3 space-y-2">
+            {canGrantOverride && (
+              <label className="flex items-start gap-2 text-sm cursor-pointer bg-amber-50/60 border border-amber-200 rounded-lg p-2.5">
+                <input
+                  type="checkbox"
+                  checked={form.access_override}
+                  onChange={(e) => setForm({ ...form, access_override: e.target.checked })}
+                  className="mt-0.5"
+                  data-testid="new-user-access-override"
+                />
+                <div className="flex-1">
+                  <div className="font-medium text-amber-900">Grant Add-on Access override</div>
+                  <div className="text-xs text-amber-700">
+                    Bypasses all region / vendor filters AND allows editing every form.
+                    Use only for stand-in approvers.
+                  </div>
+                </div>
+              </label>
+            )}
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input
                 type="checkbox"
@@ -410,6 +440,8 @@ function CreateUserDialog({ open, onOpenChange, availableRoles, regions, cluster
 
 /* --------------------------- Edit dialog --------------------------- */
 function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMgrs, vendors, onSaved }) {
+  const { user: me } = useAuth();
+  const canGrantOverride = me?.role === "super_admin";
   const [form, setForm] = useState(null);
   const [newPassword, setNewPassword] = useState("");
   useEffect(() => {
@@ -421,6 +453,7 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
         cluster_manager_name: user.cluster_manager_name || "",
         vendor_id: user.vendor_id || "",
         is_active: user.is_active,
+        access_override: !!user.access_override,
       });
       setNewPassword("");
     }
@@ -431,6 +464,8 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
     const patch = { ...form };
     if (form.region === "__any__") patch.region = "";
     if (form.cluster_manager_name === "__none__") patch.cluster_manager_name = "";
+    // access_override is only sent by super_admin (backend also enforces)
+    if (!canGrantOverride) delete patch.access_override;
     if (newPassword.trim()) {
       if (newPassword.length < 6) { toast.error("Password must be at least 6 characters"); return; }
       patch.password = newPassword;
@@ -508,6 +543,23 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
             />
             <span>Account active</span>
           </label>
+          {canGrantOverride && (
+            <label className="flex items-start gap-2 text-sm cursor-pointer bg-amber-50/60 border border-amber-200 rounded-lg p-2.5">
+              <input
+                type="checkbox"
+                checked={!!form.access_override}
+                onChange={(e) => setForm({ ...form, access_override: e.target.checked })}
+                className="mt-0.5"
+                data-testid="edit-user-access-override"
+              />
+              <div className="flex-1">
+                <div className="font-medium text-amber-900">Add-on Access override</div>
+                <div className="text-xs text-amber-700">
+                  Bypasses region / vendor filters AND grants Form-Builder edit rights.
+                </div>
+              </div>
+            </label>
+          )}
           <div className="border-t border-slate-100 pt-3">
             <Label>Reset password (leave blank to keep current)</Label>
             <Input

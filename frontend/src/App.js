@@ -35,9 +35,14 @@ function Protected({ children, roles }) {
   const location = useLocation();
   if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to="/dashboard" replace />;
+  if (roles && !roles.includes(user.role) && !user.access_override) return <Navigate to="/dashboard" replace />;
   return children;
 }
+
+// Form-Builder / PDF-Builder access is restricted to admin+ or users flagged
+// with `access_override`.  Vendor tier is intentionally prevented from
+// reaching the builder UI even by pasting the URL directly.
+const BUILDER_ROLES = ["super_admin", "admin"];
 
 function Router() {
   const location = useLocation();
@@ -59,12 +64,12 @@ function Router() {
       <Route path="/submissions" element={<Protected><SubmissionsHubPage /></Protected>} />
       <Route path="/forms" element={<Protected><FormsPage /></Protected>} />
       <Route path="/pdf-forms" element={<Protected><FormsPage /></Protected>} />
-      <Route path="/forms/:id/build" element={<Protected><FormBuilderPage /></Protected>} />
+      <Route path="/forms/:id/build" element={<Protected roles={BUILDER_ROLES}><FormBuilderPage /></Protected>} />
       <Route path="/forms/:id/submissions" element={<Protected><SubmissionsPage /></Protected>} />
-      <Route path="/pdf-forms/:id/build" element={<Protected><PdfBuilderPage /></Protected>} />
+      <Route path="/pdf-forms/:id/build" element={<Protected roles={BUILDER_ROLES}><PdfBuilderPage /></Protected>} />
       <Route path="/pdf-forms/:id/submissions" element={<Protected><PdfSubmissionsPage /></Protected>} />
       <Route path="/workflows" element={<Protected><WorkflowsPage /></Protected>} />
-      <Route path="/workflows/:id/build" element={<Protected><WorkflowDesignerPage /></Protected>} />
+      <Route path="/workflows/:id/build" element={<Protected roles={BUILDER_ROLES}><WorkflowDesignerPage /></Protected>} />
       <Route path="/approvals" element={<Protected><ApprovalsPage /></Protected>} />
       <Route path="/workflow-analytics" element={<Protected><WorkflowAnalyticsPage /></Protected>} />
       <Route path="/reports" element={<Protected><WorkflowAnalyticsPage /></Protected>} />
