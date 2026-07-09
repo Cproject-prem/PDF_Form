@@ -236,13 +236,21 @@ async def _vendor_scoped_site_lookup(db, user, display: str, chosen: Any) -> Opt
 # Routers
 # ---------------------------------------------------------------------------
 
-def build_routers(db, get_current_user, hash_password_fn):
+def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None):
     vendors = APIRouter(prefix="/vendors", tags=["vendors"])
     vusers = APIRouter(prefix="/vendor-users", tags=["vendor-users"])
     sites = APIRouter(prefix="/sites", tags=["sites"])
     master = APIRouter(prefix="/master-data", tags=["master-data"])
     lookup = APIRouter(prefix="/lookup", tags=["lookup"])
     public_lookup = APIRouter(prefix="/public/lookup", tags=["public-lookup"])
+
+    # Fallback dependency: if the host app forgot to inject `get_optional_user`
+    # (older deployments), just resolve to `None` so the public endpoints
+    # still work anonymously.
+    if get_optional_user is None:
+        async def _get_optional_user() -> Optional[Any]:  # type: ignore[valid-type]
+            return None
+        get_optional_user = _get_optional_user
 
     async def _require_admin(user) -> None:
         if user.role not in ("super_admin", "admin"):
@@ -988,11 +996,17 @@ def build_routers(db, get_current_user, hash_password_fn):
     @public_lookup.get("/options")
     async def public_options(source: str = "sites", column: str = "site_name",
                               q: Optional[str] = None, limit: int = 500,
-                              show_all: bool = False):
-        # Public endpoint — no vendor scope to apply (no auth context). The
-        # `show_all` flag is accepted but it's already implicitly "all" here.
+                              show_all: bool = False,
+                              user=Depends(get_optional_user)):
+        # Public endpoint — anonymous access returns the full set. If the
+        # caller sent a valid Authorization token (e.g. a vendor logged in
+        # while filling a shared /p/:slug link), scope by their role so
+        # vendors only see their own plants and admins their region/cluster.
         if source == "sites":
-            flt: Dict[str, Any] = {}
+            if user:
+                flt = _site_filter_for_user(user, show_all=False)
+            else:
+                flt = {}
             if q:
                 flt[column] = {"$regex": re.escape(q), "$options": "i"}
             vals = await db.sites.distinct(column, flt)
@@ -1007,14 +1021,19 @@ def build_routers(db, get_current_user, hash_password_fn):
         return sorted([str(v) for v in vals if v not in (None, "")])[:limit]
 
     @public_lookup.post("/resolve")
-    async def public_resolve(body: Dict[str, Any]):
+    async def public_resolve(body: Dict[str, Any], user=Depends(get_optional_user)):
         source = body.get("source", "sites")
         display = body.get("display") or "site_name"
         return_col = body.get("return") or display
         chosen = body.get("value")
         fill_cols: List[str] = list(body.get("fill") or [])
         if source == "sites":
-            row = _clean(await db.sites.find_one({display: chosen}))
+            # When the caller is a logged-in vendor, force the lookup to
+            # match only sites they can access — prevents cross-vendor leak
+            # when a shared /p/:slug link is opened from a vendor session.
+            base_flt = _site_filter_for_user(user, show_all=False) if user else {}
+            base_flt[display] = chosen
+            row = _clean(await db.sites.find_one(base_flt))
         elif source.startswith("master:"):
             table = source.split(":", 1)[1]
             md = _clean(await db.master_data.find_one({"table": table, f"data.{display}": chosen}))

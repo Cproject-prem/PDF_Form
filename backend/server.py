@@ -1914,7 +1914,7 @@ api.include_router(_pub_apv_router)
 # ---------- Vendor Management / Site Master / Master Data ----------
 from vendor_routes import build_routers as _build_vendor_routers
 _vendors_r, _vusers_r, _sites_r, _master_r, _lookup_r, _pub_lookup_r = _build_vendor_routers(
-    db, get_current_user, hash_password,
+    db, get_current_user, hash_password, get_optional_user,
 )
 api.include_router(_vendors_r)
 api.include_router(_vusers_r)
