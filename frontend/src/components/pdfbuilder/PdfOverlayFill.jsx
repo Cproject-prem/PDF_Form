@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { authPdfFile } from "@/lib/pdfWorker";
 import { api, API } from "@/lib/api";
@@ -111,19 +111,14 @@ function OverlayInput({ field, box, value, onChange, disabled }) {
       return <input type="number" className={baseCls} {...commonProps} />;
     case "dropdown":
       return (
-        <select
-          data-testid={`pdf-overlay-${field.id}`}
+        <DropdownOverlay
+          field={field}
           style={style}
-          value={value ?? ""}
+          baseCls={baseCls}
+          value={value}
           disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
-          className={baseCls}
-        >
-          <option value="">{field.placeholder || "Select…"}</option>
-          {(field.options || []).map((o, i) => (
-            <option key={i} value={o}>{o}</option>
-          ))}
-        </select>
+          onChange={onChange}
+        />
       );
     case "checkbox":
     case "tick": {
@@ -170,6 +165,46 @@ function OverlayInput({ field, box, value, onChange, disabled }) {
       // short_text, phone, url, and everything else — plain text input
       return <input type="text" className={baseCls} {...commonProps} />;
   }
+}
+
+/* --------------------- Data-source dropdown --------------------- */
+function useDynamicOptions(field) {
+  const ds = field?.data_source;
+  const isLookup = ds?.kind === "lookup" && ds?.source && (ds?.display || ds?.return);
+  const [opts, setOpts] = useState(field?.options || []);
+  const lookupBase = typeof window !== "undefined" && localStorage.getItem("ff_token")
+    ? "/lookup" : "/public/lookup";
+  useEffect(() => {
+    if (!isLookup) { setOpts(field?.options || []); return; }
+    const column = ds.display || ds.return;
+    api.get(
+      `${lookupBase}/options?source=${encodeURIComponent(ds.source)}` +
+      `&column=${encodeURIComponent(column)}` +
+      `${ds.show_all_sites ? "&show_all=true" : ""}`,
+    )
+      .then((r) => setOpts(r.data || []))
+      .catch(() => setOpts([]));
+  }, [isLookup, ds?.source, ds?.display, ds?.return, ds?.show_all_sites, field?.options, lookupBase]);
+  return opts;
+}
+
+function DropdownOverlay({ field, style, baseCls, value, disabled, onChange }) {
+  const opts = useDynamicOptions(field);
+  return (
+    <select
+      data-testid={`pdf-overlay-${field.id}`}
+      style={style}
+      value={value ?? ""}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className={baseCls}
+    >
+      <option value="">{field.placeholder || "Select…"}</option>
+      {opts.map((o, i) => (
+        <option key={i} value={o}>{o}</option>
+      ))}
+    </select>
+  );
 }
 
 /* --------------------- Upload widget (file / image) --------------------- */
