@@ -324,14 +324,16 @@ def _draw_tick_only(c: rl_canvas.Canvas, x: float, y: float, w: float, h: float,
     page — we just stamp a tick on top instead of drawing a second box."""
     r, g, b = _hex_to_rgb(color_hex)
     c.setFillColorRGB(r, g, b)
-    # Use ZapfDingbats char '4' — a heavy check mark that scales nicely.
-    # Font size = the smaller of the field's width and height, minus a small pad.
+    # ReportLab remaps Unicode -> ZapfDingbats glyph codes internally, so we
+    # MUST pass the Unicode heavy-check-mark ("\u2714") — passing the raw
+    # ASCII byte 0x34 makes ReportLab emit a fallback "n" glyph that renders
+    # as an invisible mark (root cause of the 'tick not seen' bug).
     fs = max(6, min(w, h) * 0.95)
     c.setFont("ZapfDingbats", fs)
-    # Center inside the field's box (reportlab's y is baseline; nudge down by ~15% of fs)
+    # Centre inside the field's box (baseline y; nudge for glyph metrics)
     cx = x + w / 2 - fs * 0.35
     cy = y - h + h / 2 - fs * 0.30
-    c.drawString(cx, cy, "\x34")  # ZapfDingbats heavy check mark
+    c.drawString(cx, cy, "\u2714")  # ✔ heavy check mark (ZapfDingbats code 4)
 
 
 def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: Dict[str, Any],
@@ -427,7 +429,7 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                                    f.font_color, f.alignment)
                 elif ftype == "checkbox":
                     # val may be bool or list of selected options
-                    if f.options:
+                    if f.options and len(f.options) > 1:
                         selected = set(val if isinstance(val, list) else [])
                         line_h = max(f.font_size * 1.4, 14)
                         for i, opt in enumerate(f.options):
@@ -436,11 +438,20 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                             _draw_text(c, opt, x + line_h + 4, oy, w - line_h - 8,
                                        line_h, f.font_family, f.font_size, f.font_color, "left")
                     else:
-                        # Single Yes/No checkbox: DO NOT draw our own box — the
-                        # source PDF usually already has one printed. Just
-                        # stamp a check mark centred inside the field bounds
-                        # when the value is truthy.
-                        checked = val is True or val == "true" or val == 1 or val == "1"
+                        # Single-option (or Yes/No boolean) checkbox: the source
+                        # PDF usually already prints its own square in the same
+                        # spot, so we ONLY stamp the tick mark when checked —
+                        # never our own box. Handles all common submission shapes:
+                        #   • `True` / `"true"` / `1`
+                        #   • `["Option A"]` when `f.options == ["Option A"]`
+                        #   • the raw option string itself
+                        checked = False
+                        if val is True or val == "true" or val == 1 or val == "1":
+                            checked = True
+                        elif isinstance(val, list) and val:
+                            checked = True
+                        elif isinstance(val, str) and val.strip():
+                            checked = True
                         if checked:
                             _draw_tick_only(c, x, top_y, w, h, f.font_color)
                 elif ftype == "tick":
