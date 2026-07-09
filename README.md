@@ -207,6 +207,7 @@ asyncio.run(main())
 | `Storage unavailable` when uploading | Should not happen with local storage. Ensure `backend/uploads/local/` is writable. |
 | `Login fails` | Passwords in `.env` are only applied on **first** seed. Reset the DB (`use formforge; db.dropDatabase()`) then restart, or use the "change super-admin password" recipe above. |
 | Port 3000/8001/27017 already in use | Change the exposed port in `docker-compose.yml` or stop the conflicting service. |
+| `Login failed` when opening the app from another device on the same Wi-Fi (e.g. phone at `http://192.168.x.x:3000`) | The frontend now auto-rewrites `localhost` in `REACT_APP_BACKEND_URL` to whatever host the browser is on, so **you don't need to change anything** — just make sure your Windows / macOS firewall allows inbound TCP on port **8001**. If it still fails, hard-code your LAN IP: `REACT_APP_BACKEND_URL=http://192.168.x.x:8001` in `frontend/.env`, then restart `yarn start`. |
 
 ---
 

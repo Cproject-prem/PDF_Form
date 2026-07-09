@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { Bell, CheckCheck, Inbox } from "lucide-react";
 import {
   Popover, PopoverContent, PopoverTrigger,
@@ -40,7 +40,10 @@ export default function NotificationsBell() {
   const connectWs = useCallback(() => {
     const token = localStorage.getItem("ff_token");
     if (!token) return;
-    const backend = process.env.REACT_APP_BACKEND_URL || "";
+    // `API` already resolved via the LAN-aware helper in @/lib/api. Drop the
+    // trailing "/api" and swap http→ws so the WebSocket handshake lands on
+    // the correct host (localhost vs LAN IP).
+    const backend = API.replace(/\/api\/?$/, "");
     const wsUrl = backend.replace(/^http/, "ws") + `/api/notifications/ws?token=${encodeURIComponent(token)}`;
     try {
       const ws = new WebSocket(wsUrl);
