@@ -25,7 +25,11 @@ from calendar import monthrange
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from io import BytesIO
 
 
 # ---------------------------------------------------------------------------
@@ -402,5 +406,75 @@ def build_router(db, get_current_user):
             })
         out.sort(key=lambda r: (r.get("region") or "", r.get("site_name") or ""))
         return out
+
+    # -------------------------------------------------------------------
+    @router.get("/export.xlsx")
+    async def export_xlsx(year: int, month: Optional[int] = None,
+                          user=Depends(get_current_user)):
+        """Download a spreadsheet of the schedule vs actual data.
+        `month` optional — omit to export the full year in one workbook."""
+        payload = await list_cycles(year=year, month=month, site_id=None, user=user)
+        sites = payload["sites"]
+        cycles = payload["cycles"]
+        cy_map: Dict[str, Dict[str, Any]] = {}
+        for c in cycles:
+            cy_map[f"{c['site_id']}::{c['year']}-{c['month']:02d}::{c['cycle_number']}"] = c
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"{year}" + (f"-{month:02d}" if month else "")
+
+        header_fill = PatternFill("solid", fgColor="1F2937")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        header = ["Plant", "Site code", "Region", "Vendor",
+                  "Year", "Month", "Cycle",
+                  "Planned date", "Sch. notes", "Sch. status",
+                  "Actual date", "Result", "Act. notes", "Act. status"]
+        for i, h in enumerate(header, start=1):
+            c = ws.cell(row=1, column=i, value=h)
+            c.fill = header_fill
+            c.font = header_font
+            c.alignment = Alignment(vertical="center", horizontal="left")
+        ws.row_dimensions[1].height = 22
+
+        months_to_render = [month] if month else list(range(1, 13))
+        row = 2
+        for s in sites:
+            cap = int(s.get("cycles_per_month") or 1)
+            for m in months_to_render:
+                for cn in range(1, cap + 1):
+                    cyc = cy_map.get(f"{s['site_id']}::{year}-{m:02d}::{cn}") or {}
+                    sch = cyc.get("schedule") or {}
+                    act = cyc.get("actual") or {}
+                    ws.cell(row=row, column=1,  value=s.get("site_name"))
+                    ws.cell(row=row, column=2,  value=s.get("site_code"))
+                    ws.cell(row=row, column=3,  value=s.get("region"))
+                    ws.cell(row=row, column=4,  value=s.get("vendor_name"))
+                    ws.cell(row=row, column=5,  value=year)
+                    ws.cell(row=row, column=6,  value=m)
+                    ws.cell(row=row, column=7,  value=cn)
+                    ws.cell(row=row, column=8,  value=sch.get("planned_date"))
+                    ws.cell(row=row, column=9,  value=sch.get("notes"))
+                    ws.cell(row=row, column=10, value=sch.get("status") or "—")
+                    ws.cell(row=row, column=11, value=act.get("actual_date"))
+                    ws.cell(row=row, column=12, value=act.get("result"))
+                    ws.cell(row=row, column=13, value=act.get("notes"))
+                    ws.cell(row=row, column=14, value=act.get("status") or "—")
+                    row += 1
+
+        widths = [26, 14, 14, 20, 8, 8, 8, 15, 32, 12, 15, 10, 32, 12]
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[chr(ord("A") + i - 1)].width = w
+        ws.freeze_panes = "A2"
+
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        fname = f"schedule-{year}" + (f"-{month:02d}" if month else "-full") + ".xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
 
     return router

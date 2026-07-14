@@ -15,9 +15,10 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  Calendar as CalendarIcon, ChevronDown, ChevronUp, CheckCircle2,
-  Send, Save, Unlock, Lock, ListChecks, TrendingUp,
+  Calendar as CalendarIcon, CheckCircle2, Send, Save, Unlock, Lock,
+  ListChecks, TrendingUp, Download,
 } from "lucide-react";
+import { API } from "@/lib/api";
 
 const MONTHS = [
   { v: 1,  n: "Jan" }, { v: 2,  n: "Feb" }, { v: 3,  n: "Mar" },
@@ -103,6 +104,36 @@ export default function SchedulePage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              data-testid="export-xlsx-btn"
+              variant="outline"
+              className="h-9"
+              onClick={() => {
+                const token = localStorage.getItem("ff_token");
+                const qs = view === "month"
+                  ? `year=${year}&month=${month}`
+                  : `year=${year}`;
+                // Force a fresh window so the auth header is attached via a
+                // one-off fetch → Blob → download URL trick (browser <a>
+                // download can't add Authorization on a plain link).
+                fetch(`${API}/site-cycles/export.xlsx?${qs}`, {
+                  headers: { Authorization: `Bearer ${token}` },
+                })
+                  .then((r) => r.blob())
+                  .then((blob) => {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `schedule-${year}${view === "month" ? `-${String(month).padStart(2,"0")}` : "-full"}.xlsx`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  })
+                  .catch(() => toast.error("Export failed"));
+              }}
+            >
+              <Download className="w-3.5 h-3.5 mr-1.5" />
+              Export Excel
+            </Button>
             <div className="flex rounded-lg border border-slate-200 p-1 bg-white">
               <button
                 data-testid="view-toggle-month"
@@ -202,24 +233,16 @@ function MonthlyTable({ data, year, month, reload, isAdminOrMore, role }) {
   return (
     <Card className="rounded-2xl border-slate-100 card-soft bg-white overflow-hidden">
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 border-b border-slate-100 text-slate-600">
+        <table className="w-full text-sm border-collapse">
+          <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700">
             <tr className="text-left">
-              <th className="p-3 font-semibold w-[240px]">Plant</th>
-              <th className="p-3 font-semibold w-[70px]">Cycle</th>
-              <th className="p-3 font-semibold" colSpan={2}>Schedule</th>
-              <th className="p-3 font-semibold" colSpan={3}>Actual</th>
-              <th className="p-3 font-semibold w-[140px] text-right">Actions</th>
-            </tr>
-            <tr className="text-left text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-100">
-              <th />
-              <th />
-              <th className="p-2 pl-3">Planned date</th>
-              <th className="p-2">Notes</th>
-              <th className="p-2 pl-3">Actual date</th>
-              <th className="p-2">Result</th>
-              <th className="p-2">Notes</th>
-              <th />
+              <th className="p-3 font-semibold w-[220px] border-r border-slate-200">Site</th>
+              <th className="p-3 font-semibold w-[110px] border-r border-slate-200">Cycle</th>
+              <th className="p-3 font-semibold w-[150px] border-r border-slate-200">Schedule</th>
+              <th className="p-3 font-semibold w-[210px] border-r border-slate-200">Actual</th>
+              <th className="p-3 font-semibold border-r border-slate-200">Remark</th>
+              <th className="p-3 font-semibold w-[130px] border-r border-slate-200">Status</th>
+              <th className="p-3 font-semibold w-[220px] text-right">Save / Submit</th>
             </tr>
           </thead>
           <tbody>
@@ -233,6 +256,7 @@ function MonthlyTable({ data, year, month, reload, isAdminOrMore, role }) {
                     key={`${s.site_id}-${cn}`}
                     site={s}
                     cn={cn}
+                    cap={cap}
                     cyc={cyc}
                     year={year}
                     month={month}
@@ -252,12 +276,11 @@ function MonthlyTable({ data, year, month, reload, isAdminOrMore, role }) {
 }
 
 /* --------------------------- Row -------------------------------------- */
-function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, showPlant }) {
+function CycleRow({ site, cn, cap, cyc, year, month, reload, isAdminOrMore, role, showPlant }) {
   const [saving, setSaving] = useState(false);
   const sch = cyc?.schedule || {};
   const act = cyc?.actual || {};
 
-  // Local editable form state, seeded from server on every render
   const [form, setForm] = useState({
     planned_date: sch.planned_date || "",
     sch_notes:    sch.notes || "",
@@ -265,7 +288,6 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
     result:       act.result || "",
     act_notes:    act.notes || "",
   });
-  // Reset when cyc identity changes (year/month/site swap)
   useEffect(() => {
     setForm({
       planned_date: sch.planned_date || "",
@@ -279,7 +301,8 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
 
   const canEditSch = sch.status !== "approved" && (sch.status !== "submitted" || isAdminOrMore);
   const canEditAct = act.status !== "approved" && (act.status !== "submitted" || isAdminOrMore);
-  const isVendor = ["vendor_admin", "vendor_user"].includes(role);
+  const isVendor   = ["vendor_admin", "vendor_user"].includes(role);
+  void isVendor;
 
   const save = async (which) => {
     setSaving(true);
@@ -294,13 +317,11 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
         notes:       form.act_notes || null,
       };
       await api.post("/site-cycles/upsert", body);
-      toast.success("Saved");
+      toast.success(which === "schedule" ? "Schedule saved" : "Actual saved");
       await reload();
     } catch (e) {
       toast.error(getErrorMessage(e, "Save failed"));
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   const submit = async (which) => {
@@ -312,9 +333,7 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
       await reload();
     } catch (e) {
       toast.error(getErrorMessage(e, "Submit failed"));
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   const approve = async (which) => {
@@ -329,103 +348,126 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
     } finally { setSaving(false); }
   };
 
-  const [unlockDlg, setUnlockDlg] = useState(null);   // "schedule" | "actual" | null
+  const [unlockDlg, setUnlockDlg] = useState(null);
+
+  const minDate = `${year}-${String(month).padStart(2, "0")}-01`;
+  const maxDate = `${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`;
 
   return (
     <>
-      <tr className="border-b border-slate-100 align-top hover:bg-slate-50/40">
-        {/* Plant column — only on first cycle row for that plant */}
-        <td className="p-3">
-          {showPlant && (
-            <div>
-              <div className="font-medium text-slate-900">{site.site_name}</div>
-              <div className="text-[11px] text-slate-400 font-mono">
-                {site.site_code} · {site.cycles_per_month} cyc/mo
-              </div>
+      <tr className="border-b border-slate-200 align-middle hover:bg-slate-50/40">
+        {/* Site column — merged across every cycle of this plant */}
+        {showPlant && (
+          <td rowSpan={cap} className="p-3 border-r border-slate-200 align-middle bg-slate-50/40">
+            <div className="font-semibold text-slate-900">{site.site_name}</div>
+            <div className="text-[11px] text-slate-500 font-mono mt-0.5">{site.site_code}</div>
+            <div className="text-[10px] text-slate-400 mt-1">
+              {cap} cycle{cap > 1 ? "s" : ""}/month
             </div>
-          )}
-        </td>
-        <td className="p-3 whitespace-nowrap">
-          <Badge className="bg-blue-50 text-blue-700 border-blue-100" data-testid={`cycle-badge-${site.site_id}-${cn}`}>
-            {ordinal(cn)} cycle
-          </Badge>
-          <div className="mt-1 flex flex-col gap-1">
-            <Badge className={`text-[10px] ${statusPill(sch.status || "draft")}`}>
-              Sch · {sch.status || "draft"}
-            </Badge>
-            <Badge className={`text-[10px] ${statusPill(act.status || "draft")}`}>
-              Act · {act.status || "draft"}
-            </Badge>
-          </div>
+          </td>
+        )}
+
+        {/* Cycle label */}
+        <td className="p-3 border-r border-slate-200 text-slate-700 font-medium">
+          {ordinal(cn)} cycle
         </td>
 
-        {/* --------- Schedule block --------- */}
-        <td className="p-2 pl-3 w-[140px]">
+        {/* Schedule — planned date */}
+        <td className="p-2 border-r border-slate-200">
           <Input
             type="date"
             data-testid={`sch-date-${site.site_id}-${cn}`}
             value={form.planned_date || ""}
             disabled={!canEditSch}
-            min={`${year}-${String(month).padStart(2, "0")}-01`}
-            max={`${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`}
+            min={minDate}
+            max={maxDate}
             onChange={(e) => setForm({ ...form, planned_date: e.target.value })}
-            className="h-8 text-xs"
-          />
-        </td>
-        <td className="p-2 min-w-[160px]">
-          <Textarea
-            data-testid={`sch-notes-${site.site_id}-${cn}`}
-            value={form.sch_notes || ""}
-            disabled={!canEditSch}
-            onChange={(e) => setForm({ ...form, sch_notes: e.target.value })}
-            className="h-8 text-xs resize-none"
-            placeholder="Optional notes…"
+            className="h-9 text-xs"
           />
         </td>
 
-        {/* --------- Actual block --------- */}
-        <td className="p-2 pl-3 w-[140px]">
-          <Input
-            type="date"
-            data-testid={`act-date-${site.site_id}-${cn}`}
-            value={form.actual_date || ""}
-            disabled={!canEditAct}
-            min={`${year}-${String(month).padStart(2, "0")}-01`}
-            max={`${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`}
-            onChange={(e) => setForm({ ...form, actual_date: e.target.value })}
-            className="h-8 text-xs"
-          />
-        </td>
-        <td className="p-2 w-[110px]">
-          <Select
-            value={form.result || ""}
-            disabled={!canEditAct}
-            onValueChange={(v) => setForm({ ...form, result: v })}
-          >
-            <SelectTrigger data-testid={`act-result-${site.site_id}-${cn}`} className="h-8 text-xs">
-              <SelectValue placeholder="—" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Done">Done</SelectItem>
-              <SelectItem value="Missed">Missed</SelectItem>
-            </SelectContent>
-          </Select>
-        </td>
-        <td className="p-2 min-w-[160px]">
-          <Textarea
-            data-testid={`act-notes-${site.site_id}-${cn}`}
-            value={form.act_notes || ""}
-            disabled={!canEditAct}
-            onChange={(e) => setForm({ ...form, act_notes: e.target.value })}
-            className="h-8 text-xs resize-none"
-            placeholder="Optional notes…"
-          />
+        {/* Actual — actual date + Done/Missed result */}
+        <td className="p-2 border-r border-slate-200">
+          <div className="flex items-center gap-1.5">
+            <Input
+              type="date"
+              data-testid={`act-date-${site.site_id}-${cn}`}
+              value={form.actual_date || ""}
+              disabled={!canEditAct}
+              min={minDate}
+              max={maxDate}
+              onChange={(e) => setForm({ ...form, actual_date: e.target.value })}
+              className="h-9 text-xs flex-1"
+            />
+            <Select
+              value={form.result || ""}
+              disabled={!canEditAct}
+              onValueChange={(v) => setForm({ ...form, result: v })}
+            >
+              <SelectTrigger
+                data-testid={`act-result-${site.site_id}-${cn}`}
+                className="h-9 w-[80px] text-xs"
+              >
+                <SelectValue placeholder="—" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Done">Done</SelectItem>
+                <SelectItem value="Missed">Missed</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </td>
 
-        {/* --------- Actions --------- */}
-        <td className="p-2 pr-3 text-right whitespace-nowrap">
+        {/* Remark — stacked notes for Schedule + Actual */}
+        <td className="p-2 border-r border-slate-200">
+          <div className="space-y-1">
+            <div className="flex items-start gap-1">
+              <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-2 w-8">Sch</span>
+              <Textarea
+                data-testid={`sch-notes-${site.site_id}-${cn}`}
+                value={form.sch_notes || ""}
+                disabled={!canEditSch}
+                onChange={(e) => setForm({ ...form, sch_notes: e.target.value })}
+                placeholder="Schedule remark…"
+                className="h-9 text-xs resize-none"
+              />
+            </div>
+            <div className="flex items-start gap-1">
+              <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-2 w-8">Act</span>
+              <Textarea
+                data-testid={`act-notes-${site.site_id}-${cn}`}
+                value={form.act_notes || ""}
+                disabled={!canEditAct}
+                onChange={(e) => setForm({ ...form, act_notes: e.target.value })}
+                placeholder="Actual remark…"
+                className="h-9 text-xs resize-none"
+              />
+            </div>
+          </div>
+        </td>
+
+        {/* Status — stacked pills */}
+        <td className="p-2 border-r border-slate-200">
+          <div className="flex flex-col gap-1">
+            <Badge
+              className={`text-[10px] justify-start ${statusPill(sch.status || "draft")}`}
+              data-testid={`sch-status-${site.site_id}-${cn}`}
+            >
+              Sch · {sch.status || "draft"}
+            </Badge>
+            <Badge
+              className={`text-[10px] justify-start ${statusPill(act.status || "draft")}`}
+              data-testid={`act-status-${site.site_id}-${cn}`}
+            >
+              Act · {act.status || "draft"}
+            </Badge>
+          </div>
+        </td>
+
+        {/* Save / Submit — two rows, one per block */}
+        <td className="p-2 whitespace-nowrap">
           <div className="flex flex-col items-end gap-1">
-            {/* Schedule row */}
+            {/* Schedule action strip */}
             <div className="flex items-center gap-1">
               {canEditSch && (
                 <Button
@@ -434,9 +476,9 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
                   disabled={saving}
                   onClick={() => save("schedule")}
                   className="h-7 px-2 text-[11px]"
-                ><Save className="w-3 h-3 mr-1" /> Sch</Button>
+                ><Save className="w-3 h-3 mr-1" /> Save</Button>
               )}
-              {sch.status === "draft" && sch.planned_date && !isVendor === false && (
+              {sch.status === "draft" && sch.planned_date && (
                 <Button
                   size="sm" variant="outline"
                   data-testid={`submit-sch-${site.site_id}-${cn}`}
@@ -464,7 +506,7 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
                 ><Unlock className="w-3 h-3" /></Button>
               )}
             </div>
-            {/* Actual row */}
+            {/* Actual action strip */}
             <div className="flex items-center gap-1">
               {canEditAct && (
                 <Button
@@ -473,7 +515,7 @@ function CycleRow({ site, cn, cyc, year, month, reload, isAdminOrMore, role, sho
                   disabled={saving}
                   onClick={() => save("actual")}
                   className="h-7 px-2 text-[11px]"
-                ><Save className="w-3 h-3 mr-1" /> Act</Button>
+                ><Save className="w-3 h-3 mr-1" /> Save</Button>
               )}
               {act.status === "draft" && act.actual_date && act.result && (
                 <Button
