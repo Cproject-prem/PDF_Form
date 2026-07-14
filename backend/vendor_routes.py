@@ -100,6 +100,7 @@ SITE_COLUMNS = [
     "approver_email", "cluster_manager_name",
     "cluster", "region", "site_status",
     "commission_date", "om_start_date", "warranty_end_date",
+    "cycles_per_month",
     "remarks",
 ]
 
@@ -117,6 +118,7 @@ SITE_COLUMN_LABELS = {
     "cluster": "Cluster", "region": "Region",
     "site_status": "Site Status", "commission_date": "Commission Date",
     "om_start_date": "O&M Start Date", "warranty_end_date": "Warranty End Date",
+    "cycles_per_month": "Cycles / Month",
     "remarks": "Remarks",
 }
 

@@ -84,3 +84,18 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - `Forms.jsx`: `canEditForms` boolean = `role in [super_admin, admin] || access_override`; hides Create button, empty-state CTA, and all Edit / Duplicate / Archive / Delete card + menu items when false.
   - `App.js`: `/forms/:id/build`, `/pdf-forms/:id/build`, `/workflows/:id/build` gated by `BUILDER_ROLES = ["super_admin","admin"]`; `Protected` respects `user.access_override` as an escape hatch.
 - **Verification**: backend testing agent ran 13 pytest scenarios (12 pass, 1 flaky due to test-parallelism, not product); curl E2E confirms vendor_admin `list submissions` on a shared form drops from 16 → 0 (or team-only rows) — the reported "still others submissions shown in vendor access" bug is fixed.
+
+
+## iter 6 — Schedule vs Actual page (Feb 2026)
+- **Feature:** Per-site monthly cycle tracker with submit → approve workflow.
+- **Backend**
+  - New collection `site_cycles`: unique key `(site_id, year, month, cycle_number)`; blocks `schedule{planned_date, notes, status}` and `actual{actual_date, result[Done|Missed], notes, status}` — each with `submitted_at/by`, `approved_at/by`, `unlocked_at/by/note`.
+  - New file `schedule_routes.py` exposes: `GET /api/site-cycles?year=&month=&site_id=`, `POST /api/site-cycles/upsert`, `POST /api/site-cycles/{id}/submit-schedule|approve-schedule|submit-actual|approve-actual|unlock`, `GET /api/site-cycles/summary?year=` (yearly rollup per plant).
+  - Site Master gained core column `cycles_per_month` (default 1). Vendors save schedule/actual; admin (cluster manager) or super_admin approve. Approved blocks are locked; admin can unlock with an audit note (`unlock_note`).
+  - RLS delegates to `permissions.site_filter` — vendor sees own plants only, admin sees region/cluster, super_admin+override see everything.
+- **Frontend** — new page `/schedule` (menu entry "Schedule vs Actual" for all roles):
+  - Year dropdown auto-adds next year once current month ≥ Sep (so Q4 planning works).
+  - Month dropdown + Monthly / Yearly-Summary toggle.
+  - Monthly view: table with one row per site × cycle; Planned date, Sch-notes | Actual date, Result, Act-notes; per-block Save / Submit / Approve / Unlock buttons that honour the lock rules.
+  - Yearly view: per-plant progress table with draft/submitted/approved counts and a percentage completion bar.
+- **Verified via curl:** `GET /api/site-cycles?year=2026` returns sites with `cycles_per_month`; PUT `/api/sites/{id}` with `cycles_per_month=2` correctly surfaces both 1st + 2nd cycle rows; upsert + yearly summary work end-to-end. Frontend screenshot confirms the sidebar entry and table rendering.

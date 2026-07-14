@@ -28,6 +28,7 @@ import PublicApprovalPage from "@/pages/PublicApproval";
 import VendorsPage from "@/pages/Vendors";
 import SiteMasterPage from "@/pages/SiteMaster";
 import MasterDataPage from "@/pages/MasterData";
+import SchedulePage from "@/pages/Schedule";
 import "@/App.css";
 
 function Protected({ children, roles }) {
@@ -80,6 +81,7 @@ function Router() {
       <Route path="/sites" element={<Protected><SiteMasterPage /></Protected>} />
       <Route path="/plants" element={<Protected><PlantsPage /></Protected>} />
       <Route path="/plants/:site_code" element={<Protected><PlantsPage /></Protected>} />
+      <Route path="/schedule" element={<Protected><SchedulePage /></Protected>} />
       <Route path="/master-data" element={<Protected><MasterDataPage /></Protected>} />
       <Route path="/team" element={<Protected><UsersPage /></Protected>} />
       <Route path="/settings" element={<Protected roles={["super_admin"]}><SettingsPage /></Protected>} />

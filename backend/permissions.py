@@ -426,18 +426,18 @@ def menu_for(user) -> List[Dict[str, str]]:
     if role == SUPER_ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "workflow-analytics", "approvals",
-                      "plants", "site-master", "vendors",
+                      "plants", "schedule", "site-master", "vendors",
                       "master-data", "reports", "audit-logs", "users",
                       "smtp", "welcome-email", "settings"])
     if role == ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "approvals",
-                      "plants", "site-master", "vendors",
+                      "plants", "schedule", "site-master", "vendors",
                       "master-data", "users", "welcome-email", "reports"])
     if role == VENDOR_ADMIN:
-        return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "team"])
+        return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "schedule", "team"])
     if role == VENDOR_USER:
-        return _menu(["forms", "pdf-forms", "submissions", "plants"])
+        return _menu(["forms", "pdf-forms", "submissions", "plants", "schedule"])
     return _menu(["forms"])
 
 
@@ -451,6 +451,7 @@ _MENU_DEFS = {
     "workflow-analytics": {"label": "Workflow Analytics",  "path": "/workflow-analytics",  "group": "workspace"},
     "approvals":          {"label": "Approvals",           "path": "/approvals",           "group": "workspace"},
     "plants":             {"label": "Plants",              "path": "/plants",              "group": "data"},
+    "schedule":           {"label": "Schedule vs Actual",  "path": "/schedule",            "group": "data"},
     "site-master":        {"label": "Site Management",     "path": "/sites",               "group": "data"},
     "vendors":            {"label": "Vendor Management",   "path": "/vendors",             "group": "data"},
     "master-data":        {"label": "Master Data",         "path": "/master-data",         "group": "data"},

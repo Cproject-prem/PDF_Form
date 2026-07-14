@@ -1923,6 +1923,10 @@ api.include_router(_master_r)
 api.include_router(_lookup_r)
 api.include_router(_pub_lookup_r)
 
+# ---------- Schedule vs Actual (per-site monthly cycles) ----------
+from schedule_routes import build_router as _build_schedule_router
+api.include_router(_build_schedule_router(db, get_current_user))
+
 # ---------- Formula Engine ----------
 from formula_routes import build_formula_router
 api.include_router(build_formula_router(db, get_current_user))
