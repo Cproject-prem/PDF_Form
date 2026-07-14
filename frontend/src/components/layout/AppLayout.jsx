@@ -8,6 +8,7 @@ import {
   LayoutDashboard, FileStack, FileType2, Inbox, FileSignature, Workflow,
   BarChart3, ShieldCheck, MapPin, Building2, Database, ScrollText, Users as UsersIcon,
   Mail, Settings as SettingsIcon, LogOut, ChevronDown, Sparkles, UserCog, Users2,
+  CalendarCheck2, Factory,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -26,6 +27,8 @@ const ICONS = {
   "workflow-analytics": BarChart3,
   "approvals": ShieldCheck,
   "site-master": MapPin,
+  "plants": Factory,
+  "schedule": CalendarCheck2,
   "vendors": Building2,
   "master-data": Database,
   "reports": BarChart3,
