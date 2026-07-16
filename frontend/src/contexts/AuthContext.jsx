@@ -9,6 +9,26 @@ export function AuthProvider({ children }) {
     return raw ? JSON.parse(raw) : null;
   });
   const [loading, setLoading] = useState(true);
+  const [branding, setBranding] = useState(() => {
+    // hydrate from previous run so the login screen renders instantly
+    try {
+      const raw = localStorage.getItem("ff_branding");
+      return raw ? JSON.parse(raw) : { app_name: "FormForge", logo_url: "", primary_color: "#2563EB" };
+    } catch {
+      return { app_name: "FormForge", logo_url: "", primary_color: "#2563EB" };
+    }
+  });
+
+  const reloadBranding = useCallback(async () => {
+    try {
+      const r = await api.get("/public/branding");
+      setBranding(r.data);
+      localStorage.setItem("ff_branding", JSON.stringify(r.data));
+      if (r.data.app_name && typeof document !== "undefined") {
+        document.title = r.data.app_name;
+      }
+    } catch { /* keep local fallback */ }
+  }, []);
 
   const refresh = useCallback(async () => {
     const token = localStorage.getItem("ff_token");
@@ -25,10 +45,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    // Branding is public — always load it (used by login screen too)
+    reloadBranding();
     // CRITICAL: skip /me check if coming back from Google OAuth, AuthCallback handles it.
     if (window.location.hash?.includes("session_id=")) { setLoading(false); return; }
     refresh();
-  }, [refresh]);
+  }, [refresh, reloadBranding]);
 
   const login = async (email, password) => {
     const r = await api.post("/auth/login", { email, password });
@@ -58,7 +80,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setSessionFromGoogle }}>
+    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setSessionFromGoogle, branding, reloadBranding }}>
       {children}
     </AuthCtx.Provider>
   );

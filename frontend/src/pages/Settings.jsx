@@ -1,17 +1,21 @@
 import React, { useEffect, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { Upload } from "lucide-react";
 
 export default function SettingsPage() {
+  const { reloadBranding } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
 
   useEffect(() => {
     api.get("/settings").then((r) => setData(r.data)).finally(() => setLoading(false));
@@ -23,8 +27,25 @@ export default function SettingsPage() {
       const r = await api.put("/settings", data);
       setData(r.data);
       toast.success("Settings saved");
-    } catch (e) { toast.error("Save failed"); }
+      reloadBranding && reloadBranding();
+    } catch (e) { void e; toast.error("Save failed"); }
     finally { setSaving(false); }
+  };
+
+  const uploadLogo = async (file) => {
+    if (!file) return;
+    setUploadingLogo(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const r = await api.post("/settings/logo", form,
+        { headers: { "Content-Type": "multipart/form-data" } });
+      setData((d) => ({ ...d, company_logo_url: r.data.logo_url }));
+      reloadBranding && reloadBranding();
+      toast.success("Logo uploaded");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Upload failed");
+    } finally { setUploadingLogo(false); }
   };
 
   if (loading || !data) return <AppLayout><div className="text-slate-400">Loading…</div></AppLayout>;
@@ -38,15 +59,76 @@ export default function SettingsPage() {
         <p className="text-slate-500 mt-1">Configure your workspace.</p>
 
         <Card className="mt-6 p-6 rounded-2xl border-slate-100 card-soft space-y-4">
-          <h2 className="text-lg font-heading font-semibold">Workspace</h2>
           <div>
-            <Label>Company name</Label>
-            <Input value={data.company_name} onChange={(e) => setData({ ...data, company_name: e.target.value })} data-testid="settings-company" />
+            <h2 className="text-lg font-heading font-semibold">Workspace branding</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Shown on the sidebar, browser tab and login screen. Public — visitors see it before signing in.
+            </p>
           </div>
+
           <div>
-            <Label>Company logo URL</Label>
-            <Input value={data.company_logo_url} onChange={(e) => setData({ ...data, company_logo_url: e.target.value })} />
+            <Label>App name</Label>
+            <Input
+              value={data.company_name}
+              onChange={(e) => setData({ ...data, company_name: e.target.value })}
+              placeholder="FormForge"
+              data-testid="settings-company"
+            />
           </div>
+
+          <div>
+            <Label>Logo</Label>
+            <div className="mt-2 flex items-start gap-4">
+              {data.company_logo_url ? (
+                <img
+                  src={data.company_logo_url.startsWith("http")
+                    ? data.company_logo_url
+                    : `${process.env.REACT_APP_BACKEND_URL || ""}${data.company_logo_url}`}
+                  alt="logo preview"
+                  className="w-16 h-16 rounded-lg object-contain border border-slate-200 bg-slate-50"
+                  data-testid="settings-logo-preview"
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-lg border border-dashed border-slate-300 flex items-center justify-center text-slate-400 text-xs">
+                  No logo
+                </div>
+              )}
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center gap-2">
+                  <label
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-slate-200 cursor-pointer hover:bg-slate-50"
+                    data-testid="settings-logo-upload"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    {uploadingLogo ? "Uploading…" : "Upload image"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => uploadLogo(e.target.files?.[0])}
+                    />
+                  </label>
+                  {data.company_logo_url && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setData({ ...data, company_logo_url: "" })}
+                      className="text-xs text-red-600 hover:bg-red-50"
+                      data-testid="settings-logo-clear"
+                    >Remove</Button>
+                  )}
+                </div>
+                <div className="text-xs text-slate-400">— or paste a URL —</div>
+                <Input
+                  value={data.company_logo_url}
+                  onChange={(e) => setData({ ...data, company_logo_url: e.target.value })}
+                  placeholder="https://example.com/logo.png"
+                  data-testid="settings-logo-url"
+                />
+              </div>
+            </div>
+          </div>
+
           <div>
             <Label>Primary color</Label>
             <div className="flex items-center gap-2">

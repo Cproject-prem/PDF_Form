@@ -11,7 +11,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("Admin@12345");
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, branding } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
   const to = loc.state?.from?.pathname || "/dashboard";
@@ -44,8 +44,21 @@ export default function LoginPage() {
         }} />
         <div className="absolute inset-0 bg-gradient-to-tr from-blue-900/70 via-slate-900/80 to-slate-900" />
         <div className="relative z-10 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center"><Sparkles className="w-5 h-5" /></div>
-          <span className="font-heading font-bold text-2xl">FormForge</span>
+          {branding?.logo_url ? (
+            <img
+              src={branding.logo_url.startsWith("http")
+                ? branding.logo_url
+                : `${process.env.REACT_APP_BACKEND_URL || ""}${branding.logo_url}`}
+              alt="logo"
+              className="w-10 h-10 rounded-xl object-contain bg-white/10 p-1"
+            />
+          ) : (
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center"
+              style={{ background: branding?.primary_color || "#2563EB" }}
+            ><Sparkles className="w-5 h-5" /></div>
+          )}
+          <span className="font-heading font-bold text-2xl">{branding?.app_name || "FormForge"}</span>
         </div>
         <div className="relative z-10 space-y-4 max-w-md">
           <h1 className="text-4xl sm:text-5xl font-heading font-bold tracking-tight">Build forms that feel like apps.</h1>
@@ -58,7 +71,7 @@ export default function LoginPage() {
             <div><div className="text-3xl font-bold">4</div><div className="text-slate-400">User roles</div></div>
           </div>
         </div>
-        <div className="relative z-10 text-xs text-slate-400">© FormForge — self-hosted form builder.</div>
+        <div className="relative z-10 text-xs text-slate-400">© {branding?.app_name || "FormForge"} — self-hosted form builder.</div>
       </div>
 
       {/* Right form */}

@@ -6,6 +6,7 @@ and supports Emergent Google OAuth as a secondary login path. Files are
 stored via the Emergent Object Storage integration.
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, Response
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -1819,6 +1820,68 @@ async def update_settings(body: SettingsIn, user: User = Depends(require_role("s
     if doc["smtp"]["password"]:
         doc["smtp"]["password"] = "********"
     return SettingsIn(**doc)
+
+
+# --- Branding (public + logo upload) --------------------------------------
+_BRANDING_DIR = Path(__file__).parent / "uploads" / "local" / "branding"
+_BRANDING_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@api.get("/public/branding")
+async def public_branding():
+    """Unauthenticated read of the workspace branding — used by the login
+    screen and the initial SPA bootstrap so the app name / logo can be
+    shown before the user is authenticated."""
+    doc = await db.settings.find_one({"_id": "global"}, {"_id": 0}) or {}
+    return {
+        "app_name":       doc.get("company_name")     or "FormForge",
+        "logo_url":       doc.get("company_logo_url") or "",
+        "primary_color":  doc.get("primary_color")    or "#2563EB",
+    }
+
+
+@api.post("/settings/logo")
+async def upload_logo(
+    file: UploadFile = File(...),
+    user: User = Depends(require_role("super_admin")),
+):
+    """Upload a logo image. Stores the file on disk and returns the public
+    URL that the frontend can then save to `company_logo_url`."""
+    data = await file.read()
+    max_bytes = 2 * 1024 * 1024   # 2 MB is plenty for a logo
+    if len(data) > max_bytes:
+        raise HTTPException(413, "Logo must be under 2 MB")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Upload must be an image file")
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in ("png", "jpg", "jpeg", "webp", "svg", "gif"):
+        raise HTTPException(400, "Only PNG / JPG / WEBP / SVG / GIF allowed")
+    fname = f"logo-{uuid.uuid4().hex[:12]}.{ext}"
+    (_BRANDING_DIR / fname).write_bytes(data)
+    url = f"/api/public/branding/logo/{fname}"
+    # Also persist so admins don't have to re-save Settings
+    await db.settings.update_one(
+        {"_id": "global"}, {"$set": {"company_logo_url": url}}, upsert=True,
+    )
+    return {"logo_url": url}
+
+
+@api.get("/public/branding/logo/{name}")
+async def serve_logo(name: str):
+    """Serve the uploaded logo file (public — logos are meant to be
+    shown to unauthenticated users on the login page)."""
+    # Path-traversal defence: keep to just the basename we generated.
+    safe = Path(name).name
+    fp = _BRANDING_DIR / safe
+    if not fp.exists() or not fp.is_file():
+        raise HTTPException(404, "Not found")
+    ext = fp.suffix.lstrip(".").lower()
+    media = {
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "webp": "image/webp", "svg": "image/svg+xml", "gif": "image/gif",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(fp, media_type=media)
+
 
 # ---------- Welcome email template (configurable per workspace) ----------
 DEFAULT_WELCOME_EMAIL = {
