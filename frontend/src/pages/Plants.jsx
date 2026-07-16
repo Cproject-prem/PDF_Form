@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import {
   Search, MapPin, Zap, Building2, User as UserIcon, Mail, Calendar,
   ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
-  History, ChevronRight, ChevronDown,
+  History, ChevronRight, ChevronDown, LayoutGrid, Rows3,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -38,6 +38,13 @@ function PlantsList() {
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState(() =>
+    typeof window !== "undefined" && localStorage.getItem("ff_plants_view") === "table" ? "table" : "cards"
+  );
+  const setViewSticky = (v) => {
+    setView(v);
+    localStorage.setItem("ff_plants_view", v);
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -103,6 +110,28 @@ function PlantsList() {
                 </button>
               ))}
             </div>
+            <div className="flex items-center gap-1 rounded-lg border border-slate-200 p-1 text-xs ml-auto">
+              <button
+                data-testid="plants-view-cards"
+                onClick={() => setViewSticky("cards")}
+                title="Card view"
+                className={`px-2.5 py-1.5 rounded-md transition-colors ${
+                  view === "cards" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <LayoutGrid className="w-3.5 h-3.5 inline mr-1" /> Cards
+              </button>
+              <button
+                data-testid="plants-view-table"
+                onClick={() => setViewSticky("table")}
+                title="Table view"
+                className={`px-2.5 py-1.5 rounded-md transition-colors ${
+                  view === "table" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <Rows3 className="w-3.5 h-3.5 inline mr-1" /> Table
+              </button>
+            </div>
           </div>
         </Card>
 
@@ -113,6 +142,8 @@ function PlantsList() {
             <MapPin className="w-12 h-12 mx-auto text-slate-300" />
             <p className="text-sm text-slate-500 mt-3">No plants available for your access scope.</p>
           </div>
+        ) : view === "table" ? (
+          <PlantsTable rows={filtered} />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {filtered.map((p) => <PlantCard key={p.site_code || p.site_id} plant={p} />)}
@@ -178,6 +209,110 @@ function statusColor(s) {
   if (k.includes("hold") || k.includes("issue")) return "bg-amber-100 text-amber-700 border-amber-200";
   if (k.includes("decommission")) return "bg-slate-100 text-slate-600 border-slate-200";
   return "bg-slate-100 text-slate-600 border-slate-200";
+}
+
+/* Preferred column order + human labels. Any additional key found on the
+ * rows is appended in first-seen order so custom Site Master fields flow
+ * through automatically. */
+const PLANT_PREFERRED_COLS = [
+  ["site_name",             "Plant"],
+  ["site_code",             "Code"],
+  ["asset_id",              "Asset ID"],
+  ["region",                "Region"],
+  ["state",                 "State"],
+  ["district",              "District"],
+  ["site_status",           "Status"],
+  ["ac_capacity",           "AC Capacity"],
+  ["dc_capacity",           "DC Capacity"],
+  ["vendor_name",           "Vendor"],
+  ["cluster_manager_name",  "Cluster Mgr"],
+  ["approver_email",        "Approver"],
+  ["cycles_per_month",      "Cleaning /mo"],
+  ["pm_cycles_per_quarter", "PM /qtr"],
+  ["commission_date",       "Commissioned"],
+];
+
+function PlantsTable({ rows }) {
+  const cols = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const [k, l] of PLANT_PREFERRED_COLS) {
+      // include only if at least one row has a non-empty value for it
+      if (rows.some((r) => r[k] !== undefined && r[k] !== null && r[k] !== "")) {
+        out.push([k, l]);
+        seen.add(k);
+      }
+    }
+    // Append any custom fields present on the row objects
+    for (const r of rows) {
+      for (const k of Object.keys(r)) {
+        if (seen.has(k)) continue;
+        if (["_id", "site_id", "assigned_admin_ids", "assigned_vendor_ids",
+             "assigned_vendor_user_ids", "created_at", "updated_at",
+             "vendor_id", "vendor_email"].includes(k)) continue;
+        if (r[k] === null || r[k] === undefined || r[k] === "") continue;
+        out.push([k, prettify(k)]);
+        seen.add(k);
+      }
+    }
+    return out;
+  }, [rows]);
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" data-testid="plants-table">
+          <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 sticky top-0">
+            <tr className="text-left">
+              {cols.map(([k, l]) => (
+                <th key={k} className="p-3 font-semibold whitespace-nowrap">{l}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((p) => (
+              <tr
+                key={p.site_code || p.site_id}
+                className="border-b border-slate-100 hover:bg-slate-50/60 cursor-pointer"
+                data-testid={`plants-row-${p.site_code || p.site_id}`}
+              >
+                {cols.map(([k]) => (
+                  <td key={k} className="p-3 align-top whitespace-nowrap">
+                    {renderCell(p, k)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function renderCell(row, key) {
+  const v = row[key];
+  if (key === "site_name") {
+    return (
+      <Link
+        to={`/plants/${encodeURIComponent(row.site_code || row.site_id)}`}
+        className="font-medium text-slate-900 hover:text-blue-700"
+      >{v || "—"}</Link>
+    );
+  }
+  if (key === "site_code" || key === "asset_id") {
+    return <span className="text-xs font-mono text-slate-500">{v || "—"}</span>;
+  }
+  if (key === "site_status") {
+    return <Badge className={`${statusColor(v)} capitalize`}>{v || "—"}</Badge>;
+  }
+  if (Array.isArray(v)) return v.join(", ") || "—";
+  if (typeof v === "object" && v !== null) return JSON.stringify(v);
+  return v === null || v === undefined || v === "" ? <span className="text-slate-300">—</span> : String(v);
+}
+
+function prettify(k) {
+  return String(k).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /* ----------------------------- DETAIL VIEW ------------------------------ */
