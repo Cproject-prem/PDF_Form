@@ -56,6 +56,7 @@ class CycleUpsertIn(BaseModel):
     year: int = Field(..., ge=2020, le=2099)
     month: int = Field(..., ge=1, le=12)
     cycle_number: int = Field(..., ge=1, le=31)
+    activity: str = Field(default="cleaning", pattern="^(cleaning|pm)$")
     # Only send the block you're editing. Fields inside are shallow-merged
     # onto the persisted block — status/approver metadata is server-managed.
     schedule: Optional[Dict[str, Any]] = None
@@ -136,15 +137,21 @@ def build_router(db, get_current_user):
     @router.get("")
     async def list_cycles(year: int, month: Optional[int] = None,
                           site_id: Optional[str] = None,
+                          activity: str = "cleaning",
                           user=Depends(get_current_user)):
         """List cycle rows for the given period.
 
         * If `month` is omitted → returns every cycle in that year (used
           by the yearly-summary view).
         * If `site_id` is provided → filtered to that plant only.
-        * Auto-creates draft placeholder rows for every site the user can
-          see (based on `cycles_per_month` on the site).
+        * `activity` = "cleaning" (default, monthly cadence) or "pm"
+          (quarterly cadence; PM rows are stored on the quarter-end month
+          — 3, 6, 9, 12).
+        * The returned `sites` payload carries BOTH caps so the client can
+          render the right number of rows per activity.
         """
+        if activity not in ("cleaning", "pm"):
+            raise HTTPException(400, "activity must be 'cleaning' or 'pm'")
         from permissions import site_filter as _sf, is_super_admin, has_access_override
         # 1) sites in scope
         site_q: Dict[str, Any] = {}
@@ -158,19 +165,22 @@ def build_router(db, get_current_user):
         if not sites:
             return {"sites": [], "cycles": []}
 
-        # 2) existing cycles
+        # 2) existing cycles filtered by activity
         row_q: Dict[str, Any] = {
             "site_id": {"$in": [s["site_id"] for s in sites]},
             "year": year,
+            # Older rows created before the activity field existed default to
+            # "cleaning" — the $or handles both patterns transparently.
+            "$or": [{"activity": activity},
+                    *([{"activity": {"$exists": False}}] if activity == "cleaning" else [])],
         }
         if month:
             row_q["month"] = month
         rows = await db.site_cycles.find(row_q, _cycle_projection()) \
             .sort([("site_id", 1), ("month", 1), ("cycle_number", 1)]).to_list(20000)
 
-        # 3) return sites (with cycles_per_month) alongside the cycles so
-        #    the client can render placeholder rows for cycles that haven't
-        #    been touched yet.
+        # 3) return sites (with both caps) alongside the cycles so the client
+        #    can render placeholder rows for cycles that haven't been touched.
         return {
             "sites": [
                 {
@@ -180,6 +190,7 @@ def build_router(db, get_current_user):
                     "region": s.get("region"),
                     "vendor_name": s.get("vendor_name"),
                     "cycles_per_month": int(s.get("cycles_per_month") or 1),
+                    "pm_cycles_per_quarter": int(s.get("pm_cycles_per_quarter") or 1),
                 }
                 for s in sites
             ],
@@ -199,13 +210,19 @@ def build_router(db, get_current_user):
         if not _role_can(user, "save_schedule" if body.schedule else "save_actual"):
             raise HTTPException(403, "You cannot edit this cycle")
         site = await _resolve_site(body.site_id, user)
-        # bound cycle_number to the site's configured cap
-        cap = int(site.get("cycles_per_month") or 1)
+        # bound cycle_number to the correct cap based on activity
+        if body.activity == "pm":
+            if body.month not in (3, 6, 9, 12):
+                raise HTTPException(400, "PM cycles must be scheduled on a quarter-end month (Mar/Jun/Sep/Dec)")
+            cap = int(site.get("pm_cycles_per_quarter") or 1)
+        else:
+            cap = int(site.get("cycles_per_month") or 1)
         if body.cycle_number > cap:
-            raise HTTPException(400, f"cycle_number {body.cycle_number} exceeds this site's cycles_per_month={cap}")
+            raise HTTPException(400, f"cycle_number {body.cycle_number} exceeds this site's cap={cap} for activity={body.activity}")
 
         key = {"site_id": body.site_id, "year": body.year,
-               "month": body.month, "cycle_number": body.cycle_number}
+               "month": body.month, "cycle_number": body.cycle_number,
+               "activity": body.activity}
         existing = await db.site_cycles.find_one(key, _cycle_projection()) or {}
 
         updates: Dict[str, Any] = {}
@@ -249,6 +266,7 @@ def build_router(db, get_current_user):
             **updates,
             "site_name": site.get("site_name"),
             "site_code": site.get("site_code"),
+            "activity": body.activity,
             "updated_at": _now(),
             "updated_by": user.user_id,
         }
@@ -356,10 +374,14 @@ def build_router(db, get_current_user):
 
     # -------------------------------------------------------------------
     @router.get("/summary")
-    async def yearly_summary(year: int, user=Depends(get_current_user)):
+    async def yearly_summary(year: int, activity: str = "cleaning",
+                              user=Depends(get_current_user)):
         """Return a per-site rollup for the given year — how many cycles
         are drafted / submitted / approved out of the total possible
-        (`cycles_per_month` × 12)."""
+        (cleaning: `cycles_per_month` × 12; pm: `pm_cycles_per_quarter` × 4).
+        """
+        if activity not in ("cleaning", "pm"):
+            raise HTTPException(400, "activity must be 'cleaning' or 'pm'")
         from permissions import site_filter as _sf, is_super_admin, has_access_override
         site_q: Dict[str, Any] = {}
         if not (is_super_admin(user) or has_access_override(user)):
@@ -369,17 +391,23 @@ def build_router(db, get_current_user):
         if not sites:
             return []
         site_ids = [s["site_id"] for s in sites]
-        rows = await db.site_cycles.find(
-            {"site_id": {"$in": site_ids}, "year": year}, _cycle_projection(),
-        ).to_list(50000)
+        row_q: Dict[str, Any] = {"site_id": {"$in": site_ids}, "year": year,
+                                 "$or": [{"activity": activity},
+                                         *([{"activity": {"$exists": False}}]
+                                           if activity == "cleaning" else [])]}
+        rows = await db.site_cycles.find(row_q, _cycle_projection()).to_list(50000)
         by_site: Dict[str, List[Dict[str, Any]]] = {}
         for r in rows:
             by_site.setdefault(r["site_id"], []).append(r)
         out: List[Dict[str, Any]] = []
         for s in sites:
             cyc_rows = by_site.get(s["site_id"], [])
-            per_month = int(s.get("cycles_per_month") or 1)
-            total_slots = per_month * 12
+            if activity == "pm":
+                per = int(s.get("pm_cycles_per_quarter") or 1)
+                total_slots = per * 4
+            else:
+                per = int(s.get("cycles_per_month") or 1)
+                total_slots = per * 12
             sch_draft = sch_sub = sch_app = 0
             act_draft = act_sub = act_app = 0
             for r in cyc_rows:
@@ -399,7 +427,9 @@ def build_router(db, get_current_user):
                 "site_code": s.get("site_code"),
                 "region": s.get("region"),
                 "vendor_name": s.get("vendor_name"),
-                "cycles_per_month": per_month,
+                "cycles_per_month": int(s.get("cycles_per_month") or 1),
+                "pm_cycles_per_quarter": int(s.get("pm_cycles_per_quarter") or 1),
+                "activity": activity,
                 "total_slots": total_slots,
                 "schedule": {"draft": sch_draft, "submitted": sch_sub, "approved": sch_app},
                 "actual":   {"draft": act_draft, "submitted": act_sub, "approved": act_app},
@@ -410,10 +440,12 @@ def build_router(db, get_current_user):
     # -------------------------------------------------------------------
     @router.get("/export.xlsx")
     async def export_xlsx(year: int, month: Optional[int] = None,
+                          activity: str = "cleaning",
                           user=Depends(get_current_user)):
         """Download a spreadsheet of the schedule vs actual data.
         `month` optional — omit to export the full year in one workbook."""
-        payload = await list_cycles(year=year, month=month, site_id=None, user=user)
+        payload = await list_cycles(year=year, month=month, site_id=None,
+                                    activity=activity, user=user)
         sites = payload["sites"]
         cycles = payload["cycles"]
         cy_map: Dict[str, Dict[str, Any]] = {}
@@ -422,11 +454,12 @@ def build_router(db, get_current_user):
 
         wb = Workbook()
         ws = wb.active
-        ws.title = f"{year}" + (f"-{month:02d}" if month else "")
+        act_label = "PM" if activity == "pm" else "Cleaning"
+        ws.title = f"{act_label} {year}" + (f"-{month:02d}" if month else "")
 
         header_fill = PatternFill("solid", fgColor="1F2937")
         header_font = Font(color="FFFFFF", bold=True, size=11)
-        header = ["Plant", "Site code", "Region", "Vendor",
+        header = ["Activity", "Plant", "Site code", "Region", "Vendor",
                   "Year", "Month", "Cycle",
                   "Planned date", "Sch. notes", "Sch. status",
                   "Actual date", "Result", "Act. notes", "Act. status"]
@@ -437,32 +470,40 @@ def build_router(db, get_current_user):
             c.alignment = Alignment(vertical="center", horizontal="left")
         ws.row_dimensions[1].height = 22
 
-        months_to_render = [month] if month else list(range(1, 13))
+        # For PM export we only render quarter-end months by convention.
+        if activity == "pm":
+            months_to_render = [month] if month else [3, 6, 9, 12]
+        else:
+            months_to_render = [month] if month else list(range(1, 13))
         row = 2
         for s in sites:
-            cap = int(s.get("cycles_per_month") or 1)
+            if activity == "pm":
+                cap = int(s.get("pm_cycles_per_quarter") or 1)
+            else:
+                cap = int(s.get("cycles_per_month") or 1)
             for m in months_to_render:
                 for cn in range(1, cap + 1):
                     cyc = cy_map.get(f"{s['site_id']}::{year}-{m:02d}::{cn}") or {}
                     sch = cyc.get("schedule") or {}
                     act = cyc.get("actual") or {}
-                    ws.cell(row=row, column=1,  value=s.get("site_name"))
-                    ws.cell(row=row, column=2,  value=s.get("site_code"))
-                    ws.cell(row=row, column=3,  value=s.get("region"))
-                    ws.cell(row=row, column=4,  value=s.get("vendor_name"))
-                    ws.cell(row=row, column=5,  value=year)
-                    ws.cell(row=row, column=6,  value=m)
-                    ws.cell(row=row, column=7,  value=cn)
-                    ws.cell(row=row, column=8,  value=sch.get("planned_date"))
-                    ws.cell(row=row, column=9,  value=sch.get("notes"))
-                    ws.cell(row=row, column=10, value=sch.get("status") or "—")
-                    ws.cell(row=row, column=11, value=act.get("actual_date"))
-                    ws.cell(row=row, column=12, value=act.get("result"))
-                    ws.cell(row=row, column=13, value=act.get("notes"))
-                    ws.cell(row=row, column=14, value=act.get("status") or "—")
+                    ws.cell(row=row, column=1,  value=act_label)
+                    ws.cell(row=row, column=2,  value=s.get("site_name"))
+                    ws.cell(row=row, column=3,  value=s.get("site_code"))
+                    ws.cell(row=row, column=4,  value=s.get("region"))
+                    ws.cell(row=row, column=5,  value=s.get("vendor_name"))
+                    ws.cell(row=row, column=6,  value=year)
+                    ws.cell(row=row, column=7,  value=m)
+                    ws.cell(row=row, column=8,  value=cn)
+                    ws.cell(row=row, column=9,  value=sch.get("planned_date"))
+                    ws.cell(row=row, column=10, value=sch.get("notes"))
+                    ws.cell(row=row, column=11, value=sch.get("status") or "—")
+                    ws.cell(row=row, column=12, value=act.get("actual_date"))
+                    ws.cell(row=row, column=13, value=act.get("result"))
+                    ws.cell(row=row, column=14, value=act.get("notes"))
+                    ws.cell(row=row, column=15, value=act.get("status") or "—")
                     row += 1
 
-        widths = [26, 14, 14, 20, 8, 8, 8, 15, 32, 12, 15, 10, 32, 12]
+        widths = [11, 26, 14, 14, 20, 8, 8, 8, 15, 32, 12, 15, 10, 32, 12]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[chr(ord("A") + i - 1)].width = w
         ws.freeze_panes = "A2"
@@ -470,7 +511,7 @@ def build_router(db, get_current_user):
         buf = BytesIO()
         wb.save(buf)
         buf.seek(0)
-        fname = f"schedule-{year}" + (f"-{month:02d}" if month else "-full") + ".xlsx"
+        fname = f"{activity}-{year}" + (f"-{month:02d}" if month else "-full") + ".xlsx"
         return StreamingResponse(
             buf,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

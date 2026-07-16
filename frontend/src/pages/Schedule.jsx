@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   Calendar as CalendarIcon, CheckCircle2, Send, Save, Unlock, Lock,
-  ListChecks, TrendingUp, Download,
+  ListChecks, TrendingUp, Download, Grid3x3, Wrench, SprayCan,
 } from "lucide-react";
 import { API } from "@/lib/api";
 
@@ -25,6 +25,18 @@ const MONTHS = [
   { v: 4,  n: "Apr" }, { v: 5,  n: "May" }, { v: 6,  n: "Jun" },
   { v: 7,  n: "Jul" }, { v: 8,  n: "Aug" }, { v: 9,  n: "Sep" },
   { v: 10, n: "Oct" }, { v: 11, n: "Nov" }, { v: 12, n: "Dec" },
+];
+
+const PM_QUARTERS = [
+  { v: 3,  n: "Q1 (Jan–Mar)" },
+  { v: 6,  n: "Q2 (Apr–Jun)" },
+  { v: 9,  n: "Q3 (Jul–Sep)" },
+  { v: 12, n: "Q4 (Oct–Dec)" },
+];
+
+const ACTIVITIES = [
+  { v: "cleaning", n: "Module Cleaning (monthly)" },
+  { v: "pm",       n: "PM (quarterly)" },
 ];
 
 /** Build [prevYear, currentYear, nextYear] + auto-add next year when the
@@ -60,11 +72,27 @@ export default function SchedulePage() {
   const years = useYears();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth() + 1);   // 1..12 or 0 for yearly
-  const [view, setView] = useState("month");                // "month" | "year"
+  // For PM the month defaults to the current quarter-end. For cleaning: current month.
+  const [activity, setActivity] = useState("cleaning");
+  const [month, setMonth] = useState(() => {
+    const m = now.getMonth() + 1;
+    return m;
+  });
+  const [view, setView] = useState("month");   // "month" | "grid" | "year"
   const [data, setData] = useState({ sites: [], cycles: [] });
   const [summary, setSummary] = useState([]);
+  const [gridData, setGridData] = useState({ sites: [], cycles: [] });
   const [loading, setLoading] = useState(true);
+
+  const monthOptions = activity === "pm" ? PM_QUARTERS : MONTHS;
+
+  // Snap month to a valid option when activity changes
+  useEffect(() => {
+    if (activity === "pm" && ![3, 6, 9, 12].includes(month)) {
+      // pick the quarter-end matching the current selection
+      setMonth(month <= 3 ? 3 : month <= 6 ? 6 : month <= 9 ? 9 : 12);
+    }
+  }, [activity, month]);
 
   const isAdminOrMore =
     ["super_admin", "admin"].includes(user?.role) || !!user?.access_override;
@@ -73,10 +101,14 @@ export default function SchedulePage() {
     setLoading(true);
     try {
       if (view === "month") {
-        const r = await api.get(`/site-cycles?year=${year}&month=${month}`);
+        const r = await api.get(`/site-cycles?year=${year}&month=${month}&activity=${activity}`);
         setData(r.data);
+      } else if (view === "grid") {
+        // fetch full year, then group client-side
+        const r = await api.get(`/site-cycles?year=${year}&activity=${activity}`);
+        setGridData(r.data);
       } else {
-        const r = await api.get(`/site-cycles/summary?year=${year}`);
+        const r = await api.get(`/site-cycles/summary?year=${year}&activity=${activity}`);
         setSummary(r.data || []);
       }
     } catch (e) {
@@ -84,7 +116,7 @@ export default function SchedulePage() {
     } finally {
       setLoading(false);
     }
-  }, [year, month, view]);
+  }, [year, month, view, activity]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -111,11 +143,8 @@ export default function SchedulePage() {
               onClick={() => {
                 const token = localStorage.getItem("ff_token");
                 const qs = view === "month"
-                  ? `year=${year}&month=${month}`
-                  : `year=${year}`;
-                // Force a fresh window so the auth header is attached via a
-                // one-off fetch → Blob → download URL trick (browser <a>
-                // download can't add Authorization on a plain link).
+                  ? `year=${year}&month=${month}&activity=${activity}`
+                  : `year=${year}&activity=${activity}`;
                 fetch(`${API}/site-cycles/export.xlsx?${qs}`, {
                   headers: { Authorization: `Bearer ${token}` },
                 })
@@ -124,7 +153,7 @@ export default function SchedulePage() {
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");
                     a.href = url;
-                    a.download = `schedule-${year}${view === "month" ? `-${String(month).padStart(2,"0")}` : "-full"}.xlsx`;
+                    a.download = `${activity}-${year}${view === "month" ? `-${String(month).padStart(2,"0")}` : "-full"}.xlsx`;
                     a.click();
                     URL.revokeObjectURL(url);
                   })
@@ -146,6 +175,16 @@ export default function SchedulePage() {
                 Monthly
               </button>
               <button
+                data-testid="view-toggle-grid"
+                onClick={() => setView("grid")}
+                className={`px-3 py-1.5 text-xs rounded-md transition ${
+                  view === "grid" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <Grid3x3 className="w-3.5 h-3.5 inline mr-1" />
+                Yearly grid
+              </button>
+              <button
                 data-testid="view-toggle-year"
                 onClick={() => setView("year")}
                 className={`px-3 py-1.5 text-xs rounded-md transition ${
@@ -163,6 +202,23 @@ export default function SchedulePage() {
         <Card className="mb-4 rounded-2xl border-slate-100 card-soft bg-white">
           <div className="flex flex-wrap items-center gap-3 p-4">
             <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500 uppercase tracking-wider">Activity</span>
+              <Select value={activity} onValueChange={setActivity}>
+                <SelectTrigger data-testid="activity-select" className="h-9 w-[220px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ACTIVITIES.map((a) => (
+                    <SelectItem key={a.v} value={a.v}>
+                      {a.v === "pm"
+                        ? <span className="inline-flex items-center gap-1.5"><Wrench className="w-3.5 h-3.5" /> {a.n}</span>
+                        : <span className="inline-flex items-center gap-1.5"><SprayCan className="w-3.5 h-3.5" /> {a.n}</span>}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500 uppercase tracking-wider">Year</span>
               <Select value={String(year)} onValueChange={(v) => setYear(parseInt(v))}>
                 <SelectTrigger data-testid="year-select" className="h-9 w-[110px]"><SelectValue /></SelectTrigger>
@@ -175,11 +231,13 @@ export default function SchedulePage() {
             </div>
             {view === "month" && (
               <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500 uppercase tracking-wider">Month</span>
+                <span className="text-xs text-slate-500 uppercase tracking-wider">
+                  {activity === "pm" ? "Quarter" : "Month"}
+                </span>
                 <Select value={String(month)} onValueChange={(v) => setMonth(parseInt(v))}>
-                  <SelectTrigger data-testid="month-select" className="h-9 w-[130px]"><SelectValue /></SelectTrigger>
+                  <SelectTrigger data-testid="month-select" className="h-9 w-[170px]"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {MONTHS.map((m) => (
+                    {monthOptions.map((m) => (
                       <SelectItem key={m.v} value={String(m.v)}>{m.n}</SelectItem>
                     ))}
                   </SelectContent>
@@ -196,12 +254,20 @@ export default function SchedulePage() {
             data={data}
             year={year}
             month={month}
+            activity={activity}
             reload={load}
             isAdminOrMore={isAdminOrMore}
             role={user?.role}
           />
+        ) : view === "grid" ? (
+          <YearlyGrid
+            data={gridData}
+            year={year}
+            activity={activity}
+            onCellClick={(m) => { setMonth(m); setView("month"); }}
+          />
         ) : (
-          <YearlySummary summary={summary} year={year} />
+          <YearlySummary summary={summary} year={year} activity={activity} />
         )}
       </div>
     </AppLayout>
@@ -209,15 +275,17 @@ export default function SchedulePage() {
 }
 
 /* --------------------------- Monthly Table ------------------------------- */
-function MonthlyTable({ data, year, month, reload, isAdminOrMore, role }) {
+function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role }) {
   const { sites, cycles } = data;
 
-  // Group cycles by (site_id, cycle_number) for quick lookup.
   const byKey = useMemo(() => {
     const m = {};
     for (const c of cycles) m[`${c.site_id}::${c.cycle_number}`] = c;
     return m;
   }, [cycles]);
+
+  const capOf = (s) => Math.max(1, parseInt(
+    activity === "pm" ? s.pm_cycles_per_quarter : s.cycles_per_month, 10) || 1);
 
   if (!sites.length) {
     return (
@@ -247,7 +315,7 @@ function MonthlyTable({ data, year, month, reload, isAdminOrMore, role }) {
           </thead>
           <tbody>
             {sites.map((s) => {
-              const cap = Math.max(1, parseInt(s.cycles_per_month || 1));
+              const cap = capOf(s);
               return Array.from({ length: cap }).map((_, i) => {
                 const cn = i + 1;
                 const cyc = byKey[`${s.site_id}::${cn}`] || null;
@@ -260,6 +328,7 @@ function MonthlyTable({ data, year, month, reload, isAdminOrMore, role }) {
                     cyc={cyc}
                     year={year}
                     month={month}
+                    activity={activity}
                     reload={reload}
                     isAdminOrMore={isAdminOrMore}
                     role={role}
@@ -276,7 +345,7 @@ function MonthlyTable({ data, year, month, reload, isAdminOrMore, role }) {
 }
 
 /* --------------------------- Row -------------------------------------- */
-function CycleRow({ site, cn, cap, cyc, year, month, reload, isAdminOrMore, role, showPlant }) {
+function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOrMore, role, showPlant }) {
   const [saving, setSaving] = useState(false);
   const sch = cyc?.schedule || {};
   const act = cyc?.actual || {};
@@ -307,7 +376,7 @@ function CycleRow({ site, cn, cap, cyc, year, month, reload, isAdminOrMore, role
   const save = async (which) => {
     setSaving(true);
     try {
-      const body = { site_id: site.site_id, year, month, cycle_number: cn };
+      const body = { site_id: site.site_id, year, month, cycle_number: cn, activity };
       if (which === "schedule") body.schedule = {
         planned_date: form.planned_date || null, notes: form.sch_notes || null,
       };
@@ -362,7 +431,8 @@ function CycleRow({ site, cn, cap, cyc, year, month, reload, isAdminOrMore, role
             <div className="font-semibold text-slate-900">{site.site_name}</div>
             <div className="text-[11px] text-slate-500 font-mono mt-0.5">{site.site_code}</div>
             <div className="text-[10px] text-slate-400 mt-1">
-              {cap} cycle{cap > 1 ? "s" : ""}/month
+              {cap} {activity === "pm" ? "PM cycle" : "cycle"}{cap > 1 ? "s" : ""}
+              {activity === "pm" ? " / quarter" : " / month"}
             </div>
           </td>
         )}
@@ -604,8 +674,143 @@ function UnlockDialog({ cycleId, which, onClose, onDone }) {
   );
 }
 
+/* --------------------------- Yearly Grid (12-month × site×cycle heatmap) - */
+function YearlyGrid({ data, year, activity, onCellClick }) {
+  const { sites, cycles } = data;
+
+  // For PM the columns are Q1..Q4 mapped to months 3,6,9,12.
+  const cols = activity === "pm"
+    ? [{ v: 3, n: "Q1" }, { v: 6, n: "Q2" }, { v: 9, n: "Q3" }, { v: 12, n: "Q4" }]
+    : MONTHS.map((m) => ({ v: m.v, n: m.n }));
+
+  // Look-up: (site_id, month, cycle_number) → cycle doc
+  const byKey = useMemo(() => {
+    const m = {};
+    for (const c of cycles) {
+      m[`${c.site_id}::${c.month}::${c.cycle_number}`] = c;
+    }
+    return m;
+  }, [cycles]);
+
+  const capOf = (s) => Math.max(1, parseInt(
+    activity === "pm" ? s.pm_cycles_per_quarter : s.cycles_per_month, 10) || 1);
+
+  if (!sites.length) {
+    return (
+      <div className="p-16 text-center bg-white rounded-2xl border border-dashed border-slate-200">
+        <Grid3x3 className="w-10 h-10 mx-auto text-slate-300" />
+        <p className="text-sm text-slate-500 mt-3">
+          No plants visible for {year}.
+        </p>
+      </div>
+    );
+  }
+
+  const dot = (status) => {
+    const map = {
+      approved:  "bg-emerald-500",
+      submitted: "bg-amber-500",
+      draft:     "bg-slate-300",
+      empty:     "bg-slate-100",
+    };
+    return map[status] || map.empty;
+  };
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs border-collapse" data-testid="yearly-grid-table">
+          <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700 sticky top-0">
+            <tr className="text-left">
+              <th className="p-3 font-semibold w-[220px] border-r border-slate-200">Site</th>
+              <th className="p-3 font-semibold w-[90px] border-r border-slate-200">Cycle</th>
+              {cols.map((c) => (
+                <th key={c.v} className="p-2 font-semibold text-center border-r border-slate-200">
+                  {c.n}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sites.map((s) => {
+              const cap = capOf(s);
+              return Array.from({ length: cap }).map((_, i) => {
+                const cn = i + 1;
+                return (
+                  <tr key={`${s.site_id}-${cn}`} className="border-b border-slate-100">
+                    {i === 0 && (
+                      <td
+                        rowSpan={cap}
+                        className="p-3 border-r border-slate-200 align-middle bg-slate-50/40"
+                      >
+                        <div className="font-semibold text-slate-900">{s.site_name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono mt-0.5">
+                          {s.site_code}
+                        </div>
+                      </td>
+                    )}
+                    <td className="p-2 border-r border-slate-200 text-slate-700 font-medium">
+                      {ordinal(cn)}
+                    </td>
+                    {cols.map((c) => {
+                      const cy  = byKey[`${s.site_id}::${c.v}::${cn}`] || null;
+                      const sch = cy?.schedule?.status || (cy?.schedule?.planned_date ? "draft" : "empty");
+                      const act = cy?.actual?.status   || (cy?.actual?.actual_date   ? "draft" : "empty");
+                      const tooltip = [
+                        cy?.schedule?.planned_date ? `Sch: ${cy.schedule.planned_date} (${cy.schedule.status || "draft"})` : null,
+                        cy?.actual?.actual_date   ? `Act: ${cy.actual.actual_date} (${cy.actual.status || "draft"})${cy.actual.result ? " · " + cy.actual.result : ""}` : null,
+                      ].filter(Boolean).join(" · ") || "No data";
+                      return (
+                        <td
+                          key={c.v}
+                          className="p-1.5 border-r border-slate-100 text-center hover:bg-slate-50 cursor-pointer transition"
+                          title={tooltip}
+                          data-testid={`grid-cell-${s.site_id}-${cn}-${c.v}`}
+                          onClick={() => onCellClick(c.v)}
+                        >
+                          <div className="inline-flex flex-col items-center gap-0.5">
+                            <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                              <span className={`w-2 h-2 rounded-full ${dot(sch)}`} />
+                              <span className="w-6 text-left">Sch</span>
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                              <span className={`w-2 h-2 rounded-full ${dot(act)}`} />
+                              <span className="w-6 text-left">Act</span>
+                            </span>
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              });
+            })}
+          </tbody>
+        </table>
+      </div>
+      {/* Legend */}
+      <div className="flex items-center gap-4 px-4 py-3 text-[11px] text-slate-500 border-t border-slate-100 bg-slate-50/40">
+        <span className="font-medium text-slate-700">Legend:</span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Approved
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Submitted
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-slate-300" /> Draft
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full bg-slate-100 border border-slate-200" /> No data
+        </span>
+        <span className="ml-auto text-slate-400">Click any cell to open that {activity === "pm" ? "quarter" : "month"} for editing.</span>
+      </div>
+    </Card>
+  );
+}
+
 /* --------------------------- Yearly summary -------------------------------- */
-function YearlySummary({ summary, year }) {
+function YearlySummary({ summary, year, activity }) {
   if (!summary.length) {
     return (
       <div className="p-16 text-center bg-white rounded-2xl border border-dashed border-slate-200">
