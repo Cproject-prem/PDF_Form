@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner";
 import {
   Database, Plus, Trash2, Edit3, Search, ArrowLeft, Layers,
+  Download, Upload, FileSpreadsheet,
 } from "lucide-react";
 
 export default function MasterDataPage() {
@@ -123,11 +124,26 @@ function MasterTable({ table, onBack }) {
           <span className="text-xs uppercase tracking-[0.1em] text-slate-400 font-bold">Master · {table}</span>
         </div>
 
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
           <h1 className="text-3xl sm:text-4xl font-heading font-bold tracking-tight text-slate-900 capitalize">{table.replace("_", " ")}</h1>
-          <Button onClick={startNew} className="bg-blue-600 hover:bg-blue-700" data-testid="master-new-row">
-            <Plus className="w-4 h-4 mr-1.5" /> Add row
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => downloadXlsx(`/master-data/${table}/template.xlsx`, `${table}-template.xlsx`)}
+              variant="outline"
+              size="sm"
+              data-testid="master-template"
+            ><FileSpreadsheet className="w-4 h-4 mr-1.5" /> Template</Button>
+            <Button
+              onClick={() => downloadXlsx(`/master-data/${table}/export.xlsx`, `${table}.xlsx`)}
+              variant="outline"
+              size="sm"
+              data-testid="master-export"
+            ><Download className="w-4 h-4 mr-1.5" /> Export</Button>
+            <ImportButton table={table} onDone={load} />
+            <Button onClick={startNew} className="bg-blue-600 hover:bg-blue-700" data-testid="master-new-row">
+              <Plus className="w-4 h-4 mr-1.5" /> Add row
+            </Button>
+          </div>
         </div>
 
         <Card className="rounded-2xl border-slate-100 card-soft bg-white">
@@ -141,7 +157,7 @@ function MasterTable({ table, onBack }) {
           {filtered.length === 0 ? (
             <div className="p-12 text-center">
               <Layers className="w-10 h-10 mx-auto text-slate-300" />
-              <p className="text-sm text-slate-500 mt-2">No rows yet. Click "Add row" to seed this table.</p>
+              <p className="text-sm text-slate-500 mt-2">No rows yet. Click &quot;Add row&quot; to seed this table.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -196,5 +212,110 @@ function MasterTable({ table, onBack }) {
         </DialogContent>
       </Dialog>
     </AppLayout>
+  );
+}
+
+/* --------------------------- Import / export helpers -------------------- */
+
+async function downloadXlsx(path, filename) {
+  const token = localStorage.getItem("ff_token");
+  try {
+    const resp = await fetch(`${API}${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) {
+      toast.error(`Download failed (${resp.status})`);
+      return;
+    }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch {
+    toast.error("Download failed");
+  }
+}
+
+function ImportButton({ table, onDone }) {
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState("append");
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!file) return toast.error("Choose a file");
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const r = await api.post(
+        `/master-data/${table}/import?mode=${mode}`, form,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      toast.success(`Imported ${r.data.inserted} rows${r.data.replaced ? ` · replaced ${r.data.replaced}` : ""}`);
+      setOpen(false);
+      setFile(null);
+      onDone && onDone();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Import failed");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        data-testid="master-import"
+        onClick={() => setOpen(true)}
+      ><Upload className="w-4 h-4 mr-1.5" /> Import</Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md" data-testid="master-import-dialog">
+          <DialogHeader><DialogTitle>Import rows from Excel / CSV</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <p className="text-xs text-slate-500">
+              First row of the file must contain column names. Any missing
+              cells become empty values. Download the &quot;Template&quot; button first
+              if you&apos;re unsure of the headers.
+            </p>
+            <div>
+              <label className="text-xs text-slate-500">File (.xlsx or .csv)</label>
+              <input
+                type="file"
+                accept=".xlsx,.xlsm,.csv"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                data-testid="master-import-file"
+                className="mt-1 block w-full text-sm text-slate-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border file:border-slate-200 file:bg-slate-50 file:text-slate-700"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">Mode</label>
+              <div className="mt-1 flex gap-2">
+                <label className={`flex-1 text-xs px-3 py-2 rounded border cursor-pointer ${mode === "append" ? "border-blue-500 bg-blue-50" : "border-slate-200"}`}>
+                  <input type="radio" checked={mode === "append"} onChange={() => setMode("append")} className="mr-1.5" />
+                  Append — add new rows
+                </label>
+                <label className={`flex-1 text-xs px-3 py-2 rounded border cursor-pointer ${mode === "replace" ? "border-red-500 bg-red-50" : "border-slate-200"}`}>
+                  <input type="radio" checked={mode === "replace"} onChange={() => setMode("replace")} className="mr-1.5" />
+                  Replace — delete existing then import
+                </label>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button
+              onClick={submit}
+              disabled={busy || !file}
+              className="bg-blue-600 hover:bg-blue-700"
+              data-testid="master-import-submit"
+            >{busy ? "Importing…" : "Import"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

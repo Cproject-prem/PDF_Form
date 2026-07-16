@@ -883,6 +883,175 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         await _audit_master(db, user, "master.delete", row_id, {})
         return {"ok": True}
 
+    # ---------- Excel import / export ----------
+
+    @master.get("/{table}/export.xlsx")
+    async def export_master(table: str, user=Depends(get_current_user)):
+        """Download all rows of a master-data table as an Excel workbook.
+        Column order follows the union of keys across all rows (stable)."""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from fastapi.responses import StreamingResponse
+        from io import BytesIO
+        rows = await db.master_data.find(
+            {"table": table}, {"_id": 0}).sort("created_at", 1).to_list(20000)
+        # Union of keys in a stable order — first-seen order wins.
+        cols: List[str] = []
+        seen = set()
+        for r in rows:
+            for k in (r.get("data") or {}).keys():
+                if k not in seen:
+                    seen.add(k)
+                    cols.append(k)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = table[:30] or "master"
+        header_fill = PatternFill("solid", fgColor="1F2937")
+        header_font = Font(color="FFFFFF", bold=True)
+        for i, c in enumerate(cols, start=1):
+            cell = ws.cell(row=1, column=i, value=c)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(vertical="center", horizontal="left")
+            ws.column_dimensions[chr(ord("A") + i - 1)].width = max(14, len(c) + 2)
+        ws.row_dimensions[1].height = 22
+        for ri, r in enumerate(rows, start=2):
+            d = r.get("data") or {}
+            for ci, c in enumerate(cols, start=1):
+                v = d.get(c)
+                # Convert lists/dicts to a JSON-ish string so nothing breaks in Excel
+                if isinstance(v, (list, dict)):
+                    import json as _json
+                    v = _json.dumps(v, ensure_ascii=False)
+                ws.cell(row=ri, column=ci, value=v)
+        ws.freeze_panes = "A2"
+        buf = BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{table}.xlsx"'},
+        )
+
+    @master.get("/{table}/template.xlsx")
+    async def template_master(table: str, user=Depends(get_current_user)):
+        """Blank template — headers only, taken from the union of existing
+        columns.  When the table has no rows yet, returns a minimal
+        placeholder ("column_1") so the user can start from scratch."""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        from fastapi.responses import StreamingResponse
+        from io import BytesIO
+        rows = await db.master_data.find({"table": table}, {"_id": 0}).limit(200).to_list(200)
+        cols: List[str] = []
+        seen = set()
+        for r in rows:
+            for k in (r.get("data") or {}).keys():
+                if k not in seen:
+                    seen.add(k)
+                    cols.append(k)
+        if not cols:
+            cols = ["column_1", "column_2"]
+        wb = Workbook(); ws = wb.active; ws.title = "template"
+        for i, c in enumerate(cols, start=1):
+            cell = ws.cell(row=1, column=i, value=c)
+            cell.fill = PatternFill("solid", fgColor="1F2937")
+            cell.font = Font(color="FFFFFF", bold=True)
+            ws.column_dimensions[chr(ord("A") + i - 1)].width = max(14, len(c) + 2)
+        buf = BytesIO(); wb.save(buf); buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{table}-template.xlsx"'},
+        )
+
+    @master.post("/{table}/import")
+    async def import_master(table: str, file: UploadFile = File(...),
+                            mode: str = "append",
+                            user=Depends(get_current_user)):
+        """Bulk-import rows from an uploaded xlsx / csv.
+
+        First row = header (column names).  Subsequent rows become
+        `master_data` documents under `table`.  `mode`:
+          * append (default) — insert every row as new
+          * replace          — delete all existing rows of this table first
+        """
+        await _require_master_data_editor(user)
+        if mode not in ("append", "replace"):
+            raise HTTPException(400, "mode must be 'append' or 'replace'")
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(400, "Empty file")
+        fname = (file.filename or "").lower()
+        headers: List[str] = []
+        rows: List[Dict[str, Any]] = []
+        if fname.endswith(".csv"):
+            import csv, io
+            text = raw.decode("utf-8-sig", errors="replace")
+            reader = csv.reader(io.StringIO(text))
+            for i, row in enumerate(reader):
+                if i == 0:
+                    headers = [str(c).strip() for c in row]
+                else:
+                    if not any(str(c).strip() for c in row):
+                        continue
+                    d = {headers[j]: row[j] for j in range(min(len(row), len(headers)))
+                         if headers[j] and str(row[j]).strip() != ""}
+                    if d: rows.append(d)
+        elif fname.endswith(".xlsx") or fname.endswith(".xlsm"):
+            from openpyxl import load_workbook
+            from io import BytesIO
+            wb = load_workbook(BytesIO(raw), data_only=True, read_only=True)
+            ws = wb.active
+            it = ws.iter_rows(values_only=True)
+            try:
+                header_row = next(it)
+            except StopIteration:
+                raise HTTPException(400, "Workbook is empty")
+            headers = [str(c).strip() if c is not None else "" for c in header_row]
+            for r in it:
+                if r is None or not any((c not in (None, "") for c in r)):
+                    continue
+                d = {}
+                for j, val in enumerate(r):
+                    if j >= len(headers) or not headers[j]:
+                        continue
+                    if val in (None, ""):
+                        continue
+                    # Excel gives datetime objects for date cells — stringify
+                    if hasattr(val, "isoformat"):
+                        val = val.isoformat()[:10]
+                    d[headers[j]] = val
+                if d: rows.append(d)
+        else:
+            raise HTTPException(400, "Unsupported file type — upload .xlsx or .csv")
+
+        if not rows:
+            return {"inserted": 0, "replaced": 0, "columns": headers}
+
+        replaced_count = 0
+        if mode == "replace":
+            r = await db.master_data.delete_many({"table": table})
+            replaced_count = r.deleted_count
+
+        docs = []
+        now = _now()
+        for r in rows:
+            docs.append({
+                "row_id": _gen("mdr"),
+                "table": table,
+                "data": r,
+                "created_at": now,
+                "created_by": user.user_id,
+                "version": 1,
+            })
+        if docs:
+            await db.master_data.insert_many(docs)
+        await _audit_master(db, user, "master.import", table,
+                            {"inserted": len(docs), "replaced": replaced_count, "mode": mode})
+        return {"inserted": len(docs), "replaced": replaced_count, "columns": headers}
+
     # ---------- Lookup engine ----------
 
     @lookup.post("/resolve")
