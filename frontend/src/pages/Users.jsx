@@ -191,6 +191,7 @@ export default function UsersPage() {
                   <TableHead>User</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Access scope</TableHead>
+                  <TableHead>Plants</TableHead>
                   <TableHead>Active</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -219,6 +220,9 @@ export default function UsersPage() {
                     </TableCell>
                     <TableCell className="text-xs">
                       <ScopePill user={u} />
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      <PlantsBadge user={u} />
                     </TableCell>
                     <TableCell>
                       <Switch
@@ -309,6 +313,38 @@ function ScopePill({ user }) {
     </div>
   );
 }
+
+/**
+ * PlantsBadge — shows the number of plants a user can access at a glance.
+ * • Vendor Admin / Admin / Super Admin: "All" (they see the whole vendor /
+ *   region / everything).
+ * • Vendor Member: exact count from `assignments.sites`.
+ */
+function PlantsBadge({ user }) {
+  const role = user.role;
+  if (role === "super_admin" || user.access_override) {
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">All</span>;
+  }
+  if (role === "admin") {
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">
+        {user.cluster_manager_name ? "Cluster scope" : (user.region ? "Region scope" : "Any")}
+      </span>
+    );
+  }
+  if (role === "vendor_admin") {
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">All vendor plants</span>;
+  }
+  const n = (user.assignments?.sites || []).length;
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+      n === 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-700"
+    }`}>
+      {n} {n === 1 ? "plant" : "plants"}
+    </span>
+  );
+}
+
 
 /* --------------------------- Create dialog --------------------------- */
 /**
@@ -596,10 +632,23 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
         vendor_id: user.vendor_id || "",
         is_active: user.is_active,
         access_override: !!user.access_override,
+        assigned_sites: (user.assignments?.sites) || [],
       });
       setNewPassword("");
     }
   }, [user]);
+  // Load the vendor's plant list when the target is a vendor member (so the
+  // Vendor Admin can pick which specific plants they own).
+  const [vendorPlants, setVendorPlants] = useState([]);
+  useEffect(() => {
+    if (!form?.vendor_id || form.role !== "vendor") { setVendorPlants([]); return; }
+    api.get("/sites", { params: { show_all: true } })
+      .then((r) => setVendorPlants(
+        (r.data || []).filter((s) => s.vendor_id === form.vendor_id
+          || (s.assigned_vendor_ids || []).includes(form.vendor_id))
+      ))
+      .catch(() => setVendorPlants([]));
+  }, [form?.vendor_id, form?.role]);
   if (!user || !form) return null;
 
   const save = async () => {
@@ -612,8 +661,23 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
       if (newPassword.length < 6) { toast.error("Password must be at least 6 characters"); return; }
       patch.password = newPassword;
     }
+    // `assigned_sites` is persisted via a separate endpoint — pull it out
+    // before hitting /users so we don't send an unknown field.
+    const assignedSites = patch.assigned_sites || [];
+    delete patch.assigned_sites;
     try {
       const resp = await api.patch(`/users/${user.user_id}`, patch);
+      // Persist plant assignments for vendor members (never blocks main save).
+      if (form.role === "vendor") {
+        try {
+          await api.put(`/vendor-users/${user.user_id}/assignments`, {
+            forms: user.assignments?.forms || [],
+            pdf_forms: user.assignments?.pdf_forms || [],
+            workflows: user.assignments?.workflows || [],
+            sites: assignedSites,
+          });
+        } catch (e) { /* non-fatal */ toast.error(getErrorMessage(e, "Plant assignment save failed")); }
+      }
       // Backend may return 202 with { pending_approval: true } when a
       // vendor_admin tried to disable a user — surface that to the operator
       // instead of showing the generic "Saved" toast.
@@ -684,6 +748,13 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
               </Select>
             </div>
           )}
+          {form.role === "vendor" && form.vendor_id && (
+            <PlantAssignPicker
+              plants={vendorPlants}
+              selected={form.assigned_sites || []}
+              onChange={(next) => setForm({ ...form, assigned_sites: next })}
+            />
+          )}
           <label className="flex items-center gap-2 text-sm cursor-pointer">
             <Switch
               checked={form.is_active}
@@ -732,6 +803,78 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
 }
 
 /* -------------------- Temp password result dialog -------------------- */
+/**
+ * PlantAssignPicker — searchable multi-select for vendor member plant
+ * assignments.  Reads `plants` (already scoped to the vendor) and calls
+ * `onChange(newSelected)` with an array of `site_id`s.
+ */
+function PlantAssignPicker({ plants, selected, onChange }) {
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return plants;
+    return plants.filter((p) =>
+      [p.site_name, p.site_code, p.region, p.cluster_manager_name]
+        .some((v) => (v || "").toLowerCase().includes(s)));
+  }, [plants, q]);
+  const toggle = (id) =>
+    onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+  const allIds = filtered.map((p) => p.site_id);
+  const allSelected = allIds.length > 0 && allIds.every((id) => selected.includes(id));
+  const toggleAll = () => {
+    if (allSelected) onChange(selected.filter((id) => !allIds.includes(id)));
+    else onChange(Array.from(new Set([...selected, ...allIds])));
+  };
+  return (
+    <div className="border border-slate-200 rounded-lg overflow-hidden"
+         data-testid="plant-assign-picker">
+      <div className="flex items-center gap-2 p-2 bg-slate-50 border-b border-slate-100">
+        <Label className="text-xs font-semibold text-slate-600">
+          Assigned plants <span className="text-slate-400 font-normal">({selected.length} selected)</span>
+        </Label>
+        <div className="ml-auto flex items-center gap-1.5">
+          <Input value={q} onChange={(e) => setQ(e.target.value)}
+                 placeholder="Search plants…"
+                 className="h-7 text-xs w-40"
+                 data-testid="plant-picker-search" />
+          <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]"
+                  onClick={toggleAll} data-testid="plant-picker-toggle-all">
+            {allSelected ? "Clear filtered" : "Select all filtered"}
+          </Button>
+        </div>
+      </div>
+      <div className="max-h-52 overflow-y-auto p-2 space-y-1 bg-white">
+        {plants.length === 0 && (
+          <div className="text-xs text-slate-400 py-4 text-center">
+            No plants belong to this vendor yet.
+          </div>
+        )}
+        {filtered.map((p) => (
+          <label key={p.site_id}
+                 className="flex items-center gap-2 px-2 py-1 rounded hover:bg-slate-50 cursor-pointer text-sm">
+            <input
+              type="checkbox"
+              checked={selected.includes(p.site_id)}
+              onChange={() => toggle(p.site_id)}
+              data-testid={`plant-pick-${p.site_id}`}
+            />
+            <span className="flex-1 truncate">
+              <span className="font-medium">{p.site_name}</span>
+              {p.site_code && (
+                <span className="text-slate-400 text-xs ml-1.5">· {p.site_code}</span>
+              )}
+              {p.region && (
+                <span className="text-slate-400 text-xs ml-1.5">· {p.region}</span>
+              )}
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 function TempPasswordDialog({ result, onOpenChange }) {
   if (!result) return null;
   const pwd = result.temp_password;

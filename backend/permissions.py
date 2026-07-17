@@ -98,6 +98,80 @@ def has_access_override(user) -> bool:
 
 
 # ----------------------------------------------------------------------------
+# Approval hierarchy (super_admin > region_admin > cluster_admin > vendor_admin)
+# ----------------------------------------------------------------------------
+
+APPROVAL_LEVELS = {
+    "super_admin": 100,
+    "admin": 50,          # generic admin = region admin
+    "cluster_manager": 30,  # semantic bucket; usually an `admin` with cluster_manager_name set
+    "vendor_admin": 10,
+    "vendor": 0,
+    "vendor_user": 0,
+}
+
+
+def is_cluster_manager(user) -> bool:
+    """True when this user is effectively a Cluster Manager: they have the
+    generic `admin` role AND their profile carries a `cluster_manager_name`.
+    """
+    if normalize_role(getattr(user, "role", "")) != ADMIN:
+        return False
+    return bool(user_cluster_manager_name(user))
+
+
+def approval_level(user) -> int:
+    """Numeric priority of this user in the approval chain. Higher wins.
+    `access_override` promotes any admin to super_admin level."""
+    if has_access_override(user):
+        return APPROVAL_LEVELS["super_admin"]
+    role = normalize_role(getattr(user, "role", ""))
+    if role == ADMIN and is_cluster_manager(user):
+        return APPROVAL_LEVELS["cluster_manager"]
+    return APPROVAL_LEVELS.get(role, 0)
+
+
+def can_approve(actor, approval_row: Dict[str, Any]) -> bool:
+    """Return True when `actor` may approve or reject `approval_row`.
+
+    Rule:
+      1) Super Admin (or `access_override`) can approve anything.
+      2) Otherwise the actor must be strictly higher on the approval ladder
+         than the requester,
+      3) AND the actor's scope must contain the target user's scope:
+           • Region-Admin's `region` must match `approval.target_region`
+           • Cluster-Admin's `cluster_manager_name` must match
+             `approval.target_cluster_manager_name`
+      4) Vendor Admins cannot approve — only queue.
+    """
+    if has_access_override(actor) or normalize_role(getattr(actor, "role", "")) == SUPER_ADMIN:
+        return True
+    actor_level = approval_level(actor)
+    requester = approval_row.get("requested_by") or {}
+    requester_level = APPROVAL_LEVELS.get(normalize_role(requester.get("role", "")), 0)
+    if actor_level <= requester_level:
+        return False
+    actor_role = normalize_role(getattr(actor, "role", ""))
+    if actor_role != ADMIN:
+        # only admins (region / cluster) reach this branch
+        return False
+    # Scope match
+    target_region = approval_row.get("target_region")
+    target_cluster = approval_row.get("target_cluster_manager_name")
+    actor_region = user_region(actor)
+    actor_cluster = user_cluster_manager_name(actor)
+    if is_cluster_manager(actor):
+        # Cluster manager: cluster name must match; region also must match if provided
+        if target_cluster and actor_cluster and target_cluster == actor_cluster:
+            return True
+        return False
+    # Plain region admin: region must match
+    if target_region and actor_region and target_region == actor_region:
+        return True
+    return False
+
+
+# ----------------------------------------------------------------------------
 # Site Master row-level filter
 # ----------------------------------------------------------------------------
 
@@ -137,26 +211,33 @@ def site_filter(user) -> Dict[str, Any]:
         vid = user_vendor_id(user)
         if not vid:
             return {"site_id": "__none__"}
-        # Vendors see sites where they are (a) the legacy owner (vendor_id
-        # column) OR (b) explicitly assigned via `assigned_vendor_ids`.
-        clauses: List[Dict[str, Any]] = [
-            {"$or": [
-                {"vendor_id": vid},
-                {"assigned_vendor_ids": vid},
-            ]}
-        ]
-        if role == VENDOR_USER:
-            assigned_sites = user_assignments(user).get("sites") or []
-            if assigned_sites:
-                clauses = [{"$or": [
+
+        # Vendor Admin: sees every plant belonging to their vendor
+        # (legacy `vendor_id` column OR `assigned_vendor_ids` set).
+        if role == VENDOR_ADMIN:
+            clauses: List[Dict[str, Any]] = [
+                {"$or": [
                     {"vendor_id": vid},
                     {"assigned_vendor_ids": vid},
-                    {"site_id": {"$in": assigned_sites}},
-                ]}]
+                ]}
+            ]
+        else:
+            # Vendor Member (VENDOR_USER):
+            # * If the admin has explicitly assigned plants via
+            #   `assignments.sites`, restrict to that list (do NOT expose the
+            #   whole vendor fleet — that would defeat the point).
+            # * If no plants are assigned yet, the member sees nothing.
+            # * `allowed_emails` on individual sites still grants ad-hoc
+            #   access below (handled after the role check).
+            assigned_sites = user_assignments(user).get("sites") or []
+            if assigned_sites:
+                clauses = [{"site_id": {"$in": assigned_sites}}]
+            else:
+                clauses = [{"site_id": "__none_no_assignments__"}]
+
         # Also allow vendor_email match for backwards compat, plus any
         # additional email listed in the site's `allowed_emails` allow-list
-        # (used for sharing a site with multiple contact addresses under the
-        # same vendor).
+        # (used for sharing a site with multiple contact addresses).
         email = getattr(user, "email", None)
         if email:
             clauses[0] = {"$or": [

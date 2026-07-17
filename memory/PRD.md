@@ -135,3 +135,23 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - vendor_admin PATCH `/users/{id}` with `is_active:false` → HTTP 202 `pending_approval:true`. Target `is_active` remains true. Admin `POST /admin-approvals/{id}/approve` → target `is_active` becomes false.
   - Site create with `vendor_email: "alice@w.com; bob@w.com , carol@w.com"` → `vendor_email="alice@w.com"`, `allowed_emails=["alice@w.com","bob@w.com","carol@w.com"]`.
   - Screenshot of Users → Approvals tab shows badge counter and Approve/Reject controls.
+
+## iter 10 — Hierarchy: vendor member scope + tiered approval override (Feb 2026)
+- **Phase A — Vendor member sees only assigned plants**
+  - `permissions.site_filter()` (branch `VENDOR_USER`) no longer inherits the vendor-wide `vendor_id` clause. When `assignments.sites` is set → the member sees ONLY those; when empty → sees none (fail-safe). `allowed_emails`/`vendor_email` per-site ad-hoc sharing still works.
+  - Vendor Admin behaviour unchanged (still sees all vendor plants).
+- **Phase B — Plant-assignment UI**
+  - `Users.jsx` → new `PlantAssignPicker` (searchable multi-select, "Select all filtered", per-plant checkbox) shown in Edit dialog when target user's role is `vendor` and a vendor is chosen. Saves via `PUT /vendor-users/{id}/assignments` in addition to the main `/users/{id}` PATCH.
+- **Phase C+D — Tiered approval hierarchy**
+  - New `permissions.can_approve(actor, approval_row)` helper implementing:
+    `super_admin (or access_override) > region_admin > cluster_manager > vendor_admin`
+  - Cluster manager = `role=admin` AND `cluster_manager_name` set. Region admin = `role=admin` AND `region` set. Approver must be strictly higher on the ladder AND their scope (region / cluster) must contain the target user's `region`/`cluster_manager_name`.
+  - Pending approvals now tag `target_region` and `target_cluster_manager_name`, plus requester's own region/cluster.
+  - `GET /admin-approvals` filters the list to what the caller could actually act on (super_admin sees all; region/cluster admin sees only their scope; vendor_admin sees own requests).
+  - `POST /admin-approvals/{id}/approve` and `/reject` reject with 403 if the actor is outside scope.
+- **Phase E — Team view**
+  - Users list gained a "Plants" column via new `PlantsBadge`: shows "All" for super_admin/override, "Cluster scope" / "Region scope" for admins, "All vendor plants" for vendor_admin, and the exact count (or red "0 plants" warning) for vendor members.
+- **Verified**:
+  - Curl e2e: fresh vendor_admin sees 4 vendor sites, fresh vendor_user with no assignments sees 0, after `PUT .../assignments {sites:[X]}` sees exactly 1.
+  - Python REPL: 7 `can_approve` test cases all pass (region match, cluster match, mismatched region, super_admin always, vendor_admin never).
+

@@ -427,12 +427,16 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
                 "target_user_id": user_id,
                 "target_email": target.get("email"),
                 "target_name": target.get("name"),
+                "target_region": target.get("region"),
+                "target_cluster_manager_name": target.get("cluster_manager_name"),
                 "vendor_id": target.get("vendor_id"),
                 "requested_by": {
                     "user_id": user.user_id,
                     "name": getattr(user, "name", None),
                     "email": getattr(user, "email", None),
                     "role": user.role,
+                    "region": getattr(user, "region", None),
+                    "cluster_manager_name": getattr(user, "cluster_manager_name", None),
                 },
                 "status": "pending",
                 "created_at": _now(),
@@ -1303,33 +1307,41 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         }
 
     # ---------- Pending Approvals (admin approval workflow) ----------
-    async def _require_super_or_admin(u) -> None:
-        if u.role not in ("super_admin", "admin"):
-            raise HTTPException(403, "Admin role required")
+    def _import_perm():
+        from permissions import can_approve as _ca, approval_level as _al
+        return _ca, _al
 
     @approvals.get("")
     async def list_approvals(user=Depends(get_current_user),
                              status: str = "pending", limit: int = 200):
-        # Super/admin see all; vendor_admin sees only their own requests.
+        # Super/admin see items within their scope; vendor_admin sees only
+        # their own requests. Regular vendor users see nothing.
         flt: Dict[str, Any] = {"status": status} if status else {}
-        if user.role in ("super_admin", "admin"):
-            pass
-        elif user.role == "vendor_admin":
+        if user.role == "vendor_admin":
             flt["requested_by.user_id"] = user.user_id
-        else:
+        elif user.role not in ("super_admin", "admin"):
             return []
         rows = await db.pending_approvals.find(flt, {"_id": 0}) \
             .sort("created_at", -1).to_list(min(limit, 1000))
+        if user.role in ("super_admin", "admin"):
+            can_approve, _ = _import_perm()
+            # Only surface rows the caller could actually act on. Super
+            # Admin (or override) always passes; region/cluster admins get
+            # only their scope. Vendor Admin's `.get("")` branch already
+            # scoped by user_id above.
+            rows = [r for r in rows if can_approve(user, r)]
         return rows
 
     @approvals.post("/{approval_id}/approve")
     async def approve(approval_id: str, user=Depends(get_current_user)):
-        await _require_super_or_admin(user)
         row = _clean(await db.pending_approvals.find_one({"approval_id": approval_id}))
         if not row:
             raise HTTPException(404, "Approval not found")
         if row.get("status") != "pending":
             raise HTTPException(400, f"Approval already {row.get('status')}")
+        can_approve, _ = _import_perm()
+        if not can_approve(user, row):
+            raise HTTPException(403, "You are not in the approval scope for this request")
         # Apply the action
         if row["type"] == "user_disable":
             await db.users.update_one(
@@ -1351,12 +1363,14 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
     @approvals.post("/{approval_id}/reject")
     async def reject(approval_id: str, body: Optional[Dict[str, str]] = None,
                      user=Depends(get_current_user)):
-        await _require_super_or_admin(user)
         row = _clean(await db.pending_approvals.find_one({"approval_id": approval_id}))
         if not row:
             raise HTTPException(404, "Approval not found")
         if row.get("status") != "pending":
             raise HTTPException(400, f"Approval already {row.get('status')}")
+        can_approve, _ = _import_perm()
+        if not can_approve(user, row):
+            raise HTTPException(403, "You are not in the approval scope for this request")
         note = (body or {}).get("reason", "")
         await db.pending_approvals.update_one(
             {"approval_id": approval_id},
