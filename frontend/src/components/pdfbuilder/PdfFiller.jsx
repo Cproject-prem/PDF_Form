@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { resolveOptionBoxes } from "@/lib/pdfFieldTypes";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -63,8 +64,19 @@ function FillerPage({ pageNum, fields, values, set }) {
       <Page pageNumber={pageNum} renderTextLayer={false} renderAnnotationLayer={false}
             onRenderSuccess={({ width, height }) => setSize({ w: width, h: height })} />
       {size.w > 0 && fields.map((f) => (
-        <FieldControl key={f.id} f={f} containerW={size.w} containerH={size.h}
-                      value={values[f.id]} onChange={(v) => set(f.id, v)} />
+        <React.Fragment key={f.id}>
+          <FieldControl f={f} containerW={size.w} containerH={size.h}
+                        value={values[f.id]} onChange={(v) => set(f.id, v)} />
+          {(f.type === "checkbox" || f.type === "radio") && f.visible && (
+            <PositionedOptions
+              f={f}
+              containerW={size.w}
+              containerH={size.h}
+              value={values[f.id]}
+              onChange={(v) => set(f.id, v)}
+            />
+          )}
+        </React.Fragment>
       ))}
     </div>
   );
@@ -136,12 +148,33 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
         </div>
       );
     case "checkbox":
+      // When per-option positions exist, options render as absolutely
+      // positioned siblings via `PositionedOptions`, so the anchor here
+      // just shows the field label as a lightweight caption.
+      if ((f.option_positions || []).length > 0) {
+        return (
+          <div style={style} className="px-1 pointer-events-none flex items-center">
+            <span className="text-[11px] text-slate-500 italic truncate">
+              {f.label}
+            </span>
+          </div>
+        );
+      }
       return (
         <div style={style} className="px-1 space-y-1">
           <CheckboxControl f={f} value={value} onChange={onChange} />
         </div>
       );
     case "radio":
+      if ((f.option_positions || []).length > 0) {
+        return (
+          <div style={style} className="px-1 pointer-events-none flex items-center">
+            <span className="text-[11px] text-slate-500 italic truncate">
+              {f.label}
+            </span>
+          </div>
+        );
+      }
       return (
         <div style={style} className="px-1 space-y-1">
           <RadioControl f={f} value={value} onChange={onChange} />
@@ -179,6 +212,72 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
 }
 
 function slug(s) { return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "-"); }
+
+/* -----------------------------------------------------------------------
+   PositionedOptions — renders each checkbox / radio option as its own
+   absolutely-positioned control on the page, using field.option_positions.
+   Returns null when the field has no positioned options (falls back to
+   stacked layout inside FieldControl).
+   ----------------------------------------------------------------------- */
+function PositionedOptions({ f, containerW, containerH, value, onChange }) {
+  const opts = useDynamicOptions(f);
+  const positions = f.option_positions || [];
+  if (!positions.length) return null;
+  const boxes = resolveOptionBoxes({ ...f, options: opts });
+  const arr = Array.isArray(value) ? value : [];
+  const isCheckbox = f.type === "checkbox";
+  return (
+    <>
+      {boxes.map((b, i) => {
+        const style = {
+          position: "absolute",
+          left: b.x * containerW,
+          top: b.y * containerH,
+          width: b.w * containerW,
+          height: b.h * containerH,
+          zIndex: 12 + (f.z_index || 0),
+        };
+        const glyphSize = Math.max(10, Math.min(18, b.h * containerH * 0.7));
+        const checked = isCheckbox ? arr.includes(b.value) : value === b.value;
+        return (
+          <label
+            key={`${f.id}-opt-${i}`}
+            style={style}
+            className="flex items-center gap-1 px-1 border border-blue-400/70 bg-blue-50/40 hover:bg-blue-50 rounded-sm cursor-pointer overflow-hidden"
+          >
+            <input
+              type={isCheckbox ? "checkbox" : "radio"}
+              name={f.id}
+              data-testid={`fill-${f.id}-${slug(b.value)}`}
+              checked={checked}
+              onChange={(e) => {
+                if (isCheckbox) {
+                  onChange(e.target.checked
+                    ? [...arr, b.value]
+                    : arr.filter((x) => x !== b.value));
+                } else {
+                  onChange(b.value);
+                }
+              }}
+              style={{ width: glyphSize, height: glyphSize }}
+              className="shrink-0"
+            />
+            <span
+              className="truncate"
+              style={{
+                fontSize: Math.max(10, glyphSize * 0.85),
+                color: f.font_color || "#111827",
+                fontFamily: f.font_family || "Helvetica",
+              }}
+            >
+              {b.value}
+            </span>
+          </label>
+        );
+      })}
+    </>
+  );
+}
 
 // Load options from the field's `data_source` (Site Master / Vendors / Master
 // Data) when the field is configured as a lookup — mirrors the standard-form

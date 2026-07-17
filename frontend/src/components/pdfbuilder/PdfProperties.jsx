@@ -17,8 +17,9 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
   ArrowUp, ArrowDown, Lock, Unlock, Eye, EyeOff, Copy, Trash2, ImageIcon,
-  ArrowsUpFromLine,
+  ArrowsUpFromLine, LayoutList, LayoutGrid, RotateCcw,
 } from "lucide-react";
+import { defaultOptionPositions, resolveOptionBoxes } from "@/lib/pdfFieldTypes";
 
 export default function PdfProperties({
   field, fields, onChange, onDuplicate, onDelete, onZ, onLock, onVisible,
@@ -156,6 +157,10 @@ function PdfAppearanceTab({ field, update, onDuplicate, onDelete, onZ, onLock, o
         </label>
       </div>
 
+      {(field.type === "checkbox" || field.type === "radio") && (
+        <OptionLayoutSection field={field} update={update} />
+      )}
+
       <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
         <Button data-testid="prop-duplicate" variant="outline" className="flex-1" onClick={onDuplicate}>
           <Copy className="w-4 h-4 mr-1.5"/> Duplicate
@@ -163,6 +168,102 @@ function PdfAppearanceTab({ field, update, onDuplicate, onDelete, onZ, onLock, o
         <Button data-testid="prop-delete" variant="outline" className="flex-1 text-red-600 hover:bg-red-50" onClick={onDelete}>
           <Trash2 className="w-4 h-4 mr-1.5"/> Delete
         </Button>
+      </div>
+    </div>
+  );
+}
+
+
+/* -----------------------------------------------------------------------
+   OptionLayoutSection — for checkbox / radio fields, exposes per-option
+   position + quick-actions (stack vertically / horizontally / reset).
+   ----------------------------------------------------------------------- */
+function OptionLayoutSection({ field, update }) {
+  const boxes = resolveOptionBoxes(field);
+  const options = field.options || [];
+
+  const applyPositions = (positions) => update({ option_positions: positions });
+
+  const stackVertical = () => {
+    const h = boxes[0]?.h ?? 0.03;
+    const w = boxes[0]?.w ?? field.width;
+    const startY = field.y + (field.height || 0.04);
+    applyPositions(options.map((_, i) => ({
+      x: field.x,
+      y: Math.min(0.98, startY + i * h),
+      w, h,
+    })));
+  };
+
+  const stackHorizontal = () => {
+    const h = boxes[0]?.h ?? 0.03;
+    // Try to keep total width sensible — 0.15 each, or fit within page
+    const perW = Math.max(0.08, Math.min(0.2, (1 - field.x) / Math.max(1, options.length)));
+    applyPositions(options.map((_, i) => ({
+      x: Math.min(0.98, field.x + i * (perW + 0.005)),
+      y: field.y + (field.height || 0.04),
+      w: perW, h,
+    })));
+  };
+
+  const resetToDefault = () => applyPositions(defaultOptionPositions(field, options));
+
+  const setBoxField = (i, key, value) => {
+    const positions = boxes.map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h }));
+    positions[i] = { ...positions[i], [key]: value };
+    applyPositions(positions);
+  };
+
+  return (
+    <div data-testid="pdf-option-layout">
+      <div className="text-[10px] uppercase tracking-wider font-semibold text-slate-400 mb-2">
+        Option positions
+      </div>
+      <p className="text-[11px] text-slate-500 mb-2 leading-relaxed">
+        Each option below is a separate draggable box on the PDF page.
+        Drag them on the canvas or fine-tune coordinates here.
+      </p>
+      <div className="flex flex-wrap gap-1.5 mb-3">
+        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]"
+                data-testid="opt-stack-v" onClick={stackVertical}>
+          <LayoutList className="w-3 h-3 mr-1"/> Stack ↓
+        </Button>
+        <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]"
+                data-testid="opt-stack-h" onClick={stackHorizontal}>
+          <LayoutGrid className="w-3 h-3 mr-1"/> Row →
+        </Button>
+        <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px] text-slate-500"
+                data-testid="opt-reset" onClick={resetToDefault}>
+          <RotateCcw className="w-3 h-3 mr-1"/> Reset
+        </Button>
+      </div>
+      {options.length === 0 && (
+        <p className="text-[11px] text-amber-600">
+          Add options in the General tab first.
+        </p>
+      )}
+      <div className="space-y-2 max-h-64 overflow-y-auto pr-1 nice-scroll">
+        {boxes.map((b, i) => (
+          <div key={i} className="border border-slate-100 rounded-md p-2 bg-slate-50/50">
+            <div className="text-[11px] font-medium text-slate-700 truncate mb-1.5">
+              {i + 1}. {b.value}
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {["x", "y", "w", "h"].map((k) => (
+                <label key={k} className="text-[10px] text-slate-500">
+                  <span className="uppercase">{k}</span>
+                  <Input
+                    type="number" step="0.005" min="0" max="1"
+                    value={Number(b[k]).toFixed(3)}
+                    data-testid={`opt-pos-${i}-${k}`}
+                    onChange={(e) => setBoxField(i, k, Number(e.target.value))}
+                    className="mt-0.5 h-7 text-[11px] px-1.5"
+                  />
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

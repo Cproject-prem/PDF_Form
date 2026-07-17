@@ -82,6 +82,10 @@ class PDFField(BaseModel):
     locked: bool = False
     visible: bool = True
     options: List[str] = []
+    # Per-option positions for checkbox / radio fields. When present, each
+    # option is rendered at its own {x,y,w,h} on the page (independent of
+    # the parent field's bounding box). Coords are page-normalized (0..1).
+    option_positions: Optional[List[Dict[str, float]]] = None
     validation: Dict[str, Any] = Field(default_factory=dict)
     font_size: int = 12
     font_family: str = "Helvetica"
@@ -317,6 +321,22 @@ def _draw_checkbox(c: rl_canvas.Canvas, checked: bool, x: float, y: float, size:
         c.line(bx + box / 2 - 1, by + 2, bx + box - 2, by + box - 2)
 
 
+def _draw_radio(c: rl_canvas.Canvas, selected: bool, x: float, y: float, size: float,
+                color_hex: str = "#111827") -> None:
+    """Draw a radio button (empty circle, filled dot when selected)."""
+    r, g, b = _hex_to_rgb(color_hex)
+    c.setStrokeColorRGB(r, g, b)
+    c.setLineWidth(1)
+    diameter = min(size, 14)
+    radius = diameter / 2
+    cx = x + 2 + radius
+    cy = y - radius - 2
+    c.circle(cx, cy, radius, stroke=1, fill=0)
+    if selected:
+        c.setFillColorRGB(r, g, b)
+        c.circle(cx, cy, radius * 0.5, stroke=0, fill=1)
+
+
 def _draw_tick_only(c: rl_canvas.Canvas, x: float, y: float, w: float, h: float,
                     color_hex: str = "#111827") -> None:
     """Draw ONLY a check mark (no surrounding box) sized to the field bounds.
@@ -412,7 +432,7 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                     val = f.static_text or val or f.label
                 ftype = f.type
                 if ftype in ("short_text", "number", "email", "phone", "date", "time",
-                             "url", "dropdown", "radio", "initial", "auto_number",
+                             "url", "dropdown", "initial", "auto_number",
                              "calculation"):
                     _draw_text(c, val, x, top_y, w, h, f.font_family, f.font_size,
                                f.font_color, f.alignment)
@@ -428,8 +448,29 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                         _draw_text(c, val, x, top_y, w, h, f.font_family, f.font_size,
                                    f.font_color, f.alignment)
                 elif ftype == "checkbox":
-                    # val may be bool or list of selected options
-                    if f.options and len(f.options) > 1:
+                    # val may be bool or list of selected options.
+                    # NEW: when `option_positions` is set, each option has its
+                    # own {x, y, w, h} on the page → draw a checkbox+label at
+                    # each position independently. Falls back to the legacy
+                    # stacked layout when positions aren't set.
+                    positions = getattr(f, "option_positions", None) or []
+                    if f.options and len(f.options) > 1 and positions:
+                        selected = set(val if isinstance(val, list) else [])
+                        for i, opt in enumerate(f.options):
+                            if i >= len(positions):
+                                break
+                            p = positions[i] or {}
+                            ox = float(p.get("x", f.x)) * pw
+                            oy = ph - (float(p.get("y", f.y)) * ph)
+                            ow = float(p.get("w", f.width)) * pw
+                            oh = float(p.get("h", f.height)) * ph
+                            _draw_checkbox(c, opt in selected, ox, oy, oh, f.font_color)
+                            # Label to the right of the box, vertically centered
+                            box_side = min(oh, 14)
+                            _draw_text(c, opt, ox + box_side + 6, oy,
+                                       ow - box_side - 8, oh,
+                                       f.font_family, f.font_size, f.font_color, "left")
+                    elif f.options and len(f.options) > 1:
                         selected = set(val if isinstance(val, list) else [])
                         line_h = max(f.font_size * 1.4, 14)
                         for i, opt in enumerate(f.options):
@@ -454,6 +495,29 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                             checked = True
                         if checked:
                             _draw_tick_only(c, x, top_y, w, h, f.font_color)
+                elif ftype == "radio":
+                    # Radio with per-option positions: draw a small circle +
+                    # label at each option's position; fill the selected one.
+                    positions = getattr(f, "option_positions", None) or []
+                    if f.options and positions:
+                        selected_val = val if isinstance(val, str) else ""
+                        for i, opt in enumerate(f.options):
+                            if i >= len(positions):
+                                break
+                            p = positions[i] or {}
+                            ox = float(p.get("x", f.x)) * pw
+                            oy = ph - (float(p.get("y", f.y)) * ph)
+                            ow = float(p.get("w", f.width)) * pw
+                            oh = float(p.get("h", f.height)) * ph
+                            _draw_radio(c, opt == selected_val, ox, oy, oh, f.font_color)
+                            box_side = min(oh, 14)
+                            _draw_text(c, opt, ox + box_side + 6, oy,
+                                       ow - box_side - 8, oh,
+                                       f.font_family, f.font_size, f.font_color, "left")
+                    else:
+                        # Legacy behavior: single label drawn as text
+                        _draw_text(c, val, x, top_y, w, h, f.font_family, f.font_size,
+                                   f.font_color, f.alignment)
                 elif ftype == "tick":
                     # Single yes/no — same treatment as single checkbox: stamp
                     # only the tick, no box (so we don't overlap the PDF's

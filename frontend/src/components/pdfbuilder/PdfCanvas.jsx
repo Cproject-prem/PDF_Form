@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
 import { authPdfFile } from "@/lib/pdfWorker";
 import { Rnd } from "react-rnd";
-import { getPdfFieldMeta } from "@/lib/pdfFieldTypes";
+import { getPdfFieldMeta, resolveOptionBoxes } from "@/lib/pdfFieldTypes";
 
 /**
  * Multi-page PDF canvas with overlaid field rectangles (drag/resize via react-rnd).
@@ -125,18 +125,30 @@ function PdfPageView({
       )}
       {/* fields */}
       {size.w > 0 && fields.map((f) => (
-        <FieldBox
-          key={f.id}
-          f={f}
-          containerW={size.w}
-          containerH={size.h}
-          selected={selectedId === f.id}
-          snapToGrid={snapToGrid}
-          onSelect={onSelect}
-          onFieldChange={onFieldChange}
-          onDuplicate={onDuplicate}
-          onDelete={onDelete}
-        />
+        <React.Fragment key={f.id}>
+          <FieldBox
+            f={f}
+            containerW={size.w}
+            containerH={size.h}
+            selected={selectedId === f.id}
+            snapToGrid={snapToGrid}
+            onSelect={onSelect}
+            onFieldChange={onFieldChange}
+            onDuplicate={onDuplicate}
+            onDelete={onDelete}
+          />
+          {(f.type === "checkbox" || f.type === "radio") && f.visible && !f.locked && (
+            <OptionBoxes
+              f={f}
+              containerW={size.w}
+              containerH={size.h}
+              snapToGrid={snapToGrid}
+              parentSelected={selectedId === f.id}
+              onSelect={onSelect}
+              onFieldChange={onFieldChange}
+            />
+          )}
+        </React.Fragment>
       ))}
     </div>
   );
@@ -238,4 +250,86 @@ function computeFontSize(f, heightPx) {
   if (f.font_auto_fit === false) return Math.max(8, f.font_size || 12);
   const target = Math.max(9, Math.min(28, heightPx * 0.55));
   return target;
+}
+
+/* -----------------------------------------------------------------------
+   OptionBoxes — one draggable Rnd per checkbox / radio option.
+   ----------------------------------------------------------------------- */
+function OptionBoxes({ f, containerW, containerH, snapToGrid, parentSelected,
+                       onSelect, onFieldChange }) {
+  const boxes = useMemo(() => resolveOptionBoxes(f), [f]);
+
+  const updatePos = (i, patch) => {
+    const positions = boxes.map((b) => ({ x: b.x, y: b.y, w: b.w, h: b.h }));
+    positions[i] = { ...positions[i], ...patch };
+    onFieldChange(f.id, { option_positions: positions });
+  };
+
+  const isCheckbox = f.type === "checkbox";
+  return (
+    <>
+      {boxes.map((b, i) => {
+        const x = b.x * containerW;
+        const y = b.y * containerH;
+        const w = b.w * containerW;
+        const h = b.h * containerH;
+        return (
+          <Rnd
+            key={`${f.id}-opt-${i}`}
+            data-testid={`pdf-option-${f.id}-${i}`}
+            size={{ width: w, height: h }}
+            position={{ x, y }}
+            bounds="parent"
+            onDragStop={(_e, d) => {
+              let nx = d.x / containerW;
+              let ny = d.y / containerH;
+              if (snapToGrid) {
+                nx = Math.round(nx * 100) / 100;
+                ny = Math.round(ny * 100) / 100;
+              }
+              updatePos(i, { x: Math.max(0, Math.min(1 - b.w, nx)),
+                             y: Math.max(0, Math.min(1 - b.h, ny)) });
+            }}
+            onResizeStop={(_e, _dir, ref, _delta, position) => {
+              updatePos(i, {
+                x: Math.max(0, position.x / containerW),
+                y: Math.max(0, position.y / containerH),
+                w: Math.max(0.02, ref.offsetWidth / containerW),
+                h: Math.max(0.015, ref.offsetHeight / containerH),
+              });
+            }}
+            onClick={(e) => { e.stopPropagation(); onSelect && onSelect(f.id); }}
+            style={{ zIndex: 60 + (f.z_index || 0) }}
+            className={`group ${parentSelected ? "ring-1 ring-blue-400" : ""}`}
+          >
+            <div
+              className="w-full h-full flex items-center gap-1 px-1 border border-dashed rounded-sm cursor-move overflow-hidden bg-white/60 hover:bg-white"
+              style={{ borderColor: f.border_color || "#2563EB" }}
+              title={`Option: ${b.value}`}
+            >
+              {/* Fake checkbox / radio glyph */}
+              <span
+                className={`shrink-0 border ${isCheckbox ? "rounded-sm" : "rounded-full"}`}
+                style={{
+                  width: Math.max(8, Math.min(18, h * 0.7)),
+                  height: Math.max(8, Math.min(18, h * 0.7)),
+                  borderColor: f.font_color || "#111827",
+                }}
+              />
+              <span
+                className="truncate text-[11px]"
+                style={{
+                  color: f.font_color || "#111827",
+                  fontFamily: f.font_family || "Helvetica",
+                  fontSize: computeFontSize(f, h),
+                }}
+              >
+                {b.value}
+              </span>
+            </div>
+          </Rnd>
+        );
+      })}
+    </>
+  );
 }

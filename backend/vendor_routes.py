@@ -291,16 +291,31 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
 
     # ---------- Vendors CRUD ----------
 
+    def _normalize_vendor(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Alias `name` ↔ `vendor_name` and `email` ↔ `vendor_email` so both
+        the legacy schema (seeded `SunOps` doc) and the new schema (from
+        `VendorIn`) look identical to the front-end.  Prefer whichever value
+        is present so nothing gets clobbered."""
+        if not row:
+            return row
+        n = row.get("name") or row.get("vendor_name") or ""
+        e = row.get("email") or row.get("vendor_email") or ""
+        row["name"] = n
+        row["vendor_name"] = n
+        row["email"] = e
+        row["vendor_email"] = e
+        return row
+
     @vendors.get("")
     async def list_vendors(user=Depends(get_current_user)):
         if user.role in ("vendor", "vendor_admin"):
             # vendor sees only itself
             rows = await db.vendors.find({"vendor_id": user.vendor_id}, {"_id": 0}).to_list(10)
-            return rows
+            return [_normalize_vendor(r) for r in rows]
         if user.role not in ("super_admin", "admin"):
             return []  # regular users do not see any vendors
         rows = await db.vendors.find({}, {"_id": 0}).sort("created_at", -1).to_list(2000)
-        return rows
+        return [_normalize_vendor(r) for r in rows]
 
     @vendors.post("")
     async def create_vendor(body: VendorIn, user=Depends(get_current_user)):
@@ -312,7 +327,7 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             "created_at": now, "updated_at": now, "created_by": user.user_id,
         }
         await db.vendors.insert_one(dict(doc))
-        return doc
+        return _normalize_vendor(doc)
 
     @vendors.get("/{vid}")
     async def get_vendor(vid: str, user=Depends(get_current_user)):
@@ -321,6 +336,7 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         v = _clean(await db.vendors.find_one({"vendor_id": vid}))
         if not v:
             raise HTTPException(404, "Vendor not found")
+        _normalize_vendor(v)
         # also fetch counts
         v["_stats"] = {
             "users": await db.users.count_documents({"vendor_id": vid}),
@@ -336,7 +352,7 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             raise HTTPException(404, "Vendor not found")
         upd = {**body.model_dump(), "updated_at": _now()}
         await db.vendors.update_one({"vendor_id": vid}, {"$set": upd})
-        return {**existing, **upd}
+        return _normalize_vendor({**existing, **upd})
 
     @vendors.delete("/{vid}")
     async def delete_vendor(vid: str, user=Depends(get_current_user)):

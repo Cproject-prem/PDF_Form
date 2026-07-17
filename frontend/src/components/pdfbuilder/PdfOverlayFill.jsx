@@ -4,6 +4,7 @@ import { authPdfFile } from "@/lib/pdfWorker";
 import { api, API } from "@/lib/api";
 import { Upload, FileType2, X } from "lucide-react";
 import { toast } from "sonner";
+import { resolveOptionBoxes } from "@/lib/pdfFieldTypes";
 
 /**
  * Read-only PDF viewer with fillable overlay inputs for the public submitter.
@@ -60,19 +61,31 @@ function PdfPageWithOverlay({ pageNum, fields, values, onChange, disabled }) {
       />
       {/* Overlay */}
       {size.w > 0 && fields.map((f) => (
-        <OverlayInput
-          key={f.id}
-          field={f}
-          box={{
-            left: (f.x || 0) * size.w,
-            top: (f.y || 0) * size.h,
-            width: (f.width || 0.15) * size.w,
-            height: (f.height || 0.04) * size.h,
-          }}
-          value={values[f.id]}
-          onChange={(v) => onChange?.(f.id, v)}
-          disabled={disabled || !!f.read_only}
-        />
+        <React.Fragment key={f.id}>
+          <OverlayInput
+            field={f}
+            box={{
+              left: (f.x || 0) * size.w,
+              top: (f.y || 0) * size.h,
+              width: (f.width || 0.15) * size.w,
+              height: (f.height || 0.04) * size.h,
+            }}
+            value={values[f.id]}
+            onChange={(v) => onChange?.(f.id, v)}
+            disabled={disabled || !!f.read_only}
+          />
+          {(f.type === "checkbox" || f.type === "radio")
+            && (f.option_positions || []).length > 0 && (
+            <PositionedOptionsOverlay
+              field={f}
+              containerW={size.w}
+              containerH={size.h}
+              value={values[f.id]}
+              onChange={(v) => onChange?.(f.id, v)}
+              disabled={disabled || !!f.read_only}
+            />
+          )}
+        </React.Fragment>
       ))}
     </div>
   );
@@ -122,6 +135,35 @@ function OverlayInput({ field, box, value, onChange, disabled }) {
       );
     case "checkbox":
     case "tick": {
+      // Multi-option checkbox/radio with per-option positions is rendered
+      // as sibling PositionedOptionsOverlay elements — this anchor just
+      // shows a subtle label so the group is discoverable.
+      if ((field.option_positions || []).length > 0) {
+        return (
+          <div
+            data-testid={`pdf-overlay-${field.id}`}
+            style={style}
+            className="flex items-center px-1 pointer-events-none"
+          >
+            <span className="text-[11px] italic text-slate-500 truncate">
+              {field.label}
+            </span>
+          </div>
+        );
+      }
+      // Fallback multi-option stacked (no positions saved yet)
+      if ((field.options || []).length > 1 && field.type !== "tick") {
+        return (
+          <StackedChoiceOverlay
+            field={field}
+            style={style}
+            value={value}
+            disabled={disabled}
+            onChange={onChange}
+          />
+        );
+      }
+      // Legacy single boolean tick
       const checked = value === true || value === "true" || value === 1;
       return (
         <label
@@ -137,6 +179,31 @@ function OverlayInput({ field, box, value, onChange, disabled }) {
             className="w-4 h-4 accent-emerald-600"
           />
         </label>
+      );
+    }
+    case "radio": {
+      if ((field.option_positions || []).length > 0) {
+        return (
+          <div
+            data-testid={`pdf-overlay-${field.id}`}
+            style={style}
+            className="flex items-center px-1 pointer-events-none"
+          >
+            <span className="text-[11px] italic text-slate-500 truncate">
+              {field.label}
+            </span>
+          </div>
+        );
+      }
+      return (
+        <StackedChoiceOverlay
+          field={field}
+          style={style}
+          value={value}
+          disabled={disabled}
+          onChange={onChange}
+          isRadio
+        />
       );
     }
     case "file":
@@ -204,6 +271,93 @@ function DropdownOverlay({ field, style, baseCls, value, disabled, onChange }) {
         <option key={i} value={o}>{o}</option>
       ))}
     </select>
+  );
+}
+
+/* --------------------- Multi-option choice overlays --------------------- */
+function PositionedOptionsOverlay({ field, containerW, containerH, value, onChange, disabled }) {
+  const opts = useDynamicOptions(field);
+  const boxes = resolveOptionBoxes({ ...field, options: opts });
+  const arr = Array.isArray(value) ? value : [];
+  const isCheckbox = field.type === "checkbox";
+  return (
+    <>
+      {boxes.map((b, i) => {
+        const style = {
+          position: "absolute",
+          left: b.x * containerW,
+          top: b.y * containerH,
+          width: b.w * containerW,
+          height: b.h * containerH,
+          zIndex: 12,
+        };
+        const glyphSize = Math.max(10, Math.min(18, b.h * containerH * 0.7));
+        const checked = isCheckbox ? arr.includes(b.value) : value === b.value;
+        return (
+          <label
+            key={`${field.id}-opt-${i}`}
+            style={style}
+            className="flex items-center gap-1 px-1 border border-blue-400/70 bg-blue-50/40 hover:bg-blue-50 rounded-sm cursor-pointer overflow-hidden"
+          >
+            <input
+              type={isCheckbox ? "checkbox" : "radio"}
+              name={field.id}
+              data-testid={`pdf-overlay-${field.id}-${i}`}
+              checked={checked}
+              disabled={disabled}
+              onChange={(e) => {
+                if (isCheckbox) {
+                  onChange(e.target.checked
+                    ? [...arr, b.value]
+                    : arr.filter((x) => x !== b.value));
+                } else {
+                  onChange(b.value);
+                }
+              }}
+              style={{ width: glyphSize, height: glyphSize }}
+              className="shrink-0"
+            />
+            <span
+              className="truncate"
+              style={{
+                fontSize: Math.max(10, glyphSize * 0.85),
+                color: field.font_color || "#111827",
+              }}
+            >
+              {b.value}
+            </span>
+          </label>
+        );
+      })}
+    </>
+  );
+}
+
+function StackedChoiceOverlay({ field, style, value, disabled, onChange, isRadio = false }) {
+  const opts = useDynamicOptions(field);
+  const arr = Array.isArray(value) ? value : [];
+  return (
+    <div
+      data-testid={`pdf-overlay-${field.id}`}
+      style={style}
+      className="flex flex-col gap-0.5 px-1 border border-blue-400/70 bg-blue-50/40 rounded-sm overflow-auto"
+    >
+      {opts.map((o, i) => (
+        <label key={i} className="flex items-center gap-1 text-[11px] cursor-pointer">
+          <input
+            type={isRadio ? "radio" : "checkbox"}
+            name={field.id}
+            checked={isRadio ? value === o : arr.includes(o)}
+            disabled={disabled}
+            onChange={(e) => {
+              if (isRadio) onChange(o);
+              else onChange(e.target.checked ? [...arr, o] : arr.filter((x) => x !== o));
+            }}
+          />
+          <span className="truncate">{o}</span>
+        </label>
+      ))}
+    </div>
   );
 }
 

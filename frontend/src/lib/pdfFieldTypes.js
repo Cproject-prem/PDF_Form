@@ -65,7 +65,8 @@ export const DEFAULT_FIELD_DEFAULTS = {
 
 export function makePdfField(type, page = 1, x = 0.1, y = 0.1) {
   const defaults = DEFAULT_FIELD_DEFAULTS[type] || { label: type, width: 0.2, height: 0.03 };
-  return {
+  const options = defaults.options || [];
+  const field = {
     id: `pf_${Math.random().toString(36).slice(2, 10)}`,
     page,
     x,
@@ -84,7 +85,7 @@ export function makePdfField(type, page = 1, x = 0.1, y = 0.1) {
     read_only: false,
     locked: false,
     visible: true,
-    options: defaults.options || [],
+    options,
     validation: {},
     font_size: defaults.font_size || 12,
     font_family: "Helvetica",
@@ -96,4 +97,44 @@ export function makePdfField(type, page = 1, x = 0.1, y = 0.1) {
     conditional_logic: null,
     db_mapping: "",
   };
+  // For choice fields (checkbox / radio), auto-initialize per-option positions
+  // so each option becomes an independently draggable mini-box on the PDF page.
+  if ((type === "checkbox" || type === "radio") && options.length > 0) {
+    field.option_positions = defaultOptionPositions(field, options);
+  }
+  return field;
+}
+
+/**
+ * Build a stacked-vertical set of positions for the given options, using
+ * `field.x, field.y, field.width` as anchor. Each option row is `optH` tall
+ * (default 3% of page = fits ~11-12pt text), stacked directly below the
+ * previous with no gap. Returned coords are page-normalized (0..1).
+ */
+export function defaultOptionPositions(field, options, opts = {}) {
+  const optH = opts.height ?? 0.03;
+  const optW = opts.width ?? Math.min(1 - field.x, field.width || 0.25);
+  const startY = field.y + (field.height || 0.04); // just below the label
+  return (options || []).map((_, i) => ({
+    x: field.x,
+    y: Math.min(0.98, startY + i * optH),
+    w: optW,
+    h: optH,
+  }));
+}
+
+/**
+ * Return a normalized array of `{ value, x, y, w, h }` for each option on
+ * the field.  Falls back to a stacked layout for any missing entry so the
+ * renderer never crashes when `option_positions` is out of sync with
+ * `options`.
+ */
+export function resolveOptionBoxes(field) {
+  const options = field?.options || [];
+  const positions = field?.option_positions || [];
+  const fallback = defaultOptionPositions(field, options);
+  return options.map((value, i) => {
+    const p = positions[i] || fallback[i] || { x: field.x, y: field.y, w: 0.2, h: 0.03 };
+    return { value, x: p.x, y: p.y, w: p.w, h: p.h, index: i };
+  });
 }
