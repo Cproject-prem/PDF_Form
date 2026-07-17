@@ -331,8 +331,8 @@ def build_router(db, get_current_user):
         sch = cyc.get("schedule") or {}
         if not sch.get("planned_date"):
             raise HTTPException(400, "Set a planned_date before submitting")
-        if not (sch.get("evidence_files") or []):
-            raise HTTPException(400, "Attach at least one photo / PDF before submitting the schedule")
+        # Attachments are NOT required for schedule submission (planning step) —
+        # only the "actual" step requires photo/PDF proof of execution.
         if sch.get("status") in ("submitted", "approved"):
             raise HTTPException(400, f"Schedule already {sch['status']}")
         return await _set_block_status(cycle_id, "schedule", "submitted", user)

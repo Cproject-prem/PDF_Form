@@ -99,3 +99,17 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - Monthly view: table with one row per site × cycle; Planned date, Sch-notes | Actual date, Result, Act-notes; per-block Save / Submit / Approve / Unlock buttons that honour the lock rules.
   - Yearly view: per-plant progress table with draft/submitted/approved counts and a percentage completion bar.
 - **Verified via curl:** `GET /api/site-cycles?year=2026` returns sites with `cycles_per_month`; PUT `/api/sites/{id}` with `cycles_per_month=2` correctly surfaces both 1st + 2nd cycle rows; upsert + yearly summary work end-to-end. Frontend screenshot confirms the sidebar entry and table rendering.
+
+
+## iter 7 — Schedule attachments policy (Feb 2026)
+- **Requirement**: The "Schedule vs Actual" page must accept image/PDF attachments as **proof of work**. Attachments are **REQUIRED on the Actual submission** (proof of execution), but **OPTIONAL on the Schedule submission** (planning-only step).
+- **Backend** — `schedule_routes.py`
+  - `POST /api/site-cycles/{cycle_id}/submit-schedule` no longer requires `evidence_files`. It only validates that `planned_date` is set.
+  - `POST /api/site-cycles/{cycle_id}/submit-actual` continues to enforce `evidence_files` (400 "Attach at least one photo / PDF before submitting the actual").
+- **Frontend** — `Schedule.jsx`
+  - Schedule row's "Submit" button no longer blocked by `!schHasAttachments`.
+  - `AttachStrip` gained a `required` prop → Schedule side renders "Attach (optional)" in neutral gray; Actual side renders "Upload proof *" in red when empty.
+- **Verified via curl (Feb 17 2026)**:
+  - Upsert + submit-schedule with no attachments → HTTP 200, status=`submitted`.
+  - Upsert actual + submit-actual with no attachments → HTTP 400 "Attach at least one photo / PDF before submitting the actual".
+  - Screenshot of `/schedule` confirms optional vs required styling difference.

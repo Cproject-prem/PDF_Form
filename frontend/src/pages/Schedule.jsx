@@ -422,6 +422,7 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
 
   const schHasAttachments = ((sch.evidence_files || []).length > 0);
   const actHasAttachments = ((act.evidence_files || []).length > 0);
+  void schHasAttachments;
 
   const minDate = `${year}-${String(month).padStart(2, "0")}-01`;
   const maxDate = `${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`;
@@ -513,6 +514,7 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
                 canEdit={canEditSch}
                 files={sch.evidence_files}
                 reload={reload}
+                required={false}
               />
             </div>
             <div>
@@ -533,6 +535,7 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
                 canEdit={canEditAct}
                 files={act.evidence_files}
                 reload={reload}
+                required={true}
               />
             </div>
           </div>
@@ -574,8 +577,8 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
                 <Button
                   size="sm" variant="outline"
                   data-testid={`submit-sch-${site.site_id}-${cn}`}
-                  disabled={saving || !cyc?.cycle_id || !schHasAttachments}
-                  title={!schHasAttachments ? "Attach a proof image/PDF first" : "Submit for approval"}
+                  disabled={saving || !cyc?.cycle_id}
+                  title="Submit for approval"
                   onClick={() => submit("schedule")}
                   className="h-7 px-2 text-[11px]"
                 ><Send className="w-3 h-3 mr-1" /> Submit</Button>
@@ -914,7 +917,7 @@ function monthLastDay(year, month) {
 }
 
 /* --------------------------- Attachments strip ---------------------------- */
-function AttachStrip({ cycleId, which, canEdit, files, reload }) {
+function AttachStrip({ cycleId, which, canEdit, files, reload, required = false }) {
   const [busy, setBusy] = useState(false);
 
   const upload = async (file) => {
@@ -976,14 +979,18 @@ function AttachStrip({ cycleId, which, canEdit, files, reload }) {
         {canEdit && (
           <label
             className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-dashed text-[10px] cursor-pointer ${
-              (files || []).length === 0
+              required && (files || []).length === 0
                 ? "border-red-300 bg-red-50 text-red-700 hover:bg-red-100"
                 : "border-slate-300 text-slate-500 hover:bg-slate-50"
             }`}
             data-testid={`attach-btn-${which}`}
           >
             <Paperclip className="w-2.5 h-2.5" />
-            {busy ? "Uploading…" : ((files || []).length === 0 ? "Upload proof *" : "Add file")}
+            {busy
+              ? "Uploading…"
+              : (files || []).length === 0
+                ? (required ? "Upload proof *" : "Attach (optional)")
+                : "Add file"}
             <input
               type="file"
               accept="image/*,application/pdf"
