@@ -24,12 +24,13 @@ from datetime import datetime, timezone
 from calendar import monthrange
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from io import BytesIO
+from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,14 @@ def _validate_date(iso: Optional[str], year: int, month: int) -> Optional[str]:
 # ---------------------------------------------------------------------------
 def build_router(db, get_current_user):
     router = APIRouter(prefix="/site-cycles", tags=["site-cycles"])
+
+    # File storage for cycle attachments (schedule + actual proof of work).
+    # Path structure: /app/backend/uploads/local/site_cycles/{cycle_id}/{file_id}.{ext}
+    UPLOADS_DIR = Path(__file__).parent / "uploads" / "local" / "site_cycles"
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    ALLOWED_MIME_PREFIX = ("image/", "application/pdf")
+    ALLOWED_EXT = {"png", "jpg", "jpeg", "webp", "gif", "heic", "heif", "pdf"}
+    MAX_ATTACH_BYTES = 20 * 1024 * 1024   # 20 MB per file
 
     async def _resolve_site(site_id: str, user) -> Dict[str, Any]:
         """Fetch the site respecting the user's RLS. 404 when out-of-scope."""
@@ -322,6 +331,8 @@ def build_router(db, get_current_user):
         sch = cyc.get("schedule") or {}
         if not sch.get("planned_date"):
             raise HTTPException(400, "Set a planned_date before submitting")
+        if not (sch.get("evidence_files") or []):
+            raise HTTPException(400, "Attach at least one photo / PDF before submitting the schedule")
         if sch.get("status") in ("submitted", "approved"):
             raise HTTPException(400, f"Schedule already {sch['status']}")
         return await _set_block_status(cycle_id, "schedule", "submitted", user)
@@ -344,6 +355,8 @@ def build_router(db, get_current_user):
         act = cyc.get("actual") or {}
         if not act.get("actual_date") or not act.get("result"):
             raise HTTPException(400, "Set actual_date and result before submitting")
+        if not (act.get("evidence_files") or []):
+            raise HTTPException(400, "Attach at least one photo / PDF before submitting the actual")
         if act.get("status") in ("submitted", "approved"):
             raise HTTPException(400, f"Actual already {act['status']}")
         return await _set_block_status(cycle_id, "actual", "submitted", user)
@@ -357,6 +370,112 @@ def build_router(db, get_current_user):
         if act.get("status") != "submitted":
             raise HTTPException(400, "Only submitted actuals can be approved")
         return await _set_block_status(cycle_id, "actual", "approved", user)
+
+    @router.post("/{cycle_id}/attachments")
+    async def upload_attachment(cycle_id: str, which: str,
+                                 file: UploadFile = File(...),
+                                 user=Depends(get_current_user)):
+        """Upload proof-of-work file (image or PDF) to the schedule / actual
+        block.  Vendors may upload while the block is `draft`; the file
+        becomes part of the block metadata so admins can review before
+        approving."""
+        if which not in ("schedule", "actual"):
+            raise HTTPException(400, "which must be 'schedule' or 'actual'")
+        cyc = await _get_cycle(cycle_id, user)
+        blk = cyc.get(which) or {}
+        # Same edit rules as _merge_block
+        from permissions import is_super_admin, has_access_override, normalize_role
+        is_admin_or_more = (is_super_admin(user) or has_access_override(user)
+                            or normalize_role(user.role) == "admin")
+        if blk.get("status") == "approved" and not is_admin_or_more:
+            raise HTTPException(403, f"{which} is approved and locked")
+        if blk.get("status") == "submitted" and not is_admin_or_more:
+            raise HTTPException(403, f"{which} is pending approval — unlock first")
+        if not _role_can(user, "save_schedule" if which == "schedule" else "save_actual"):
+            raise HTTPException(403, "Not allowed")
+
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "Empty upload")
+        if len(data) > MAX_ATTACH_BYTES:
+            raise HTTPException(413, f"File too large — max {MAX_ATTACH_BYTES // (1024*1024)} MB")
+        ctype = (file.content_type or "").lower()
+        if not (ctype.startswith(ALLOWED_MIME_PREFIX[0]) or ctype == ALLOWED_MIME_PREFIX[1]):
+            raise HTTPException(400, "Only images or PDFs are allowed")
+        ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+        if ext not in ALLOWED_EXT:
+            raise HTTPException(400, f"Unsupported extension .{ext}")
+
+        file_id = f"att_{uuid.uuid4().hex[:12]}"
+        cyc_dir = UPLOADS_DIR / cycle_id
+        cyc_dir.mkdir(parents=True, exist_ok=True)
+        (cyc_dir / f"{file_id}.{ext}").write_bytes(data)
+
+        meta = {
+            "file_id": file_id,
+            "filename": file.filename or f"{file_id}.{ext}",
+            "content_type": ctype,
+            "size": len(data),
+            "url": f"/api/site-cycles/{cycle_id}/attachments/{file_id}",
+            "uploaded_at": _now(),
+            "uploaded_by": user.user_id,
+        }
+        files = list(blk.get("evidence_files") or [])
+        files.append(meta)
+        blk["evidence_files"] = files
+        await db.site_cycles.update_one(
+            {"cycle_id": cycle_id},
+            {"$set": {which: blk, "updated_at": _now(), "updated_by": user.user_id}},
+        )
+        return meta
+
+    @router.get("/{cycle_id}/attachments/{file_id}")
+    async def download_attachment(cycle_id: str, file_id: str,
+                                    user=Depends(get_current_user)):
+        cyc = await _get_cycle(cycle_id, user)
+        # find the file_id across both blocks
+        for which in ("schedule", "actual"):
+            for f in (cyc.get(which) or {}).get("evidence_files") or []:
+                if f.get("file_id") == file_id:
+                    # Path-traversal defence — trust only the extension from the disk
+                    cyc_dir = UPLOADS_DIR / cycle_id
+                    for candidate in cyc_dir.glob(f"{file_id}.*"):
+                        return FileResponse(
+                            candidate,
+                            media_type=f.get("content_type") or "application/octet-stream",
+                            filename=f.get("filename") or candidate.name,
+                        )
+        raise HTTPException(404, "Attachment not found")
+
+    @router.delete("/{cycle_id}/attachments/{file_id}")
+    async def delete_attachment(cycle_id: str, file_id: str, which: str,
+                                 user=Depends(get_current_user)):
+        if which not in ("schedule", "actual"):
+            raise HTTPException(400, "which must be 'schedule' or 'actual'")
+        cyc = await _get_cycle(cycle_id, user)
+        blk = cyc.get(which) or {}
+        from permissions import is_super_admin, has_access_override, normalize_role
+        is_admin_or_more = (is_super_admin(user) or has_access_override(user)
+                            or normalize_role(user.role) == "admin")
+        if blk.get("status") == "approved" and not is_admin_or_more:
+            raise HTTPException(403, f"{which} is approved and locked")
+        if blk.get("status") == "submitted" and not is_admin_or_more:
+            raise HTTPException(403, f"{which} is pending approval — unlock first")
+        files = list(blk.get("evidence_files") or [])
+        new_files = [f for f in files if f.get("file_id") != file_id]
+        if len(new_files) == len(files):
+            raise HTTPException(404, "Attachment not found")
+        # Delete the physical file too (best-effort)
+        cyc_dir = UPLOADS_DIR / cycle_id
+        for p in cyc_dir.glob(f"{file_id}.*"):
+            try: p.unlink()
+            except OSError: pass
+        blk["evidence_files"] = new_files
+        await db.site_cycles.update_one(
+            {"cycle_id": cycle_id},
+            {"$set": {which: blk, "updated_at": _now(), "updated_by": user.user_id}},
+        )
+        return {"ok": True, "remaining": len(new_files)}
 
     @router.post("/{cycle_id}/unlock")
     async def unlock_block(cycle_id: str, body: UnlockIn,

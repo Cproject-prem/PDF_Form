@@ -17,6 +17,7 @@ import {
 import {
   Calendar as CalendarIcon, CheckCircle2, Send, Save, Unlock, Lock,
   ListChecks, TrendingUp, Download, Grid3x3, Wrench, SprayCan,
+  Paperclip, X as XIcon, FileText, Image as ImageIcon,
 } from "lucide-react";
 import { API } from "@/lib/api";
 
@@ -419,6 +420,9 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
 
   const [unlockDlg, setUnlockDlg] = useState(null);
 
+  const schHasAttachments = ((sch.evidence_files || []).length > 0);
+  const actHasAttachments = ((act.evidence_files || []).length > 0);
+
   const minDate = `${year}-${String(month).padStart(2, "0")}-01`;
   const maxDate = `${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`;
 
@@ -491,26 +495,44 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
         {/* Remark — stacked notes for Schedule + Actual */}
         <td className="p-2 border-r border-slate-200">
           <div className="space-y-1">
-            <div className="flex items-start gap-1">
-              <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-2 w-8">Sch</span>
-              <Textarea
-                data-testid={`sch-notes-${site.site_id}-${cn}`}
-                value={form.sch_notes || ""}
-                disabled={!canEditSch}
-                onChange={(e) => setForm({ ...form, sch_notes: e.target.value })}
-                placeholder="Schedule remark…"
-                className="h-9 text-xs resize-none"
+            <div>
+              <div className="flex items-start gap-1">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-2 w-8">Sch</span>
+                <Textarea
+                  data-testid={`sch-notes-${site.site_id}-${cn}`}
+                  value={form.sch_notes || ""}
+                  disabled={!canEditSch}
+                  onChange={(e) => setForm({ ...form, sch_notes: e.target.value })}
+                  placeholder="Schedule remark…"
+                  className="h-9 text-xs resize-none"
+                />
+              </div>
+              <AttachStrip
+                cycleId={cyc?.cycle_id}
+                which="schedule"
+                canEdit={canEditSch}
+                files={sch.evidence_files}
+                reload={reload}
               />
             </div>
-            <div className="flex items-start gap-1">
-              <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-2 w-8">Act</span>
-              <Textarea
-                data-testid={`act-notes-${site.site_id}-${cn}`}
-                value={form.act_notes || ""}
-                disabled={!canEditAct}
-                onChange={(e) => setForm({ ...form, act_notes: e.target.value })}
-                placeholder="Actual remark…"
-                className="h-9 text-xs resize-none"
+            <div>
+              <div className="flex items-start gap-1">
+                <span className="text-[10px] text-slate-400 uppercase tracking-wider mt-2 w-8">Act</span>
+                <Textarea
+                  data-testid={`act-notes-${site.site_id}-${cn}`}
+                  value={form.act_notes || ""}
+                  disabled={!canEditAct}
+                  onChange={(e) => setForm({ ...form, act_notes: e.target.value })}
+                  placeholder="Actual remark…"
+                  className="h-9 text-xs resize-none"
+                />
+              </div>
+              <AttachStrip
+                cycleId={cyc?.cycle_id}
+                which="actual"
+                canEdit={canEditAct}
+                files={act.evidence_files}
+                reload={reload}
               />
             </div>
           </div>
@@ -552,7 +574,8 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
                 <Button
                   size="sm" variant="outline"
                   data-testid={`submit-sch-${site.site_id}-${cn}`}
-                  disabled={saving || !cyc?.cycle_id}
+                  disabled={saving || !cyc?.cycle_id || !schHasAttachments}
+                  title={!schHasAttachments ? "Attach a proof image/PDF first" : "Submit for approval"}
                   onClick={() => submit("schedule")}
                   className="h-7 px-2 text-[11px]"
                 ><Send className="w-3 h-3 mr-1" /> Submit</Button>
@@ -591,7 +614,8 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
                 <Button
                   size="sm" variant="outline"
                   data-testid={`submit-act-${site.site_id}-${cn}`}
-                  disabled={saving || !cyc?.cycle_id}
+                  disabled={saving || !cyc?.cycle_id || !actHasAttachments}
+                  title={!actHasAttachments ? "Attach a proof image/PDF first" : "Submit for approval"}
                   onClick={() => submit("actual")}
                   className="h-7 px-2 text-[11px]"
                 ><Send className="w-3 h-3 mr-1" /> Submit</Button>
@@ -887,4 +911,88 @@ function YearlySummary({ summary, year, activity }) {
 
 function monthLastDay(year, month) {
   return String(new Date(year, month, 0).getDate()).padStart(2, "0");
+}
+
+/* --------------------------- Attachments strip ---------------------------- */
+function AttachStrip({ cycleId, which, canEdit, files, reload }) {
+  const [busy, setBusy] = useState(false);
+
+  const upload = async (file) => {
+    if (!file || !cycleId) {
+      if (!cycleId) toast.error("Save the cycle first (any date), then attach.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.post(`/site-cycles/${cycleId}/attachments?which=${which}`, fd,
+        { headers: { "Content-Type": "multipart/form-data" } });
+      toast.success("Attached");
+      await reload();
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Upload failed"));
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (fileId) => {
+    setBusy(true);
+    try {
+      await api.delete(`/site-cycles/${cycleId}/attachments/${fileId}?which=${which}`);
+      toast.success("Removed");
+      await reload();
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Delete failed"));
+    } finally { setBusy(false); }
+  };
+
+  const backendBase = (process.env.REACT_APP_BACKEND_URL || "");
+
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="flex flex-wrap items-center gap-1">
+        {(files || []).map((f) => (
+          <a
+            key={f.file_id}
+            href={`${backendBase}${f.url}`}
+            target="_blank"
+            rel="noreferrer"
+            data-testid={`attach-${which}-${f.file_id}`}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-100 text-[10px] hover:bg-blue-100 max-w-[130px]"
+            title={f.filename}
+          >
+            {(f.content_type || "").startsWith("image/")
+              ? <ImageIcon className="w-2.5 h-2.5 shrink-0" />
+              : <FileText className="w-2.5 h-2.5 shrink-0" />}
+            <span className="truncate">{f.filename}</span>
+            {canEdit && (
+              <button
+                onClick={(e) => { e.preventDefault(); remove(f.file_id); }}
+                className="text-blue-500 hover:text-red-600"
+              ><XIcon className="w-2.5 h-2.5" /></button>
+            )}
+          </a>
+        ))}
+        {canEdit && (
+          <label
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-dashed text-[10px] cursor-pointer ${
+              (files || []).length === 0
+                ? "border-red-300 bg-red-50 text-red-700 hover:bg-red-100"
+                : "border-slate-300 text-slate-500 hover:bg-slate-50"
+            }`}
+            data-testid={`attach-btn-${which}`}
+          >
+            <Paperclip className="w-2.5 h-2.5" />
+            {busy ? "Uploading…" : ((files || []).length === 0 ? "Upload proof *" : "Add file")}
+            <input
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ""; }}
+            />
+          </label>
+        )}
+      </div>
+    </div>
+  );
 }
