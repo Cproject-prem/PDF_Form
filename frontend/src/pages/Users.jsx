@@ -21,8 +21,10 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import {
   Plus, Trash2, Pencil, Copy, KeyRound, Mail as MailIcon, Search, Shuffle,
+  ShieldCheck, ShieldX, Users as UsersIcon,
 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 
 /**
  * User Management page.
@@ -35,15 +37,24 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 export default function UsersPage() {
   const { user: me } = useAuth();
   const myRole = me?.role || "";
+  const canApprove = myRole === "super_admin" || myRole === "admin";
+  const [tab, setTab] = useState("users"); // "users" | "approvals"
   const [users, setUsers] = useState([]);
   const [regions, setRegions] = useState([]);
   const [clusterMgrs, setClusterMgrs] = useState([]);
   const [vendors, setVendors] = useState([]);
+  const [pendingApprovals, setPendingApprovals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [editUser, setEditUser] = useState(null);
   const [tempPasswordResult, setTempPasswordResult] = useState(null);
+
+  const loadApprovals = () => {
+    api.get("/admin-approvals", { params: { status: "pending" } })
+      .then((r) => setPendingApprovals(r.data || []))
+      .catch(() => setPendingApprovals([]));
+  };
 
   const load = () => {
     setLoading(true);
@@ -61,7 +72,7 @@ export default function UsersPage() {
       })
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); if (canApprove) loadApprovals(); }, [canApprove]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -74,7 +85,10 @@ export default function UsersPage() {
 
   const updateUser = async (u, patch) => {
     try {
-      await api.patch(`/users/${u.user_id}`, patch);
+      const resp = await api.patch(`/users/${u.user_id}`, patch);
+      if (resp?.data?.pending_approval) {
+        toast.info(resp.data.message || "Request submitted for admin approval");
+      }
       load();
     } catch (e) { toast.error(getErrorMessage(e, "Update failed")); }
   };
@@ -121,7 +135,40 @@ export default function UsersPage() {
           </Button>
         </div>
 
-        <Card className="rounded-2xl border-slate-100 card-soft bg-white">
+        {canApprove && (
+          <div className="flex items-center gap-1 mb-4 bg-slate-100 p-1 rounded-lg w-fit">
+            <button
+              data-testid="users-tab"
+              onClick={() => setTab("users")}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition ${
+                tab === "users" ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              <UsersIcon className="w-3.5 h-3.5" /> Users
+            </button>
+            <button
+              data-testid="approvals-tab"
+              onClick={() => { setTab("approvals"); loadApprovals(); }}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition ${
+                tab === "approvals" ? "bg-white shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" /> Approvals
+              {pendingApprovals.length > 0 && (
+                <Badge variant="secondary" className="bg-amber-100 text-amber-700 h-4 px-1.5 text-[10px] ml-0.5">
+                  {pendingApprovals.length}
+                </Badge>
+              )}
+            </button>
+          </div>
+        )}
+
+        {tab === "approvals" && canApprove ? (
+          <ApprovalsCard
+            items={pendingApprovals}
+            reload={() => { loadApprovals(); load(); }}
+          />
+        ) : (<Card className="rounded-2xl border-slate-100 card-soft bg-white">
           <div className="flex flex-wrap items-center gap-3 p-4 border-b border-slate-100">
             <div className="relative flex-1 min-w-[240px] max-w-md">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -206,6 +253,7 @@ export default function UsersPage() {
             </Table>
           )}
         </Card>
+        )}
       </div>
 
       <CreateUserDialog
@@ -263,6 +311,100 @@ function ScopePill({ user }) {
 }
 
 /* --------------------------- Create dialog --------------------------- */
+/**
+ * ApprovalsCard — lists pending admin-approval requests (currently only
+ * `user_disable`) with Approve / Reject controls.  Visible to super_admin
+ * and admin only (the parent component gates this).
+ */
+function ApprovalsCard({ items, reload }) {
+  const act = async (id, kind) => {
+    try {
+      if (kind === "reject") {
+        const reason = window.prompt("Reason for rejection (optional):", "") ?? "";
+        await api.post(`/admin-approvals/${id}/reject`, { reason });
+        toast.success("Request rejected");
+      } else {
+        if (!window.confirm("Approve this disable request? The user will be deactivated immediately.")) return;
+        await api.post(`/admin-approvals/${id}/approve`);
+        toast.success("Request approved · user disabled");
+      }
+      reload();
+    } catch (e) { toast.error(getErrorMessage(e, "Action failed")); }
+  };
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white" data-testid="approvals-card">
+      <div className="p-4 border-b border-slate-100 flex items-center gap-2">
+        <ShieldCheck className="w-4 h-4 text-amber-600" />
+        <div className="text-sm font-semibold">Pending admin approvals</div>
+        <div className="ml-auto text-xs text-slate-400">
+          {items.length} pending
+        </div>
+      </div>
+      {items.length === 0 ? (
+        <div className="p-8 text-center text-slate-400 text-sm">
+          No pending requests.
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Action</TableHead>
+              <TableHead>Target user</TableHead>
+              <TableHead>Requested by</TableHead>
+              <TableHead>When</TableHead>
+              <TableHead className="text-right">Decision</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {items.map((it) => (
+              <TableRow key={it.approval_id} data-testid={`approval-row-${it.approval_id}`}>
+                <TableCell>
+                  <Badge variant="outline" className="border-amber-300 text-amber-700 bg-amber-50">
+                    {it.type === "user_disable" ? "Disable user" : it.type}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <div className="text-sm font-medium">{it.target_name || "—"}</div>
+                  <div className="text-xs text-slate-500">{it.target_email}</div>
+                </TableCell>
+                <TableCell>
+                  <div className="text-sm">{it.requested_by?.name || it.requested_by?.email}</div>
+                  <div className="text-xs text-slate-400">{it.requested_by?.role}</div>
+                </TableCell>
+                <TableCell className="text-xs text-slate-500">
+                  {formatDate(it.created_at)}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="inline-flex gap-1.5">
+                    <Button
+                      size="sm" variant="outline"
+                      data-testid={`reject-${it.approval_id}`}
+                      className="h-7 px-2 text-[11px] border-slate-200 text-slate-600"
+                      onClick={() => act(it.approval_id, "reject")}
+                    >
+                      <ShieldX className="w-3 h-3 mr-1" /> Reject
+                    </Button>
+                    <Button
+                      size="sm"
+                      data-testid={`approve-${it.approval_id}`}
+                      className="h-7 px-2 text-[11px] bg-emerald-600 hover:bg-emerald-700"
+                      onClick={() => act(it.approval_id, "approve")}
+                    >
+                      <ShieldCheck className="w-3 h-3 mr-1" /> Approve
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </Card>
+  );
+}
+
+
 function CreateUserDialog({ open, onOpenChange, availableRoles, regions, clusterMgrs, vendors, onCreated }) {
   const { user: me } = useAuth();
   const canGrantOverride = me?.role === "super_admin";
@@ -471,8 +613,15 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
       patch.password = newPassword;
     }
     try {
-      await api.patch(`/users/${user.user_id}`, patch);
-      toast.success("Saved");
+      const resp = await api.patch(`/users/${user.user_id}`, patch);
+      // Backend may return 202 with { pending_approval: true } when a
+      // vendor_admin tried to disable a user — surface that to the operator
+      // instead of showing the generic "Saved" toast.
+      if (resp?.data?.pending_approval) {
+        toast.info(resp.data.message || "Request submitted for admin approval");
+      } else {
+        toast.success("Saved");
+      }
       onSaved();
     } catch (e) { toast.error(getErrorMessage(e, "Update failed")); }
   };

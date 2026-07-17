@@ -246,6 +246,7 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
     master = APIRouter(prefix="/master-data", tags=["master-data"])
     lookup = APIRouter(prefix="/lookup", tags=["lookup"])
     public_lookup = APIRouter(prefix="/public/lookup", tags=["public-lookup"])
+    approvals = APIRouter(prefix="/admin-approvals", tags=["admin-approvals"])
 
     # Fallback dependency: if the host app forgot to inject `get_optional_user`
     # (older deployments), just resolve to `None` so the public endpoints
@@ -400,11 +401,46 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         return out
 
     @vusers.patch("/{user_id}")
+    @vusers.put("/{user_id}")
     async def update_vendor_user(user_id: str, body: VendorUserUpdate, user=Depends(get_current_user)):
         target = _clean(await db.users.find_one({"user_id": user_id}))
         if not target or not target.get("vendor_id"):
             raise HTTPException(404, "Vendor user not found")
         await _require_vendor_user_editor(user, target["vendor_id"])
+        # Vendor-admin deactivations require super_admin / admin approval.
+        # We short-circuit here so the deactivation is queued rather than
+        # applied immediately.  Everything else is applied normally, and
+        # `is_active=True` (re-enable) is left alone since re-enabling is
+        # not destructive per the current product decision.
+        if (user.role == "vendor_admin" and body.is_active is False
+                and target.get("is_active", True) is not False):
+            existing = await db.pending_approvals.find_one({
+                "type": "user_disable",
+                "target_user_id": user_id,
+                "status": "pending",
+            })
+            if existing:
+                raise HTTPException(409, "A disable request is already pending for this user")
+            approval = {
+                "approval_id": _gen("apv"),
+                "type": "user_disable",
+                "target_user_id": user_id,
+                "target_email": target.get("email"),
+                "target_name": target.get("name"),
+                "vendor_id": target.get("vendor_id"),
+                "requested_by": {
+                    "user_id": user.user_id,
+                    "name": getattr(user, "name", None),
+                    "email": getattr(user, "email", None),
+                    "role": user.role,
+                },
+                "status": "pending",
+                "created_at": _now(),
+            }
+            await db.pending_approvals.insert_one(dict(approval))
+            approval.pop("_id", None)
+            return {"pending_approval": True, "approval": approval,
+                    "message": "Disable request submitted for admin approval"}
         upd: Dict[str, Any] = {}
         if body.name is not None:
             upd["name"] = body.name
@@ -512,6 +548,16 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             "row": existing, "saved_at": _now(), "saved_by": user.user_id,
         })
         upd = {k: v for k, v in body.items() if k not in ("site_id", "_id")}
+        # Normalise `vendor_email` string with ; , or newline separators →
+        # first one becomes vendor_email, all of them become allowed_emails.
+        raw_email = upd.get("vendor_email")
+        if isinstance(raw_email, str) and raw_email.strip():
+            emails = _split_emails(raw_email)
+            if emails:
+                upd["vendor_email"] = emails[0]
+                upd["allowed_emails"] = emails
+        elif isinstance(upd.get("allowed_emails"), str):
+            upd["allowed_emails"] = _split_emails(upd["allowed_emails"])
         upd["updated_at"] = _now()
         upd["updated_by"] = user.user_id
         upd["version"] = int(existing.get("version", 1)) + 1
@@ -1256,7 +1302,74 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             "matched": True,
         }
 
-    return vendors, vusers, sites, master, lookup, public_lookup
+    # ---------- Pending Approvals (admin approval workflow) ----------
+    async def _require_super_or_admin(u) -> None:
+        if u.role not in ("super_admin", "admin"):
+            raise HTTPException(403, "Admin role required")
+
+    @approvals.get("")
+    async def list_approvals(user=Depends(get_current_user),
+                             status: str = "pending", limit: int = 200):
+        # Super/admin see all; vendor_admin sees only their own requests.
+        flt: Dict[str, Any] = {"status": status} if status else {}
+        if user.role in ("super_admin", "admin"):
+            pass
+        elif user.role == "vendor_admin":
+            flt["requested_by.user_id"] = user.user_id
+        else:
+            return []
+        rows = await db.pending_approvals.find(flt, {"_id": 0}) \
+            .sort("created_at", -1).to_list(min(limit, 1000))
+        return rows
+
+    @approvals.post("/{approval_id}/approve")
+    async def approve(approval_id: str, user=Depends(get_current_user)):
+        await _require_super_or_admin(user)
+        row = _clean(await db.pending_approvals.find_one({"approval_id": approval_id}))
+        if not row:
+            raise HTTPException(404, "Approval not found")
+        if row.get("status") != "pending":
+            raise HTTPException(400, f"Approval already {row.get('status')}")
+        # Apply the action
+        if row["type"] == "user_disable":
+            await db.users.update_one(
+                {"user_id": row["target_user_id"]},
+                {"$set": {"is_active": False,
+                          "deactivated_at": _now(),
+                          "deactivated_by": user.user_id}},
+            )
+        await db.pending_approvals.update_one(
+            {"approval_id": approval_id},
+            {"$set": {"status": "approved",
+                      "resolved_at": _now(),
+                      "resolved_by": {"user_id": user.user_id,
+                                      "name": getattr(user, "name", None),
+                                      "role": user.role}}},
+        )
+        return {"ok": True}
+
+    @approvals.post("/{approval_id}/reject")
+    async def reject(approval_id: str, body: Optional[Dict[str, str]] = None,
+                     user=Depends(get_current_user)):
+        await _require_super_or_admin(user)
+        row = _clean(await db.pending_approvals.find_one({"approval_id": approval_id}))
+        if not row:
+            raise HTTPException(404, "Approval not found")
+        if row.get("status") != "pending":
+            raise HTTPException(400, f"Approval already {row.get('status')}")
+        note = (body or {}).get("reason", "")
+        await db.pending_approvals.update_one(
+            {"approval_id": approval_id},
+            {"$set": {"status": "rejected",
+                      "resolved_at": _now(),
+                      "resolved_by": {"user_id": user.user_id,
+                                      "name": getattr(user, "name", None),
+                                      "role": user.role},
+                      "reject_reason": note}},
+        )
+        return {"ok": True}
+
+    return vendors, vusers, sites, master, lookup, public_lookup, approvals
 
 
 # ---------------------------------------------------------------------------
@@ -1269,6 +1382,18 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
     attach `vendor_id` so vendor users automatically see their own sites.
     """
     row = {k: _coerce_value(k, v) for k, v in row.items() if v is not None}
+    # Normalise `vendor_email`: accept multiple emails separated by ; , or newline.
+    # Keep the first one in `vendor_email` (main contact / display value) and put
+    # every one of them into `allowed_emails` so the RLS filter grants access
+    # to all listed users under the same `vendor_id`.
+    raw_email = row.get("vendor_email")
+    if isinstance(raw_email, str) and raw_email.strip():
+        emails = _split_emails(raw_email)
+        if emails:
+            row["vendor_email"] = emails[0]
+            row["allowed_emails"] = emails
+    elif isinstance(row.get("allowed_emails"), str):
+        row["allowed_emails"] = _split_emails(row["allowed_emails"])
     # auto-link vendor when an email is provided
     if row.get("vendor_email") and not row.get("vendor_id"):
         vendor_user = await db.users.find_one(
@@ -1322,6 +1447,23 @@ def _coerce_value(key: str, v: Any) -> Any:
         except (TypeError, ValueError):
             return v
     return v
+
+
+_EMAIL_SPLIT_RE = re.compile(r"[;,\s]+")
+
+
+def _split_emails(raw: str) -> List[str]:
+    """Split a `;`/`,`/whitespace-separated string of emails into a
+    deduplicated, lower-cased list.  Bad tokens are silently dropped."""
+    out: List[str] = []
+    seen: set = set()
+    for token in _EMAIL_SPLIT_RE.split(raw or ""):
+        e = token.strip().lower()
+        if not e or "@" not in e or e in seen:
+            continue
+        seen.add(e)
+        out.append(e)
+    return out
 
 
 async def _audit_master(db, user, action: str, target_id: Optional[str], details: Dict[str, Any]) -> None:

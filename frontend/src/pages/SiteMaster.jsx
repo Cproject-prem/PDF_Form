@@ -52,8 +52,16 @@ export default function SiteMasterPage() {
       api.get("/sites"),
     ]);
     setColumns(c.data);
-    setRows(r.data);
-    setOriginalRows(JSON.parse(JSON.stringify(r.data)));
+    // If a site has multiple `allowed_emails` (multi-vendor sharing),
+    // reconstitute the `; `-joined value in the vendor_email cell so
+    // subsequent edits don't silently drop the other addresses.
+    const rows = (r.data || []).map((row) => {
+      const list = Array.isArray(row.allowed_emails) ? row.allowed_emails : [];
+      if (list.length > 1) row = { ...row, vendor_email: list.join("; ") };
+      return row;
+    });
+    setRows(rows);
+    setOriginalRows(JSON.parse(JSON.stringify(rows)));
   };
   useEffect(() => { load(); }, []);
 
@@ -65,6 +73,9 @@ export default function SiteMasterPage() {
       ...columns.map((c) => ({
         field: c.key,
         headerName: c.label,
+        headerTooltip: c.key === "vendor_email"
+          ? "Multiple vendor contacts allowed — separate emails with a semicolon (;). Every listed user under the same vendor will get access to this site."
+          : undefined,
         editable: true,
         filter: true,
         sortable: true,
@@ -219,6 +230,9 @@ export default function SiteMasterPage() {
             <h1 className="text-3xl sm:text-4xl font-heading font-bold tracking-tight text-slate-900 mt-1">Site Master</h1>
             <p className="text-slate-500 mt-1">
               Edit sites inline like a spreadsheet — every cell change is tracked in version history.
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1">
+              💡 <span className="font-medium text-slate-600">Vendor email</span> accepts multiple addresses separated by <code className="bg-slate-100 px-1 rounded text-slate-700">;</code> — every listed user gets access to the site.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">

@@ -153,10 +153,17 @@ def site_filter(user) -> Dict[str, Any]:
                     {"assigned_vendor_ids": vid},
                     {"site_id": {"$in": assigned_sites}},
                 ]}]
-        # Also allow vendor_email match for backwards compat
+        # Also allow vendor_email match for backwards compat, plus any
+        # additional email listed in the site's `allowed_emails` allow-list
+        # (used for sharing a site with multiple contact addresses under the
+        # same vendor).
         email = getattr(user, "email", None)
         if email:
-            clauses[0] = {"$or": [clauses[0], {"vendor_email": email}]}
+            clauses[0] = {"$or": [
+                clauses[0],
+                {"vendor_email": email},
+                {"allowed_emails": email},
+            ]}
         return clauses[0]
 
     return {"site_id": "__none__"}

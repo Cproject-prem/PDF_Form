@@ -6,7 +6,7 @@ and supports Emergent Google OAuth as a secondary login path. Files are
 stored via the Emergent Object Storage integration.
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -1009,6 +1009,41 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_re
             raise HTTPException(403, "Out of scope")
         if body.role and body.role not in ("vendor", "vendor_user"):
             raise HTTPException(403, "Vendor Admins can only assign vendor roles")
+        # Deactivating a vendor user requires super_admin / admin approval —
+        # short-circuit here so the request is queued rather than applied.
+        if body.is_active is False and target.get("is_active", True) is not False:
+            from datetime import datetime, timezone as _tz
+            import uuid as _uuid
+            existing = await db.pending_approvals.find_one({
+                "type": "user_disable",
+                "target_user_id": user_id,
+                "status": "pending",
+            })
+            if existing:
+                raise HTTPException(409, "A disable request is already pending for this user")
+            approval = {
+                "approval_id": f"apv_{_uuid.uuid4().hex[:12]}",
+                "type": "user_disable",
+                "target_user_id": user_id,
+                "target_email": target.get("email"),
+                "target_name": target.get("name"),
+                "vendor_id": target.get("vendor_id"),
+                "requested_by": {
+                    "user_id": user.user_id,
+                    "name": getattr(user, "name", None),
+                    "email": getattr(user, "email", None),
+                    "role": user.role,
+                },
+                "status": "pending",
+                "created_at": datetime.now(_tz.utc).isoformat(),
+            }
+            await db.pending_approvals.insert_one(dict(approval))
+            approval.pop("_id", None)
+            return JSONResponse(
+                status_code=202,
+                content={"pending_approval": True, "approval": approval,
+                         "message": "Disable request submitted for admin approval"},
+            )
 
     updates = {}
     if body.name is not None:
@@ -1976,7 +2011,7 @@ api.include_router(_pub_apv_router)
 
 # ---------- Vendor Management / Site Master / Master Data ----------
 from vendor_routes import build_routers as _build_vendor_routers
-_vendors_r, _vusers_r, _sites_r, _master_r, _lookup_r, _pub_lookup_r = _build_vendor_routers(
+_vendors_r, _vusers_r, _sites_r, _master_r, _lookup_r, _pub_lookup_r, _approvals_r = _build_vendor_routers(
     db, get_current_user, hash_password, get_optional_user,
 )
 api.include_router(_vendors_r)
@@ -1985,6 +2020,7 @@ api.include_router(_sites_r)
 api.include_router(_master_r)
 api.include_router(_lookup_r)
 api.include_router(_pub_lookup_r)
+api.include_router(_approvals_r)
 
 # ---------- Schedule vs Actual (per-site monthly cycles) ----------
 from schedule_routes import build_router as _build_schedule_router

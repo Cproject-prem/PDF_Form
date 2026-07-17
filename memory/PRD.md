@@ -113,3 +113,25 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - Upsert + submit-schedule with no attachments → HTTP 200, status=`submitted`.
   - Upsert actual + submit-actual with no attachments → HTTP 400 "Attach at least one photo / PDF before submitting the actual".
   - Screenshot of `/schedule` confirms optional vs required styling difference.
+
+
+## iter 8 — PDF checkbox per-option positions + Vendor normalise (Feb 2026)
+- PDF Form checkbox / radio: each option is now an independently draggable box on the PDF page. New `option_positions` field on `PDFField`; renderer, editor, filler and public overlay all respect it. Backend `_draw_radio` helper added; radio removed from text-drawing list.
+- Vendor Management/Users mismatch fixed: `_normalize_vendor()` aliases `name ↔ vendor_name` and `email ↔ vendor_email` in every GET/POST/PUT `/api/vendors*` response so both pages see identical data.
+
+## iter 9 — Admin approvals + multi-vendor site sharing (Feb 2026)
+- **Feature 1 — approval-gated user disable**
+  - When a vendor_admin sends `PATCH /api/users/{id}` or `PUT /api/vendor-users/{id}` with `is_active: false`, the change is NOT applied; instead a row is inserted in the new `pending_approvals` collection and the API returns HTTP 202 `{ pending_approval: true, approval: {...} }`.
+  - New router `admin_approvals` (prefix `/api/admin-approvals`) — separate from the existing workflow `/api/approvals`:
+    - `GET /admin-approvals?status=pending`  — super_admin/admin see all, vendor_admin sees own requests
+    - `POST /admin-approvals/{id}/approve` — applies the deferred action (disables the target user)
+    - `POST /admin-approvals/{id}/reject`  — marks the request rejected with an optional reason
+  - Frontend: Users page gains a segmented **Users / Approvals** toggle (super_admin & admin only) with a badge counter. `ApprovalsCard` lists pending items with Approve/Reject controls; vendor_admin sees a toast "Request submitted for admin approval" when their disable is queued.
+- **Feature 2 — site allow-list of emails**
+  - `permissions.site_filter()` now also matches `allowed_emails: user.email`, so a site accessible to multiple contact addresses under the same vendor.
+  - `_upsert_site()` and `PUT /api/sites/{id}` normalise the `vendor_email` string: any `;`/`,`/whitespace-separated set is split, first email stays in `vendor_email`, all of them go into `allowed_emails`.
+  - Site Master UI: helper hint under the title ("Vendor email accepts multiple addresses separated by `;`"), column tooltip on `vendor_email`, and `load()` reconstitutes the `; `-joined value from `allowed_emails` so subsequent edits don't drop entries.
+- **Verified via curl (Feb 17 2026)**:
+  - vendor_admin PATCH `/users/{id}` with `is_active:false` → HTTP 202 `pending_approval:true`. Target `is_active` remains true. Admin `POST /admin-approvals/{id}/approve` → target `is_active` becomes false.
+  - Site create with `vendor_email: "alice@w.com; bob@w.com , carol@w.com"` → `vendor_email="alice@w.com"`, `allowed_emails=["alice@w.com","bob@w.com","carol@w.com"]`.
+  - Screenshot of Users → Approvals tab shows badge counter and Approve/Reject controls.
