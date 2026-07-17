@@ -569,6 +569,41 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         await _audit_master(db, user, "site.update", site_id, {"changes": list(upd.keys())})
         return {**existing, **upd}
 
+    @sites.post("/relink-vendors")
+    async def relink_vendors(user=Depends(get_current_user)):
+        """Best-effort repair: for every site missing `vendor_id`, try to
+        match by `vendor_name` or `vendor_email` against the vendors
+        collection and link the site to the matching vendor doc."""
+        await _require_site_editor(user)
+        vendors_rows = await db.vendors.find(
+            {}, {"_id": 0, "vendor_id": 1, "name": 1, "vendor_name": 1,
+                 "email": 1, "vendor_email": 1}).to_list(5000)
+        by_name = {}
+        by_email = {}
+        for v in vendors_rows:
+            for n in (v.get("name"), v.get("vendor_name")):
+                if n:
+                    by_name[str(n).strip().lower()] = v["vendor_id"]
+            for e in (v.get("email"), v.get("vendor_email")):
+                if e:
+                    by_email[str(e).strip().lower()] = v["vendor_id"]
+        cursor = db.sites.find({"$or": [{"vendor_id": None}, {"vendor_id": {"$exists": False}}]},
+                               {"_id": 0, "site_id": 1, "vendor_name": 1, "vendor_email": 1})
+        fixed = 0
+        async for s in cursor:
+            vid = None
+            n = (s.get("vendor_name") or "").strip().lower()
+            e = (s.get("vendor_email") or "").strip().lower()
+            if n and n in by_name:
+                vid = by_name[n]
+            elif e and e in by_email:
+                vid = by_email[e]
+            if vid:
+                await db.sites.update_one({"site_id": s["site_id"]},
+                                          {"$set": {"vendor_id": vid}})
+                fixed += 1
+        return {"ok": True, "relinked": fixed}
+
     @sites.delete("/{site_id}")
     async def delete_site(site_id: str, user=Depends(get_current_user)):
         await _require_master_data_editor(user)
@@ -1408,14 +1443,38 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
             row["allowed_emails"] = emails
     elif isinstance(row.get("allowed_emails"), str):
         row["allowed_emails"] = _split_emails(row["allowed_emails"])
-    # auto-link vendor when an email is provided
-    if row.get("vendor_email") and not row.get("vendor_id"):
-        vendor_user = await db.users.find_one(
-            {"email": (row["vendor_email"] or "").lower(), "vendor_id": {"$exists": True}},
-            {"_id": 0, "vendor_id": 1},
-        )
-        if vendor_user and vendor_user.get("vendor_id"):
-            row["vendor_id"] = vendor_user["vendor_id"]
+    # auto-link vendor when an email OR a vendor_name is provided.  We match
+    # against BOTH the users collection (legacy behaviour) and the vendors
+    # collection (new Vendor Management doc), preferring the exact vendor
+    # doc when present.  This ensures sites entered via Site Master with a
+    # freeform `vendor_name` still get a real `vendor_id` on the row.
+    if not row.get("vendor_id"):
+        vendor_doc = None
+        vname = (row.get("vendor_name") or "").strip()
+        vemail = (row.get("vendor_email") or "").strip().lower()
+        if vname:
+            vendor_doc = await db.vendors.find_one(
+                {"$or": [
+                    {"name":        {"$regex": f"^{re.escape(vname)}$", "$options": "i"}},
+                    {"vendor_name": {"$regex": f"^{re.escape(vname)}$", "$options": "i"}},
+                ]},
+                {"_id": 0, "vendor_id": 1},
+            )
+        if vendor_doc is None and vemail:
+            vendor_doc = await db.vendors.find_one(
+                {"$or": [{"email": vemail}, {"vendor_email": vemail}]},
+                {"_id": 0, "vendor_id": 1},
+            )
+        if vendor_doc and vendor_doc.get("vendor_id"):
+            row["vendor_id"] = vendor_doc["vendor_id"]
+        elif vemail:
+            # Final fallback — legacy behaviour: link via a user email.
+            vendor_user = await db.users.find_one(
+                {"email": vemail, "vendor_id": {"$exists": True}},
+                {"_id": 0, "vendor_id": 1},
+            )
+            if vendor_user and vendor_user.get("vendor_id"):
+                row["vendor_id"] = vendor_user["vendor_id"]
     site_id = row.get("site_id")
     if site_id:
         existing = _clean(await db.sites.find_one({"site_id": site_id}))

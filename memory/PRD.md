@@ -170,3 +170,15 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - Authed submit → 200 with submission created; DB doc has `submitted_by_name="Super Admin"`, `submitted_by_email="admin@example.com"`, `submitted_by="user_cc16917170e0"`.
   - Screenshot of `/f/sig-test-4977bd` when not signed in confirms the auth gate card.
 
+
+## iter 12 — Vendor auto-link + Plant Assign Picker fix (Feb 2026)
+- **Root cause found**: sites created via Site Master with a freeform `vendor_name` (e.g. `s`, `d`, `f`) never had their `vendor_id` populated, because `_upsert_site` only auto-linked when a matching **user** email existed. Vendors created via Vendor Management had no user tied to them → `vendor_id` stayed null. Result: `PlantAssignPicker` (Users → Edit → assign plants) showed only SunOps plants.
+- **Backend fixes** — `vendor_routes.py`
+  - `_upsert_site()` now looks up the `vendors` collection first (by `name` case-insensitive, then by `email`), then falls back to a user email match. Any new/edited site with a valid vendor_name or vendor_email gets a real `vendor_id`.
+  - New endpoint `POST /api/sites/relink-vendors` — bulk repair: iterates every site whose `vendor_id` is missing and re-attaches it via vendor_name / vendor_email match. Returns `{relinked: n}`.
+- **Frontend fixes**
+  - `SiteMaster.jsx` gained a **"Relink vendors"** toolbar button that calls the new endpoint and reloads the grid.
+  - `Users.jsx` `PlantAssignPicker` filter broadened: still uses `vendor_id` primarily but now also matches `vendor_name` and `vendor_email` from the selected vendor row — so legacy sites still show up even if their `vendor_id` was never linked.
+- **Verified via curl (Feb 17 2026)**:
+  - Before relink: "Bravo Wind 30MW" had `vendor_id=None`. After `POST /api/sites/relink-vendors` → `{ok:true, relinked:1}`, its `vendor_id` = `ven_68dc0ca5117c` (matching vendor `d`).
+

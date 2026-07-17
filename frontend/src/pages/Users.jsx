@@ -638,17 +638,28 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
     }
   }, [user]);
   // Load the vendor's plant list when the target is a vendor member (so the
-  // Vendor Admin can pick which specific plants they own).
+  // Vendor Admin can pick which specific plants they own).  We match by
+  // canonical `vendor_id` first, and fall back to `vendor_name` / `email`
+  // for legacy sites whose vendor_id was never populated (a bulk-fix is
+  // available on the Site Master page — see the "Relink vendors" button).
   const [vendorPlants, setVendorPlants] = useState([]);
   useEffect(() => {
     if (!form?.vendor_id || form.role !== "vendor") { setVendorPlants([]); return; }
+    const vendorRow = (vendors || []).find((v) => v.vendor_id === form.vendor_id) || {};
+    const vName = String(vendorRow.name || vendorRow.vendor_name || "").trim().toLowerCase();
+    const vEmail = String(vendorRow.email || vendorRow.vendor_email || "").trim().toLowerCase();
     api.get("/sites", { params: { show_all: true } })
       .then((r) => setVendorPlants(
-        (r.data || []).filter((s) => s.vendor_id === form.vendor_id
-          || (s.assigned_vendor_ids || []).includes(form.vendor_id))
+        (r.data || []).filter((s) => {
+          if (s.vendor_id === form.vendor_id) return true;
+          if ((s.assigned_vendor_ids || []).includes(form.vendor_id)) return true;
+          if (vName && String(s.vendor_name || "").trim().toLowerCase() === vName) return true;
+          if (vEmail && String(s.vendor_email || "").trim().toLowerCase() === vEmail) return true;
+          return false;
+        }),
       ))
       .catch(() => setVendorPlants([]));
-  }, [form?.vendor_id, form?.role]);
+  }, [form?.vendor_id, form?.role, vendors]);
   if (!user || !form) return null;
 
   const save = async () => {

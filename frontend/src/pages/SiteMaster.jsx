@@ -16,7 +16,7 @@ import {
 } from "ag-grid-community";
 import {
   MapPin, Download, Upload, Plus, Trash2, Save, FilePlus2, RotateCcw,
-  History, FileSpreadsheet, Columns3,
+  History, FileSpreadsheet, Columns3, Link2,
 } from "lucide-react";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -253,6 +253,20 @@ export default function SiteMasterPage() {
             </Button>
             <Button variant="outline" size="sm" onClick={loadHistory} data-testid="sites-history">
               <History className="w-4 h-4 mr-1" /> Imports
+            </Button>
+            <Button
+              variant="outline" size="sm"
+              onClick={async () => {
+                try {
+                  const r = await api.post("/sites/relink-vendors");
+                  toast.success(`Re-linked ${r.data.relinked || 0} site${r.data.relinked === 1 ? "" : "s"} to their vendors`);
+                  load();
+                } catch (e) { toast.error(e?.response?.data?.detail || "Relink failed"); }
+              }}
+              data-testid="sites-relink"
+              title="Re-attach every site whose vendor_id is empty to the matching vendor by name or email."
+            >
+              <Link2 className="w-4 h-4 mr-1" /> Relink vendors
             </Button>
           </div>
         </div>
