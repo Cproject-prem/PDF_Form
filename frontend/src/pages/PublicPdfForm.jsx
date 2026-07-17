@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { api, API } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 import FieldRenderer from "@/components/builder/FieldRenderer";
 import PdfOverlayFill from "@/components/pdfbuilder/PdfOverlayFill";
 import { Document, Page } from "react-pdf";
 import { authPdfFile } from "@/lib/pdfWorker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { CheckCircle2, Sparkles, Download, FileType2, Eye } from "lucide-react";
+import { CheckCircle2, Sparkles, Download, FileType2, Eye, Lock } from "lucide-react";
 
 /**
  * Public PDF form runner — submitters see a plain standard form view only.
@@ -17,6 +18,9 @@ import { CheckCircle2, Sparkles, Download, FileType2, Eye } from "lucide-react";
  */
 export default function PublicPdfFormPage() {
   const { slug } = useParams();
+  const { user: me, loading: authLoading } = useAuth();
+  const nav = useNavigate();
+  const loc = useLocation();
   const [tpl, setTpl] = useState(null);
   const [error, setError] = useState(null);
   const [values, setValues] = useState({});
@@ -24,11 +28,14 @@ export default function PublicPdfFormPage() {
   const [done, setDone] = useState(null);
   const lookupCache = useRef({});
 
+  // Fetch the template only when the visitor is authenticated so we avoid
+  // a flash of 401 error before the login gate renders.
   useEffect(() => {
+    if (!me) return;
     api.get(`/public/pdf-forms/${slug}`)
       .then((r) => setTpl(r.data))
       .catch((e) => setError(e?.response?.data?.detail || "Form not found"));
-  }, [slug]);
+  }, [slug, me]);
 
   // --- Lookup engine --------------------------------------------------------
   useEffect(() => {
@@ -154,6 +161,39 @@ export default function PublicPdfFormPage() {
       setSubmitting(false);
     }
   };
+
+  // Auth gate — the app requires login for every form submission. When
+  // the visitor is not authenticated we render a login CTA that carries
+  // the current URL as `?next=` so the user is bounced back after login.
+  if (authLoading) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
+  }
+  if (!me) {
+    const next = encodeURIComponent(loc.pathname + loc.search);
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="bg-white rounded-2xl card-soft p-10 max-w-md text-center"
+             data-testid="public-pdf-login-gate">
+          <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center mx-auto mb-4">
+            <Lock className="w-6 h-6 text-blue-600" />
+          </div>
+          <h2 className="text-2xl font-heading font-bold tracking-tight text-slate-900">
+            Please sign in to continue
+          </h2>
+          <p className="text-slate-500 mt-2 text-sm">
+            You must be logged in to submit this PDF form. We'll bring you right back after sign-in.
+          </p>
+          <Button
+            className="mt-6 bg-blue-600 hover:bg-blue-700"
+            onClick={() => nav(`/login?next=${next}`)}
+            data-testid="public-pdf-signin-btn"
+          >
+            Sign in to continue
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (error) {
     return <div className="min-h-screen flex items-center justify-center text-slate-500">{error}</div>;

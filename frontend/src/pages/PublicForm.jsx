@@ -1,15 +1,19 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { api, API } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 import FieldRenderer from "@/components/builder/FieldRenderer";
 import { Document, Page } from "react-pdf";
 import { authPdfFile } from "@/lib/pdfWorker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { CheckCircle2, Sparkles, Download, Eye } from "lucide-react";
+import { CheckCircle2, Sparkles, Download, Eye, Lock } from "lucide-react";
 
 export default function PublicFormPage() {
   const { slug } = useParams();
+  const { user: me, loading: authLoading } = useAuth();
+  const nav = useNavigate();
+  const loc = useLocation();
   const [form, setForm] = useState(null);
   const [error, setError] = useState(null);
   const [values, setValues] = useState({});
@@ -17,10 +21,14 @@ export default function PublicFormPage() {
   const [done, setDone] = useState(null);
   const lookupCache = useRef({}); // memo of `${source}:${display}:${value}` -> row
 
+  // Only fetch the form when the visitor is authenticated; otherwise the
+  // gate below renders a login CTA. This avoids a 401 flash on protected
+  // preview pages.
   useEffect(() => {
+    if (!me) return;
     api.get(`/public/forms/${slug}`).then((r) => setForm(r.data))
       .catch((e) => setError(e?.response?.data?.detail || "Form not found"));
-  }, [slug]);
+  }, [slug, me]);
 
   // Whenever any trigger field's value changes, recompute every dependent
   // per-field lookup and patch the values dict.
@@ -142,6 +150,39 @@ export default function PublicFormPage() {
       toast.error(err?.response?.data?.detail || "Submission failed");
     } finally { setSubmitting(false); }
   };
+
+  // Auth gate — this app requires login for every form submission. When the
+  // visitor is not authenticated we render a login CTA that carries the
+  // current URL as `?next=` so the user is bounced back after signing in.
+  if (authLoading) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
+  }
+  if (!me) {
+    const next = encodeURIComponent(loc.pathname + loc.search);
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="bg-white rounded-2xl card-soft p-10 max-w-md text-center"
+             data-testid="public-form-login-gate">
+          <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center mx-auto mb-4">
+            <Lock className="w-6 h-6 text-blue-600" />
+          </div>
+          <h2 className="text-2xl font-heading font-bold tracking-tight text-slate-900">
+            Please sign in to continue
+          </h2>
+          <p className="text-slate-500 mt-2 text-sm">
+            You must be logged in to submit this form. We'll bring you right back here after sign-in.
+          </p>
+          <Button
+            className="mt-6 bg-blue-600 hover:bg-blue-700"
+            onClick={() => nav(`/login?next=${next}`)}
+            data-testid="public-form-signin-btn"
+          >
+            Sign in to continue
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (error) return <div className="min-h-screen flex items-center justify-center text-slate-500">{error}</div>;
   if (!form) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;

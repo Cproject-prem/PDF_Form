@@ -1296,7 +1296,7 @@ async def public_get_form(slug: str):
 
 @api.post("/public/forms/{slug}/submit")
 async def public_submit(slug: str, body: SubmissionIn, request: Request,
-                        viewer: Optional[User] = Depends(get_optional_user)):
+                        viewer: User = Depends(get_current_user)):
     check_rate_limit(PUBLIC_SUBMIT_LIMITER, f"submit:ip:{_client_ip(request)}", "submit")
     form = await db.forms.find_one({"slug": slug, "is_deleted": False}, {"_id": 0})
     if not form:
@@ -1312,7 +1312,9 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
     sid = f"sub_{uuid.uuid4().hex[:12]}"
     doc = {
         "submission_id": sid, "form_id": form["form_id"], "values": body.values,
-        "submitted_by": viewer.user_id if viewer else None,
+        "submitted_by": viewer.user_id,
+        "submitted_by_name": getattr(viewer, "name", None),
+        "submitted_by_email": getattr(viewer, "email", None),
         "ip": request.client.host if request.client else None,
         "user_agent": request.headers.get("user-agent"),
         "status": "submitted",
@@ -1340,11 +1342,11 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
                    "site_name": site_name,
                    "vendor_name": vendor_name,
                    "current_status": doc["status"],
-                   "values": body.values, "user_id": viewer.user_id if viewer else None,
-                   "user_email": viewer.email if viewer else None, "ip": doc["ip"]})
+                   "values": body.values, "user_id": viewer.user_id,
+                   "user_email": viewer.email, "ip": doc["ip"]})
     except Exception as _e:  # noqa: BLE001
         logger.warning(f"workflow trigger form_submitted failed: {_e}")
-    # Short-lived token so the anonymous submitter can download their filled PDF
+    # Short-lived token so the submitter can download their filled PDF
     download_token = make_download_token(sid, kind="form")
     return {**Submission(**doc).model_dump(), "download_token": download_token}
 

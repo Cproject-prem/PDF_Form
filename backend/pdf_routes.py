@@ -784,7 +784,7 @@ def build_pdf_router(db, get_current_user, get_optional_user,
 
     @public.post("/{slug}/submit")
     async def public_submit(slug: str, body: PDFSubmissionIn, request: Request,
-                            viewer=Depends(get_optional_user)):
+                            viewer=Depends(get_current_user)):
         tpl = await db.pdf_templates.find_one({"slug": slug, "is_deleted": False}, {"_id": 0})
         if not tpl:
             raise HTTPException(404, "Form not found")
@@ -814,9 +814,9 @@ def build_pdf_router(db, get_current_user, get_optional_user,
             "template_id": tpl["template_id"],
             "template_version": int(tpl.get("version", 1)),
             "values": body.values,
-            "submitted_by": viewer.user_id if viewer else None,
-            "submitted_by_email": body.values.get("__email__"),
-            "submitted_by_name": body.values.get("__name__"),
+            "submitted_by": viewer.user_id,
+            "submitted_by_email": getattr(viewer, "email", None),
+            "submitted_by_name": getattr(viewer, "name", None),
             "ip": request.client.host if request.client else None,
             "user_agent": request.headers.get("user-agent"),
             "completed_filename": out_name,
@@ -838,8 +838,8 @@ def build_pdf_router(db, get_current_user, get_optional_user,
                       {"submission_id": sid, "template_id": tpl["template_id"],
                        "form_name": tpl.get("title"), "values": body.values,
                        "submission_kind": "pdf",
-                       "user_id": viewer.user_id if viewer else None,
-                       "user_email": viewer.email if viewer else None,
+                       "user_id": viewer.user_id,
+                       "user_email": viewer.email,
                        "ip": doc.get("ip")})
         except Exception:
             pass

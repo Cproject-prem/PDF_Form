@@ -14,7 +14,11 @@ export default function LoginPage() {
   const { login, branding } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
-  const to = loc.state?.from?.pathname || "/dashboard";
+  // Support two redirect sources: (a) the classic `state.from` set by our
+  // <RequireAuth> guard, and (b) `?next=<url>` used by the public form
+  // pages so the visitor is bounced back to the exact submission URL.
+  const nextParam = new URLSearchParams(loc.search).get("next");
+  const to = nextParam || loc.state?.from?.pathname || "/dashboard";
 
   const submit = async (e) => {
     e.preventDefault();

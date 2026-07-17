@@ -232,6 +232,7 @@ export default function SubmissionsHubPage() {
                           <TableHeader>
                             <TableRow>
                               <TableHead>Date</TableHead>
+                              <TableHead>Submitted by</TableHead>
                               {(g.field_summary || []).slice(0, 4).map((f) => (
                                 <TableHead key={f.id}>{f.label}</TableHead>
                               ))}
@@ -243,6 +244,9 @@ export default function SubmissionsHubPage() {
                             {g.submissions.slice(0, 25).map((s) => (
                               <TableRow key={s.submission_id} data-testid={`hub-row-${s.submission_id}`}>
                                 <TableCell className="text-xs text-slate-600">{formatDate(s.created_at)}</TableCell>
+                                <TableCell className="text-xs">
+                                  <SubmitterCell sub={s} />
+                                </TableCell>
                                 {(g.field_summary || []).slice(0, 4).map((f) => (
                                   <TableCell key={f.id} className="text-sm max-w-[180px] truncate">
                                     {renderVal(s.values?.[f.id])}
@@ -400,4 +404,26 @@ function renderVal(v) {
     return JSON.stringify(v);
   }
   return String(v);
+}
+
+
+/**
+ * SubmitterCell — compact display of who submitted a row.
+ * Falls back to "Anonymous" for legacy rows that predate the auth-gate.
+ */
+function SubmitterCell({ sub }) {
+  const name = sub?.submitted_by_name || sub?.submitter_name;
+  const email = sub?.submitted_by_email || sub?.submitter_email;
+  const uid = sub?.submitted_by || sub?.user_id;
+  if (!name && !email && !uid) {
+    return <span className="text-slate-400 italic">Anonymous</span>;
+  }
+  return (
+    <div className="min-w-0">
+      <div className="text-sm text-slate-800 truncate">{name || email || uid}</div>
+      {name && email && (
+        <div className="text-[10px] text-slate-400 truncate">{email}</div>
+      )}
+    </div>
+  );
 }

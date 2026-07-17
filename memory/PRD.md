@@ -155,3 +155,18 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - Curl e2e: fresh vendor_admin sees 4 vendor sites, fresh vendor_user with no assignments sees 0, after `PUT .../assignments {sites:[X]}` sees exactly 1.
   - Python REPL: 7 `can_approve` test cases all pass (region match, cluster match, mismatched region, super_admin always, vendor_admin never).
 
+
+## iter 11 — Login-gated public forms + submitter capture (Feb 2026)
+- **Backend**
+  - `POST /api/public/forms/{slug}/submit` and `POST /api/public/pdf-forms/{slug}/submit` switched from `Depends(get_optional_user)` → `Depends(get_current_user)`. Anonymous requests return HTTP 401 "Not authenticated".
+  - Each submission doc now stores `submitted_by` (user_id), `submitted_by_name` and `submitted_by_email` — captured at write time from the authenticated viewer.
+  - The Hub endpoint's existing enrichment (`s.setdefault("submitted_by_name", u.get("name"))`) also fills these fields for legacy rows via user lookup.
+- **Frontend**
+  - `PublicForm.jsx` and `PublicPdfForm.jsx` now show a "Please sign in to continue" login gate for unauthenticated visitors. The Sign In button navigates to `/login?next=<current-path>`.
+  - `Login.jsx` reads the `?next=` query parameter and redirects there after successful sign-in (in addition to the classic `state.from` React Router pattern).
+  - `SubmissionsHub.jsx` gained a new "Submitted by" column powered by `SubmitterCell`. Legacy anonymous rows render as "Anonymous" (italic gray).
+- **Verified via curl (Feb 17 2026)**:
+  - Anonymous submit → HTTP 401 on both `/public/forms/{slug}/submit` and `/public/pdf-forms/{slug}/submit`.
+  - Authed submit → 200 with submission created; DB doc has `submitted_by_name="Super Admin"`, `submitted_by_email="admin@example.com"`, `submitted_by="user_cc16917170e0"`.
+  - Screenshot of `/f/sig-test-4977bd` when not signed in confirms the auth gate card.
+
