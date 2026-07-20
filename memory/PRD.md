@@ -182,3 +182,17 @@ Any match on any of the three grants access, so an admin can be regional, cluste
 - **Verified via curl (Feb 17 2026)**:
   - Before relink: "Bravo Wind 30MW" had `vendor_id=None`. After `POST /api/sites/relink-vendors` → `{ok:true, relinked:1}`, its `vendor_id` = `ven_68dc0ca5117c` (matching vendor `d`).
 
+
+## iter 13 — Idempotent admin seed + red-overlay squelch (Feb 2026)
+- **Bug A — "Login shows Invalid password even with Super Admin"**
+  - Root cause: the startup seed only INSERTED the super admin when it didn't exist, never updated a stale `password_hash`. Any hash drift (rotation, manual reset, migration) locked out the .env credentials forever.
+  - Fix (`server.py`): after `find_one`, if `bcrypt.checkpw(SEED_ADMIN_PASSWORD, stored_hash)` returns False, update the hash. Also flips `is_active=True` on a manually-disabled admin, and restores `role="super_admin"` if demoted. Same idempotent pattern applied to the `_ensure()` helper for demo accounts.
+  - **Testing agent (iter6)**: 11/11 tests PASS — including corrupt-hash-then-restart recovery.
+- **Bug B — "Uncaught runtime errors: Request failed with status code 404" red overlay after login**
+  - Root cause: several `api.get(...).then(...)` calls lacked `.catch()` handlers, so 404/500 responses became unhandled promise rejections, which React's dev-server overlay elevated to a full-page red error.
+  - Fixes:
+    - Added `.catch()` at four call sites: `Dashboard.jsx`, `Settings.jsx`, `SmtpSettings.jsx`, `PropertiesPanel.jsx`.
+    - `/app/frontend/src/lib/api.js` — new global `window.addEventListener('unhandledrejection', ...)` handler that calls `event.preventDefault()` **only** when the reason is an AxiosError (checked via `isAxiosError || name === 'AxiosError' || response`). Real programmer errors (TypeError, ReferenceError, thrown strings) still surface — verified by the testing agent.
+    - `Dashboard.jsx` renders a "Dashboard stats unavailable" empty-state card instead of an eternal "Loading…" when the stats fetch fails.
+  - **Testing agent (iter7)**: 100% pass — no red overlay in either the 200 case or the forced-404 case; global handler correctly discriminates AxiosError vs other rejections.
+

@@ -47,8 +47,18 @@ export default function DashboardPage() {
           </Link>
         </div>
 
-        {loading || !stats ? (
-          <div className="text-slate-400">Loading…</div>
+        {loading ? (
+          <div className="text-slate-400" data-testid="dashboard-loading">Loading…</div>
+        ) : !stats ? (
+          <div
+            className="border border-dashed border-slate-200 rounded-2xl px-6 py-10 text-center bg-white/60"
+            data-testid="dashboard-stats-unavailable"
+          >
+            <div className="text-slate-700 font-medium">Dashboard stats unavailable</div>
+            <div className="text-slate-500 text-sm mt-1">
+              The backend didn't return stats right now — please check your connection and try again.
+            </div>
+          </div>
         ) : (
           <>
             <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
