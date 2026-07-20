@@ -341,7 +341,9 @@ async def startup():
     await db.sites.create_index("site_id", unique=True)
     await db.sites.create_index("site_code")
     await db.master_data.create_index([("table", 1), ("row_id", 1)])
-    # seed super admin
+    # seed super admin (idempotent — resets password to SEED_ADMIN_PASSWORD
+    # on every boot so operators can rotate credentials by editing .env, and
+    # re-activates a manually-disabled admin so lockouts are recoverable).
     existing = await db.users.find_one({"email": SEED_ADMIN_EMAIL.lower()}, {"_id": 0})
     if not existing:
         uid = f"user_{uuid.uuid4().hex[:12]}"
@@ -356,20 +358,64 @@ async def startup():
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
         logger.info(f"Seeded super admin: {SEED_ADMIN_EMAIL}")
+    else:
+        updates: Dict[str, Any] = {}
+        # Reset password_hash whenever the .env password no longer matches
+        # (covers rotations, broken hashes, and lost passwords).
+        stored_hash = (existing.get("password_hash") or "").encode()
+        matches = False
+        try:
+            matches = bool(stored_hash) and bcrypt.checkpw(
+                SEED_ADMIN_PASSWORD.encode(), stored_hash)
+        except (ValueError, TypeError):
+            matches = False
+        if not matches:
+            updates["password_hash"] = bcrypt.hashpw(
+                SEED_ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode()
+        # Re-activate disabled admin so lockouts are always recoverable.
+        if not existing.get("is_active", True):
+            updates["is_active"] = True
+        # Guarantee super_admin role — protects against accidental demotion.
+        if existing.get("role") != "super_admin":
+            updates["role"] = "super_admin"
+        if updates:
+            await db.users.update_one(
+                {"email": SEED_ADMIN_EMAIL.lower()}, {"$set": updates})
+            logger.info(
+                f"Refreshed super admin {SEED_ADMIN_EMAIL} fields={list(updates.keys())}"
+            )
 
-    # Seed demo accounts for the four-role permission model (idempotent).
+    # Seed demo accounts for the four-role permission model (idempotent —
+    # resets password_hash and re-activates the account on every boot).
     async def _ensure(email: str, name: str, role: str, password: str, **extra):
-        if await db.users.find_one({"email": email}):
+        existing = await db.users.find_one({"email": email})
+        pwd_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        if existing is None:
+            uid = f"user_{uuid.uuid4().hex[:12]}"
+            await db.users.insert_one({
+                "user_id": uid, "email": email, "name": name, "role": role,
+                "password_hash": pwd_hash,
+                "picture": None, "is_active": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                **extra,
+            })
+            logger.info(f"Seeded {role}: {email}")
             return
-        uid = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one({
-            "user_id": uid, "email": email, "name": name, "role": role,
-            "password_hash": bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode(),
-            "picture": None, "is_active": True,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            **extra,
-        })
-        logger.info(f"Seeded {role}: {email}")
+        # Rehash only if the stored hash no longer matches the current password.
+        stored_hash = (existing.get("password_hash") or "").encode()
+        matches = False
+        try:
+            matches = bool(stored_hash) and bcrypt.checkpw(password.encode(), stored_hash)
+        except (ValueError, TypeError):
+            matches = False
+        updates: Dict[str, Any] = {}
+        if not matches:
+            updates["password_hash"] = pwd_hash
+        if not existing.get("is_active", True):
+            updates["is_active"] = True
+        if updates:
+            await db.users.update_one({"email": email}, {"$set": updates})
+            logger.info(f"Refreshed {role} {email} fields={list(updates.keys())}")
     # Cluster-Manager admin scoped to Rahul Verma (sees Alpha + Bravo only)
     await _ensure("rahul.verma@example.com", "Rahul Verma (Cluster Mgr)",
                   "admin", "Admin@12345", cluster_manager_name="Rahul Verma")
