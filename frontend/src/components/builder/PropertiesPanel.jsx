@@ -664,7 +664,7 @@ function FormulaTab({ field, update, formFields }) {
   const [functions, setFunctions] = useState({});
   const [preview, setPreview] = useState(null);
 
-  useEffect(() => { api.get("/formula/functions").then((r) => setFunctions(r.data.categories || {})); }, []);
+  useEffect(() => { api.get("/formula/functions").then((r) => setFunctions(r.data.categories || {})).catch(() => {}); }, []);
 
   useEffect(() => {
     if (!fm.expression) { setValidation(null); return; }

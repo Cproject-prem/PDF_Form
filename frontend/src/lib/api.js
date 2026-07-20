@@ -65,6 +65,27 @@ api.interceptors.response.use(
   }
 );
 
+// Global safety net — swallow unhandled Axios rejections so a missing
+// endpoint on an older backend doesn't nuke the app with the red React
+// dev overlay.  Real code paths that need to show the error still catch
+// explicitly and call toast.error(getErrorMessage(...)); this only stops
+// background XHR failures (unread-count, menu, stats, etc.) from turning
+// into "Uncaught runtime errors".
+if (typeof window !== "undefined") {
+  window.addEventListener("unhandledrejection", (event) => {
+    const r = event?.reason;
+    // Only swallow axios errors — any other unhandled rejection is likely
+    // a real programming bug that developers should still see.
+    if (r && (r.isAxiosError || r?.name === "AxiosError" || r?.response)) {
+      event.preventDefault();
+      // eslint-disable-next-line no-console
+      console.warn("[api] silently swallowed unhandled axios rejection:",
+        r?.config?.method?.toUpperCase(), r?.config?.url,
+        "status:", r?.response?.status);
+    }
+  });
+}
+
 /**
  * Normalise any axios/FastAPI error into a plain string suitable for
  * `toast.error(...)` or direct React rendering.  Handles Pydantic v2

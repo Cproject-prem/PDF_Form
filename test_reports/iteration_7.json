@@ -1,0 +1,41 @@
+{
+  "summary": "Verified the unhandled-axios-rejection bug fix end-to-end. Login succeeds; Dashboard renders stat cards, sidebar menu and NotificationsBell when all 3 endpoints return 200 (verified via curl on preview backend). When `/api/dashboard/stats`, `/api/auth/menu` and `/api/notifications/unread-count` are all force-mocked to 404 via page.route(), the Dashboard STILL loads without any red 'Uncaught runtime errors' overlay — sidebar shows an empty state ('Loading menu…'), the notification bell renders without a badge, and the main content shows 'Loading…' (see UX nit below). The new global `unhandledrejection` listener in `/app/frontend/src/lib/api.js` correctly swallows axios rejections (defaultPrevented=true, console.warn observed) AND correctly lets a synthetic `TypeError` bubble through as a real page error.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Dashboard (when /api/dashboard/stats fails)",
+        "issues": [
+          "UX nit — Dashboard.jsx line 50 conditions on `loading || !stats`; when stats stays null after the catch, the page shows an eternal 'Loading…' string instead of a proper empty state like 'Dashboard stats unavailable — try again later'. The requirement ('render the layout with empty stats') is technically satisfied because the sidebar, header and Go-to-My-Forms CTA all render around it, but the 'Loading…' copy is misleading. Consider `loading ? 'Loading…' : (!stats ? 'Stats unavailable' : <stat cards/>)`."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "OPTIONAL polish only — Dashboard.jsx line 50-51: differentiate 'loading' vs 'stats fetch failed' states so users know it's not still loading forever when the API returned 404/500."
+  ],
+  "critical_code_review_comments": [
+    "api.js:74-87 global handler is well-scoped — only swallows when `r.isAxiosError || r.name === 'AxiosError' || r.response` is truthy, so real programmer errors (TypeError, ReferenceError, thrown strings) still surface. Verified in-browser: TypeError promise rejection triggered a pageerror event, axios rejection did not.",
+    "AppLayout.jsx:75 already had `.catch(() => setMenu([]))` before this change — sidebar empty state was fine. Redundant but no harm.",
+    "NotificationsBell.jsx:29 and :37 catches were already present. Extra global net just provides belt-and-braces for any *future* silent fetch someone forgets to catch.",
+    "Dashboard.jsx:33 — the `.catch(() => setStats(null))` is correct but the render guard `loading || !stats` conflates two orthogonal states; consider a separate `error` state variable for cleaner UX.",
+    "The WebSocket at /api/notifications/ws still throws a benign 'closed before the connection is established' warning on hot-reload but this is unrelated to the bug fix and does not surface as an uncaught rejection because WebSocket errors are DOM events, not promises."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% — all 3 endpoints return 200 on preview backend (curl-verified)",
+    "frontend": "100% — no red overlay in either the 200 case or the forced-404 case; global handler behaves correctly for both axios and non-axios rejections"
+  },
+  "test_credentials": "Super Admin admin@example.com / Admin@12345 — verified working, login returned a 191-char JWT.",
+  "seed_data_creation": "None. Test used the already-seeded admin account and did not mutate any data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Playwright script above (in tool output) is the canonical regression for this bug — it (1) logs in, (2) checks the 200 case, (3) uses `page.route()` to force all three endpoints to 404 and re-navigates to /dashboard, (4) evaluates in-page that an axios-flavoured Promise.reject is defaultPrevented while a TypeError one is not. Console warning `[api] silently swallowed unhandled axios rejection: GET /fake status: undefined` is proof the global handler is live. If any new page ever adds an `api.get(...)` without `.catch()`, the global net will keep the red overlay away automatically.",
+  "rca of the issue": "React dev-server's error-overlay listens on window 'unhandledrejection'. Any bare `api.get(...).then(...)` (no `.catch`) becomes an unhandled promise rejection when the backend returns 4xx/5xx — on a stale local backend the three sidebar/header/dashboard XHRs 404 and the overlay covers the page. Fix (verified live): (a) added `.catch()` at four call sites (Dashboard, Settings, SmtpSettings, PropertiesPanel), (b) added a global `window.addEventListener('unhandledrejection', ...)` in api.js that calls `event.preventDefault()` when `reason.isAxiosError || reason.name === 'AxiosError' || reason.response` is truthy — this narrow guard preserves real programmer errors (TypeError etc.) so genuine bugs still surface. Verified with page.route 404 mocks: no red overlay, sidebar/CTA still render."
+}

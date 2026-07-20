@@ -17,7 +17,7 @@ export default function SmtpSettingsPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.get("/settings/smtp").then((r) => setCfg(r.data));
+    api.get("/settings/smtp").then((r) => setCfg(r.data)).catch(() => {});
   }, []);
 
   const set = (k, v) => setCfg((c) => ({ ...c, [k]: v }));

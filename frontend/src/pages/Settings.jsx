@@ -18,7 +18,7 @@ export default function SettingsPage() {
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
   useEffect(() => {
-    api.get("/settings").then((r) => setData(r.data)).finally(() => setLoading(false));
+    api.get("/settings").then((r) => setData(r.data)).catch(() => setData(null)).finally(() => setLoading(false));
   }, []);
 
   const save = async () => {
