@@ -196,3 +196,26 @@ Any match on any of the three grants access, so an admin can be regional, cluste
     - `Dashboard.jsx` renders a "Dashboard stats unavailable" empty-state card instead of an eternal "Loading…" when the stats fetch fails.
   - **Testing agent (iter7)**: 100% pass — no red overlay in either the 200 case or the forced-404 case; global handler correctly discriminates AxiosError vs other rejections.
 
+
+## iter 14 — Plant Documents Vault + Customisable Filename Template (Feb 2026)
+- **Feature A — Plant Documents Vault**
+  - New `/app/backend/plant_docs_routes.py` module: template CRUD (`GET/PUT /api/plant-docs/template`), per-plant folder CRUD, file upload/download/delete.
+  - Global admin-editable template: default folders are Contracts / Certifications / Reports / As-Built Drawings / Photos / Warranties.
+  - Disk layout: `/app/backend/uploads/local/plants/{site_id}/{folder}/{filename}` (persistent under `/app`).
+  - RBAC: super_admin + admin can CRUD (honours `access_override`); vendor/vendor_admin get read-only for plants they can already see via `site_filter`.
+  - Auto-provision: `_upsert_site` in `vendor_routes.py` calls `bootstrap_new_plant()` after insert so every new plant lands with the current template on disk (best-effort try/except, never blocks site creation).
+  - Filename sanitisation: `_safe_name` (strict, folder names) vs `_sanitize_filename` (permissive, replaces bad chars with `_`) — real-world filenames with spaces/commas/apostrophes/accents upload cleanly instead of 400-ing. Duplicate uploads land as `name (1).ext`.
+  - Frontend: new `PlantDocumentsCard` on `Plants.jsx` detail view; new `PlantDocsTemplateCard` on `Settings.jsx` for super_admin.
+- **Feature B — Customisable filename template**
+  - New `/app/backend/filename_resolver.py`: `resolve_filename(template, form, submission, submitter, extension='pdf')`. Placeholders: `{form_name}` `{asset_id}` `{submitter_name}` `{datetime}` (+ `{date}` `{time}` `{submission_id}` for internal use). Default when blank: `{asset_id}_{submitter_name}_{datetime}`. Missing placeholders collapse silently.
+  - `FormIn` (server.py) and `PDFTemplateIn`/`PDFTemplatePatch` (pdf_routes.py) now declare `filename_template: Optional[str]`.
+  - Wired into 3 downloads: `GET /api/submissions/{id}/filled.pdf`, `GET /api/pdf-submissions/{id}/completed`, `GET /api/public/pdf-forms/submissions/{id}/completed?token=...`.
+  - Frontend editors:
+    - `FormBuilder.jsx` → SettingsPanel gained a "Download filename template" input with placeholder helper text.
+    - `PdfProperties.jsx` → new `TemplateSettingsAside` shown when no field is selected; lets the editor set the template's `filename_template`.
+- **Verified by testing agent (iteration_8.json, 31/31 PASS)**:
+  - Full RBAC matrix (admin/super_admin/vendor_admin/vendor_user) on plant-docs endpoints.
+  - Real-world filename uploads: `'Report Q4, 2025.pdf'`, `'résumé.docx'`, `"O'Reilly's Notes.txt"` all 200 OK and land with sanitised names.
+  - Site bootstrap: new site auto-provisions folders on disk.
+  - Filename resolver: filled-PDF Content-Disposition contains the resolved name; missing placeholders collapse; default fallback works; PDF template & form persistence via PUT verified.
+

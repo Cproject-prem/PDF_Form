@@ -78,13 +78,19 @@ def _now() -> str:
 
 
 async def _require_doc_editor(user) -> None:
-    if user.role not in ("super_admin", "admin"):
-        raise HTTPException(403, "Only admin / super_admin can manage plant documents")
+    # `access_override` promotes any admin/user to super-admin-level rights
+    # across the app, so honour it here too for consistency.
+    if user.role in ("super_admin", "admin"):
+        return
+    if getattr(user, "access_override", False):
+        return
+    raise HTTPException(403, "Only admin / super_admin can manage plant documents")
 
 
 async def _require_super_admin(user) -> None:
-    if user.role != "super_admin":
-        raise HTTPException(403, "Only super_admin can edit the folder template")
+    if user.role == "super_admin" or getattr(user, "access_override", False):
+        return
+    raise HTTPException(403, "Only super_admin can edit the folder template")
 
 
 def _plant_root(site_id: str) -> Path:
