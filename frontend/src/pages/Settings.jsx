@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import { formatDate } from "@/lib/utils2";
 import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2 } from "lucide-react";
 
 export default function SettingsPage() {
