@@ -147,8 +147,10 @@ function PlantsList() {
         ) : view === "table" ? (
           <PlantsTable rows={filtered} />
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {filtered.map((p) => <PlantCard key={p.site_code || p.site_id} plant={p} />)}
+          <div className="max-h-[calc(100vh-260px)] overflow-y-auto nice-scroll pr-1 -mr-1">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {filtered.map((p) => <PlantCard key={p.site_code || p.site_id} plant={p} />)}
+            </div>
           </div>
         )}
       </div>
@@ -262,7 +264,7 @@ function PlantsTable({ rows }) {
 
   return (
     <Card className="rounded-2xl border-slate-100 card-soft bg-white overflow-hidden">
-      <div className="overflow-x-auto">
+      <div className="max-h-[calc(100vh-260px)] overflow-auto nice-scroll">
         <table className="w-full text-sm" data-testid="plants-table">
           <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 sticky top-0">
             <tr className="text-left">
@@ -477,7 +479,7 @@ function PlantDetail({ siteCode }) {
               No submissions reference this plant yet.
             </div>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-slate-100 max-h-[420px] overflow-y-auto nice-scroll">
               {subs.map((s) => (
                 <li key={s.submission_id} className="p-4 flex items-center justify-between hover:bg-slate-50">
                   <div className="flex items-center gap-3 min-w-0">
@@ -1044,7 +1046,7 @@ function PlantDocumentsCard({ siteId }) {
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3">
         {/* Folders column */}
-        <div className="lg:col-span-1 lg:border-r border-slate-100 p-3 min-h-[220px]">
+        <div className="lg:col-span-1 lg:border-r border-slate-100 p-3 min-h-[220px] max-h-[520px] overflow-y-auto nice-scroll">
           {folders.length === 0 ? (
             <div className="text-xs text-slate-400 text-center py-8">
               No folders yet.
@@ -1127,7 +1129,7 @@ function PlantDocumentsCard({ siteId }) {
           ))}
         </div>
         {/* Files column */}
-        <div className="lg:col-span-2 p-3 min-h-[220px]">
+        <div className="lg:col-span-2 p-3 min-h-[220px] max-h-[520px] overflow-y-auto nice-scroll">
           {!openFolder ? (
             <div className="text-xs text-slate-400 text-center py-8">
               Select a folder to see its files.

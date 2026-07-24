@@ -115,7 +115,7 @@ export default function DashboardPage() {
               {stats.activity.length === 0 ? (
                 <div className="text-sm text-slate-400">No activity yet — publish a form to start collecting submissions.</div>
               ) : (
-                <ul className="divide-y divide-slate-100">
+                <ul className="divide-y divide-slate-100 max-h-[420px] overflow-y-auto nice-scroll pr-1">
                   {stats.activity.map((a) => (
                     <li key={a.submission_id} className="py-3 flex items-center gap-4">
                       <div className="w-9 h-9 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center"><MessagesSquare className="w-4 h-4" /></div>
