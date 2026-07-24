@@ -1046,7 +1046,7 @@ function PlantDocumentsCard({ siteId }) {
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3">
         {/* Folders column */}
-        <div className="lg:col-span-1 lg:border-r border-slate-100 p-3 min-h-[220px] max-h-[520px] overflow-y-auto nice-scroll">
+        <div className="lg:col-span-1 lg:border-r border-slate-100 p-3 min-h-[220px] max-h-[60vh] lg:max-h-[520px] overflow-y-auto nice-scroll">
           {folders.length === 0 ? (
             <div className="text-xs text-slate-400 text-center py-8">
               No folders yet.
@@ -1129,7 +1129,7 @@ function PlantDocumentsCard({ siteId }) {
           ))}
         </div>
         {/* Files column */}
-        <div className="lg:col-span-2 p-3 min-h-[220px] max-h-[520px] overflow-y-auto nice-scroll">
+        <div className="lg:col-span-2 p-3 min-h-[220px] max-h-[60vh] lg:max-h-[520px] overflow-y-auto nice-scroll">
           {!openFolder ? (
             <div className="text-xs text-slate-400 text-center py-8">
               Select a folder to see its files.
