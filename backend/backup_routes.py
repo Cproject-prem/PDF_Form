@@ -80,6 +80,36 @@ def _db_name() -> str:
     return (os.environ.get("DB_NAME", "formforge") or "").strip().strip('"').strip("'")
 
 
+def _tool_path(exe: str, env_var: str) -> str:
+    """Resolve `mongodump` / `mongorestore` — Windows users can override
+    with `MONGODUMP_BIN` / `MONGORESTORE_BIN` in `.env` if the tools aren't
+    on their PATH.  Also auto-discovers common install locations on Windows
+    so a fresh box works with zero extra config."""
+    override = (os.environ.get(env_var) or "").strip().strip('"').strip("'")
+    if override:
+        return override
+    # Try shutil.which first (respects PATH on every OS).
+    found = shutil.which(exe) or shutil.which(exe + ".exe")
+    if found:
+        return found
+    # Windows common install locations (Program Files, unpacked zips).
+    if os.name == "nt":
+        candidates = []
+        for root in (r"C:\Program Files\MongoDB\Tools",
+                     r"C:\Program Files\MongoDB",
+                     r"C:\Program Files (x86)\MongoDB\Tools"):
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _dirs, files in os.walk(root):
+                if exe + ".exe" in files:
+                    candidates.append(os.path.join(dirpath, exe + ".exe"))
+        if candidates:
+            # Prefer the newest install (sorted lexically works for version dirs).
+            return sorted(candidates)[-1]
+    # Give up — subprocess.run will raise FileNotFoundError with a clear message.
+    return exe
+
+
 def _create_snapshot_sync(reason: str = "manual") -> Dict[str, Any]:
     """Blocking snapshot creation — invoked via `asyncio.to_thread()` so it
     doesn't stall the event loop.  Uses `mongodump` (must be on PATH).
@@ -95,14 +125,17 @@ def _create_snapshot_sync(reason: str = "manual") -> Dict[str, Any]:
         mongo_dir.mkdir()
         # 1) mongodump — one archive file for portability.
         try:
-            _cmd = ["mongodump",
+            _cmd = [_tool_path("mongodump", "MONGODUMP_BIN"),
                     "--uri=" + _mongo_uri(),
                     "--db=" + _db_name(),
                     "--archive=" + str(mongo_dir / "dump.archive"),
                     "--gzip"]
             subprocess.run(_cmd, check=True, capture_output=True, timeout=600)
         except FileNotFoundError:
-            raise HTTPException(500, "mongodump not installed on this server")
+            raise HTTPException(500,
+                "mongodump not found. Install the MongoDB Database Tools "
+                "(https://www.mongodb.com/try/download/database-tools), add "
+                "the `bin` folder to PATH, OR set MONGODUMP_BIN=<full path to mongodump[.exe]> in backend/.env.")
         except subprocess.CalledProcessError as e:
             raise HTTPException(500, f"mongodump failed: {e.stderr.decode(errors='ignore')[:400]}")
         except subprocess.TimeoutExpired:
@@ -158,7 +191,7 @@ def _restore_snapshot_sync(name: str) -> Dict[str, Any]:
             raise HTTPException(400, "Snapshot missing Mongo archive")
         try:
             subprocess.run(
-                ["mongorestore",
+                [_tool_path("mongorestore", "MONGORESTORE_BIN"),
                  "--uri=" + _mongo_uri(),
                  "--nsInclude", f"{_db_name()}.*",
                  "--drop",
@@ -167,7 +200,10 @@ def _restore_snapshot_sync(name: str) -> Dict[str, Any]:
                 check=True, capture_output=True, timeout=600,
             )
         except FileNotFoundError:
-            raise HTTPException(500, "mongorestore not installed on this server")
+            raise HTTPException(500,
+                "mongorestore not found. Install the MongoDB Database Tools "
+                "(https://www.mongodb.com/try/download/database-tools), add the "
+                "`bin` folder to PATH, OR set MONGORESTORE_BIN=<full path to mongorestore[.exe]> in backend/.env.")
         except subprocess.CalledProcessError as e:
             raise HTTPException(500, f"mongorestore failed: {e.stderr.decode(errors='ignore')[:400]}")
 
