@@ -152,7 +152,40 @@ box.
 | Symptom | Fix |
 |---|-----|
 | `docker compose up` hangs on frontend build | Increase Docker Desktop memory to ≥ 4 GB; `yarn install` needs it |
-| `mongodump not installed` when running Backup | You’re NOT using the provided `Dockerfile.backend`. Rebuild: `docker compose build backend` |
+| `mongodump not installed` when running Backup | You’re NOT using the provided `Dockerfile.backend`. Rebuild: `docker compose build backend`. **Windows non-docker**: set `MONGODUMP_BIN` and `MONGORESTORE_BIN` in `backend/.env` to the full path of the `.exe` binaries, or add MongoDB Database Tools' `bin/` folder to PATH. |
 | Login shows "Invalid credentials" after restore | The seeded super admin's `password_hash` was replaced by the restored dataset. Rotate: edit `SEED_ADMIN_PASSWORD` in `.env`, `docker compose restart backend`, then log in with the new password (the idempotent seed re-hashes on boot) |
 | CORS errors from browser | Set `CORS_ORIGINS="https://your-domain"` in `.env` |
 | 502 from gateway | Backend probably crashed — `docker compose logs backend --tail 100` |
+| Dashboard shows 0 submissions even though PDF forms have data | Fixed in Feb 2026 (iter 17). Ensure `server.py` is the latest — the dashboard now counts BOTH `forms`/`submissions` AND `pdf_templates`/`pdf_submissions`. |
+| Plant document template not applying to existing plants | Fixed in Feb 2026. `PUT /api/plant-docs/template` now backfills folders on every plant automatically. |
+
+---
+
+## 9. In-app Backup / Restore workflow
+
+Settings → **Backup & Restore** now offers three actions:
+
+| Button | Purpose |
+|---|---|
+| **Backup now** | Snapshot MongoDB + all uploads into `BACKUP_ROOT` as a single `.tar.gz` |
+| **Migration bundle** | Same as above, then immediately download the file to your PC |
+| **Restore from file…** | Upload a `.tar.gz` from your PC (e.g. one produced on another host) and restore it in one shot |
+| existing snapshots | Any snapshot in `BACKUP_ROOT` can be restored / downloaded / deleted in-place |
+
+**What's included in a snapshot:** every collection in the `formforge` MongoDB database (forms, PDF templates, users, submissions, workflows, RBAC scopes, approvals, audit logs, notifications, email queue, settings, master data) + every configured upload root (`uploads/local`, `uploads/pdf`, `uploads/completed`, `uploads/assets`, `uploads/backups` metadata).
+
+Restoring **replaces** the current state — mongorestore uses `--drop`, and each upload root is `rm -rf`d before the bundle's version is written in. Files & folders NOT part of `BACKUP_ROOT` config (e.g. custom logs) are untouched.
+
+Retention: `BACKUP_RETENTION_DAYS` (default 3) — snapshots older than this are pruned during each new backup run.
+
+---
+
+## 10. Plant Documents
+
+Every plant automatically provisions a set of template folders (configurable in Settings → *Plant document folders*). Admin & super_admin can:
+
+- Create, **rename**, **delete**, and **zip-download** folders
+- **Drag & drop** files (multi-file upload)
+- **Open inline** — PDFs, images (png/jpg/webp/etc.), `.docx` (via mammoth.js), and text files render right in the browser without downloading
+- The template list is idempotently back-filled to every plant whenever the Settings template is updated
+

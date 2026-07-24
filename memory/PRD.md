@@ -261,3 +261,32 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - Folders removed from the template are **never** deleted on-disk (data-safety). Custom per-plant folders untouched.
 - **Fix (frontend, `Settings.jsx`)**: Toast now shows "applied to N plants" and description reflects new behaviour.
 - **Verified via curl**: added `Compliance` to template → `propagated_to_plants: 7` → `Compliance` visible on existing plant immediately.
+
+
+## iter 18 — PDF submissions in Dashboard + FastAPI decorator bug (Feb 2026)
+- **Bug 1 (`server.py::dashboard_stats`)**: Dashboard only counted `db.forms` + `db.submissions`, completely ignoring `db.pdf_templates` and `db.pdf_submissions`. On live data this meant totals were understated by ~50% (missing 6 PDF templates + 23 PDF submissions).
+- **Fix**: Rewrote endpoint to union both types across every metric (`total_forms`, `total_subs`, `today`, `pending`, 14-day trend, activity feed, per-form). Also dropped stale `owner_id` filter for admin role (forms are shared library since iter 4d). Verified via curl: **29 forms + 46 submissions** shown correctly.
+- **Bug 2 (`pdf_routes.py`)**: `@pub_subs.get("/{submission_id}/completed")` decorator was accidentally applied to helper function `_resolve_pdf_name(tpl, sub)` instead of `public_download_completed`. FastAPI registered the helper as the endpoint → `body.tpl / body.sub required` errors on the public download URL.
+- **Fix**: Moved decorator to correct function.
+- **Verified via OpenAPI spec**: `GET /api/public/pdf-submissions/{submission_id}/completed` now has `path=submission_id + query=token`, no body.
+
+## iter 19 — Restore-from-file + Windows mongodump auto-discovery (Feb 2026)
+- **New endpoint (`backup_routes.py`)**: `POST /api/backups/upload-restore` accepts a `multipart/form-data` .tar.gz/.tgz upload, saves it into `BACKUP_ROOT` with `uploaded-<ts>-` prefix, then restores it. Refactored `_restore_snapshot_sync` → `_restore_from_path_sync(Path)` so uploads and server-side snapshots share the same restore pipeline.
+- **UI (`Settings.jsx`)**: Added amber-styled "Restore from file…" button + hidden file picker. Handles strong confirmation dialog, streams upload, 15-min axios timeout.
+- **Windows friendliness**: New helper `_tool_path()` resolves `mongodump` / `mongorestore` via (1) `MONGODUMP_BIN` / `MONGORESTORE_BIN` env vars, (2) PATH lookup, (3) walk of `C:\Program Files\MongoDB\Tools`. Error messages now include exact instructions to fix on Windows.
+- **`.env.example`** documented the new env vars.
+
+## iter 20 — Plant Documents UX overhaul (Feb 2026)
+- **Rename folder**: `PATCH /api/plants/{site_id}/folders/{folder}` with duplicate-name detection.
+- **Zip download**: `GET /api/plants/{site_id}/folders/{folder}/download` streams a deflated zip of the folder contents.
+- **Multi-file upload**: batch loop with per-file error handling and unified toast.
+- **Drag & drop**: file panel now accepts native drop events with visual state (blue dashed ring + "Drop to upload" hint).
+- **Inline document viewer** (new `components/plants/DocFileViewer.jsx`): renders PDF (iframe blob), images (img blob), .docx (mammoth.js), and text formats. Auth token flows correctly. Unsupported files fall back to a "Download to open" prompt.
+- **Delete-folder button visibility fix**: parent row lacked `group` class → hover-icons were permanently invisible. Fixed.
+- **Overflow-Y caps**: Dashboard "Recent Activity", Plant detail "Recent Submissions", Plant Documents folder + files columns, and `/plants` grid + table view all now scroll internally instead of stretching the page (`max-h-[60vh] lg:max-h-[520px]` and `calc(100vh - 260px)` for the plants list).
+- **New dep**: `mammoth` (client-side .docx → HTML).
+
+## iter 21 — Documentation + Management deck (Feb 2026)
+- **DOCKER.md** expanded with §9 In-app Backup/Restore workflow, §10 Plant Documents, and troubleshooting rows for Windows mongodump + dashboard-zero-submissions issues.
+- **FormForge_Presentation.pptx** (12 slides): cover, executive summary, modules, business value, feature snapshot, RBAC/security, architecture, disaster recovery, deployment options, tech stack, roadmap, Q&A. Suitable for top management + IT leadership review.
+- **Generator script**: `/app/build_ppt.py` (python-pptx). Run to regenerate the deck any time.
