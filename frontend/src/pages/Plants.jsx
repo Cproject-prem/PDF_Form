@@ -16,7 +16,7 @@ import {
   Search, MapPin, Zap, Building2, User as UserIcon, Mail, Calendar,
   ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
   History, ChevronRight, ChevronDown, LayoutGrid, Rows3,
-  Folder, FolderPlus, Upload, Trash2, Download,
+  Folder, FolderPlus, Upload, Trash2, Download, X, Check, FolderArchive,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -839,6 +839,9 @@ function PlantDocumentsCard({ siteId }) {
   const [newFolder, setNewFolder] = useState("");
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [renameFor, setRenameFor] = useState(null);   // folder name being edited
+  const [renameDraft, setRenameDraft] = useState("");
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const load = () => {
     api.get(`/plants/${siteId}/folders`)
@@ -874,26 +877,96 @@ function PlantDocumentsCard({ siteId }) {
       await api.delete(`/plants/${siteId}/folders/${encodeURIComponent(name)}`);
       if (openFolder === name) { setOpenFolder(null); setFiles([]); }
       load();
+      toast.success(`Folder "${name}" deleted`);
     } catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
   };
 
-  const upload = async (evt) => {
-    const file = evt.target.files?.[0];
-    evt.target.value = "";
-    if (!file || !openFolder) return;
-    setBusy(true);
+  const startRename = (name) => {
+    setRenameFor(name);
+    setRenameDraft(name);
+  };
+  const cancelRename = () => {
+    setRenameFor(null);
+    setRenameDraft("");
+  };
+  const commitRename = async () => {
+    const oldName = renameFor;
+    const newName = renameDraft.trim();
+    if (!oldName || !newName || oldName === newName) { cancelRename(); return; }
     try {
+      await api.patch(
+        `/plants/${siteId}/folders/${encodeURIComponent(oldName)}`,
+        { name: newName },
+      );
+      if (openFolder === oldName) setOpenFolder(newName);
+      cancelRename();
+      load();
+      toast.success(`Renamed to "${newName}"`);
+    } catch (e) { toast.error(getErrorMessage(e, "Rename failed")); }
+  };
+
+  const downloadFolderZip = async (name) => {
+    try {
+      const r = await api.get(
+        `/plants/${siteId}/folders/${encodeURIComponent(name)}/download`,
+        { responseType: "blob" },
+      );
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${name}.zip`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error(getErrorMessage(e, "Download failed")); }
+  };
+
+  /**
+   * Upload one or more files.  Accepts either an <input> change event OR a
+   * plain FileList (from the drag-and-drop drop handler).  Uploads run
+   * serially so the toast counts stay accurate and the server is never hit
+   * with a stampede of parallel writes.
+   */
+  const uploadFiles = async (fileListOrEvent) => {
+    const list = fileListOrEvent?.target
+      ? fileListOrEvent.target.files
+      : fileListOrEvent;
+    if (fileListOrEvent?.target) fileListOrEvent.target.value = "";
+    if (!list || list.length === 0 || !openFolder) return;
+    setBusy(true);
+    let ok = 0, fail = 0;
+    for (const file of Array.from(list)) {
       const fd = new FormData();
       fd.append("file", file);
-      await api.post(
-        `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/upload`,
-        fd, { headers: { "Content-Type": "multipart/form-data" } },
-      );
-      loadFiles(openFolder);
-      load();
-      toast.success(`Uploaded ${file.name}`);
-    } catch (e) { toast.error(getErrorMessage(e, "Upload failed")); }
-    finally { setBusy(false); }
+      try {
+        await api.post(
+          `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/upload`,
+          fd, { headers: { "Content-Type": "multipart/form-data" } },
+        );
+        ok++;
+      } catch (e) {
+        fail++;
+        toast.error(`${file.name}: ${getErrorMessage(e, "Upload failed")}`);
+      }
+    }
+    if (ok) toast.success(`Uploaded ${ok} file${ok === 1 ? "" : "s"}${fail ? ` (${fail} failed)` : ""}`);
+    loadFiles(openFolder);
+    load();
+    setBusy(false);
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (!canEdit || !openFolder) return;
+    if (e.dataTransfer?.files?.length) uploadFiles(e.dataTransfer.files);
+  };
+  const onDragOver = (e) => {
+    if (!canEdit || !openFolder) return;
+    e.preventDefault();
+    if (!isDragOver) setIsDragOver(true);
+  };
+  const onDragLeave = (e) => {
+    // Only clear when leaving the drop container itself (not children).
+    if (e.currentTarget === e.target) setIsDragOver(false);
   };
 
   const removeFile = async (name) => {
@@ -977,24 +1050,76 @@ function PlantDocumentsCard({ siteId }) {
           ) : folders.map((f) => (
             <div
               key={f.name}
-              onClick={() => loadFiles(f.name)}
-              className={`px-3 py-2 rounded-lg cursor-pointer flex items-center gap-2 text-sm ${
+              className={`group px-2.5 py-2 rounded-lg flex items-center gap-2 text-sm ${
                 openFolder === f.name ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50 text-slate-700"
               }`}
               data-testid={`plant-doc-folder-${f.name}`}
             >
-              <Folder className="w-4 h-4 shrink-0 text-slate-400" />
-              <span className="flex-1 truncate">{f.name}</span>
-              <span className="text-[10px] text-slate-400">{f.file_count}</span>
-              {canEdit && (
-                <button
-                  onClick={(e) => { e.stopPropagation(); removeFolder(f.name); }}
-                  className="text-slate-400 hover:text-red-600 opacity-0 group-hover:opacity-100"
-                  title="Delete folder"
-                  data-testid={`plant-doc-folder-del-${f.name}`}
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
+              {renameFor === f.name ? (
+                <>
+                  <Folder className="w-4 h-4 shrink-0 text-slate-400" />
+                  <Input
+                    value={renameDraft}
+                    onChange={(e) => setRenameDraft(e.target.value)}
+                    autoFocus
+                    className="h-7 text-xs flex-1"
+                    data-testid={`plant-doc-folder-rename-input-${f.name}`}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename();
+                      if (e.key === "Escape") cancelRename();
+                    }}
+                  />
+                  <button onClick={commitRename}
+                          className="text-emerald-600 hover:text-emerald-700"
+                          data-testid={`plant-doc-folder-rename-save-${f.name}`}
+                          title="Save">
+                    <Check className="w-4 h-4" />
+                  </button>
+                  <button onClick={cancelRename}
+                          className="text-slate-400 hover:text-slate-600"
+                          title="Cancel">
+                    <X className="w-4 h-4" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={() => loadFiles(f.name)}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
+                  >
+                    <Folder className="w-4 h-4 shrink-0 text-slate-400" />
+                    <span className="flex-1 truncate">{f.name}</span>
+                    <span className="text-[10px] text-slate-400">{f.file_count}</span>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); downloadFolderZip(f.name); }}
+                    className="text-slate-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Download folder as .zip"
+                    data-testid={`plant-doc-folder-dl-${f.name}`}
+                  >
+                    <FolderArchive className="w-3.5 h-3.5" />
+                  </button>
+                  {canEdit && (
+                    <>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); startRename(f.name); }}
+                        className="text-slate-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Rename"
+                        data-testid={`plant-doc-folder-rename-${f.name}`}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); removeFolder(f.name); }}
+                        className="text-slate-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Delete folder"
+                        data-testid={`plant-doc-folder-del-${f.name}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </>
+                  )}
+                </>
               )}
             </div>
           ))}
@@ -1006,22 +1131,52 @@ function PlantDocumentsCard({ siteId }) {
               Select a folder to see its files.
             </div>
           ) : (
-            <>
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm font-semibold text-slate-800">{openFolder}</div>
-                {canEdit && (
-                  <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
-                                    bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
-                         data-testid="plant-doc-upload-btn">
-                    <Upload className="w-3.5 h-3.5" />
-                    {busy ? "Uploading…" : "Upload file"}
-                    <input type="file" className="hidden" onChange={upload} disabled={busy} />
-                  </label>
-                )}
+            <div
+              onDrop={onDrop}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              className={`rounded-lg transition-colors ${
+                isDragOver && canEdit
+                  ? "bg-blue-50/70 ring-2 ring-blue-400 ring-dashed"
+                  : ""
+              }`}
+              data-testid="plant-doc-drop-zone"
+            >
+              <div className="flex items-center justify-between mb-2 px-1">
+                <div className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                  {openFolder}
+                  {isDragOver && canEdit && (
+                    <span className="text-xs text-blue-600 font-medium animate-pulse">
+                      · Drop to upload
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Button size="sm" variant="ghost" className="h-7 text-xs"
+                          onClick={() => downloadFolderZip(openFolder)}
+                          data-testid="plant-doc-folder-dl-current"
+                          title="Download this folder as .zip">
+                    <FolderArchive className="w-3.5 h-3.5 mr-1" /> Zip
+                  </Button>
+                  {canEdit && (
+                    <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
+                                      bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
+                           data-testid="plant-doc-upload-btn">
+                      <Upload className="w-3.5 h-3.5" />
+                      {busy ? "Uploading…" : "Upload files"}
+                      <input type="file" className="hidden" onChange={uploadFiles}
+                             disabled={busy} multiple />
+                    </label>
+                  )}
+                </div>
               </div>
               {files.length === 0 ? (
-                <div className="text-xs text-slate-400 text-center py-6">
-                  This folder is empty.
+                <div className={`text-xs text-center py-8 rounded-lg border border-dashed ${
+                  canEdit ? "border-slate-200 text-slate-500" : "border-slate-100 text-slate-400"
+                }`}>
+                  {canEdit
+                    ? "This folder is empty — drag & drop files here or use \"Upload files\"."
+                    : "This folder is empty."}
                 </div>
               ) : (
                 <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg">
@@ -1052,7 +1207,7 @@ function PlantDocumentsCard({ siteId }) {
                   ))}
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
       </div>

@@ -16,9 +16,11 @@ Access model (matches the wider RBAC):
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 import shutil
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,7 +28,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import (
     APIRouter, Depends, File, HTTPException, UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 
 PLANT_DOCS_ROOT_DEFAULT = "/app/backend/uploads/local/plants"
@@ -234,6 +236,50 @@ def build_router(db, get_current_user):
             raise HTTPException(404, "Folder not found")
         shutil.rmtree(target)
         return {"ok": True}
+
+    @plants.patch("/{site_id}/folders/{folder}")
+    async def rename_folder(site_id: str, folder: str,
+                            body: Dict[str, Any],
+                            user=Depends(get_current_user)):
+        """Rename a folder in place.  Fails if the destination already
+        exists so a rename never silently overwrites another folder."""
+        await _require_doc_editor(user)
+        await _assert_plant_visible(site_id, user)
+        old = _safe_name(folder)
+        new = _safe_name(str(body.get("name") or ""))
+        if old == new:
+            return {"name": new}
+        src = _plant_root(site_id) / old
+        dst = _plant_root(site_id) / new
+        if not src.exists() or not src.is_dir():
+            raise HTTPException(404, "Folder not found")
+        if dst.exists():
+            raise HTTPException(400, "A folder with that name already exists")
+        src.rename(dst)
+        return {"name": new, "previous": old}
+
+    @plants.get("/{site_id}/folders/{folder}/download")
+    async def download_folder_zip(site_id: str, folder: str,
+                                  user=Depends(get_current_user)):
+        """Streams a `.zip` containing every file inside a folder.  Empty
+        folders return a valid empty zip so the client always gets a file."""
+        await _assert_plant_visible(site_id, user)
+        folder = _safe_name(folder)
+        target = _plant_root(site_id) / folder
+        if not target.exists() or not target.is_dir():
+            raise HTTPException(404, "Folder not found")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for entry in target.rglob("*"):
+                if entry.is_file():
+                    zf.write(entry, arcname=entry.relative_to(target).as_posix())
+        buf.seek(0)
+        zip_name = f"{folder}.zip"
+        return StreamingResponse(
+            iter([buf.getvalue()]),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+        )
 
     # ---------- Files ----------
     @plants.get("/{site_id}/folders/{folder}/files")
