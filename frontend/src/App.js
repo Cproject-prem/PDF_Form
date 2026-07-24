@@ -12,6 +12,7 @@ import PublicFormPage from "@/pages/PublicForm";
 import SubmissionsPage from "@/pages/Submissions";
 import SubmissionsHubPage from "@/pages/SubmissionsHub";
 import PlantsPage from "@/pages/Plants";
+import ManpowerPage from "@/pages/Manpower";
 import WelcomeEmailSettingsPage from "@/pages/WelcomeEmailSettings";
 import SettingsPage from "@/pages/Settings";
 import UsersPage from "@/pages/Users";
@@ -81,6 +82,7 @@ function Router() {
       <Route path="/sites" element={<Protected><SiteMasterPage /></Protected>} />
       <Route path="/plants" element={<Protected><PlantsPage /></Protected>} />
       <Route path="/plants/:site_code" element={<Protected><PlantsPage /></Protected>} />
+      <Route path="/manpower" element={<Protected><ManpowerPage /></Protected>} />
       <Route path="/schedule" element={<Protected><SchedulePage /></Protected>} />
       <Route path="/master-data" element={<Protected><MasterDataPage /></Protected>} />
       <Route path="/team" element={<Protected><UsersPage /></Protected>} />

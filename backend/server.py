@@ -2159,6 +2159,10 @@ api.include_router(build_formula_router(db, get_current_user))
 from datasource_routes import build_datasource_router
 api.include_router(build_datasource_router(db, get_current_user))
 
+# ---------- Manpower Portal read-only mirror (external cmes_mp_db) ----------
+from manpower_routes import build_manpower_router
+api.include_router(build_manpower_router(db, get_current_user))
+
 # ---------- In-app Notifications (bell icon + real-time WebSocket) ----------
 async def _resolve_ws_user(token: str) -> Optional[User]:
     """Given a JWT (from ?token=... on the WebSocket handshake) return the

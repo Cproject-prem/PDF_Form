@@ -290,3 +290,22 @@ Any match on any of the three grants access, so an admin can be regional, cluste
 - **DOCKER.md** expanded with §9 In-app Backup/Restore workflow, §10 Plant Documents, and troubleshooting rows for Windows mongodump + dashboard-zero-submissions issues.
 - **FormForge_Presentation.pptx** (12 slides): cover, executive summary, modules, business value, feature snapshot, RBAC/security, architecture, disaster recovery, deployment options, tech stack, roadmap, Q&A. Suitable for top management + IT leadership review.
 - **Generator script**: `/app/build_ppt.py` (python-pptx). Run to regenerate the deck any time.
+
+
+## iter 22 — Manpower Portal integration (READ-ONLY mirror) (Feb 2026)
+- **Purpose**: Surface manpower directory data from an external upstream portal (`cmes_mp_db.manpower`) inside FormForge without duplicating storage.
+- **Backend (`manpower_routes.py`)**:
+  - Opens a sibling handle on the same Mongo client (`client[MANPOWER_DB_NAME]`).
+  - `GET /api/manpower` — list with `search`, `state`, `location`, `company`, `status` filters. Regex search across `manpower_id`, `full_name`, `company_name`, `work_state`, `location`, `city`.
+  - `GET /api/manpower/filters` — distinct dropdown values (state / location / company).
+  - `GET /api/manpower/{manpower_id}` — full detail including expiry dates & documents.
+  - `GET /api/manpower/{manpower_id}/photo` — streams the most recent `photo`-type document. Joins the doc's `file_path` onto `MANPOWER_PHOTO_ROOT`. Path-traversal guarded.
+- **Env vars** (in `.env.example`): `MANPOWER_ENABLED`, `MANPOWER_DB_NAME` (`cmes_mp_db`), `MANPOWER_COLLECTION`, `MANPOWER_PHOTO_ROOT` (Linux `/mnt/manpower_uploads`; Windows `D:/manpower_uploads`).
+- **Frontend (`pages/Manpower.jsx`)** at `/manpower`:
+  - Table row: **Manpower ID + blood group on LEFT, 44px photo on RIGHT** of the cell (as requested).
+  - Search + State/Location/Company dropdowns + refresh + status badges (green/amber/gray).
+  - Click row → detail modal with all fields, expiries, and documents list.
+  - Photo via token-in-query-string (browsers can't send auth headers on `<img src>`); graceful fallback icon.
+- **Menu (`permissions.py`)**: `manpower` repointed to `/manpower`, added to super_admin + admin menus.
+- **App route (`App.js`)**: `/manpower` protected → `ManpowerPage`.
+- **Verified**: curl endpoints + live UI screenshot with 4-record seed data.

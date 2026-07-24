@@ -515,17 +515,17 @@ def menu_for(user) -> List[Dict[str, str]]:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "workflow-analytics", "approvals",
                       "plants", "schedule", "site-master", "vendors",
-                      "master-data", "reports", "audit-logs", "users",
-                      "smtp", "welcome-email", "settings"])
+                      "master-data", "manpower", "reports", "audit-logs",
+                      "users", "smtp", "welcome-email", "settings"])
     if role == ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "approvals",
                       "plants", "schedule", "site-master", "vendors",
-                      "master-data", "users", "welcome-email", "reports"])
+                      "master-data", "manpower", "users", "welcome-email", "reports"])
     if role == VENDOR_ADMIN:
         return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "schedule", "team"])
     if role == VENDOR_USER:
-        return _menu(["forms", "pdf-forms", "submissions", "plants", "schedule"])
+        return _menu(["forms", "pdf-forms", "submissions", "plants", "schedule", "manpower"])
     return _menu(["forms"])
 
 
@@ -544,7 +544,7 @@ _MENU_DEFS = {
     "vendors":            {"label": "Vendor Management",   "path": "/vendors",             "group": "data"},
     "master-data":        {"label": "Master Data",         "path": "/master-data",         "group": "data"},
     "reports":            {"label": "Reports",             "path": "/reports",             "group": "data"},
-    "manpower":           {"label": "Manpower",            "path": "/team",                "group": "team"},
+    "manpower":           {"label": "Manpower",            "path": "/manpower",            "group": "data"},
     "team":               {"label": "Team",                "path": "/team",                "group": "team"},
     "users":              {"label": "Users",               "path": "/users",               "group": "admin"},
     "audit-logs":         {"label": "Audit Logs",          "path": "/audit-logs",          "group": "admin"},
