@@ -146,7 +146,23 @@ def build_router(db, get_current_user):
                       "updated_by": user.user_id}},
             upsert=True,
         )
-        return {"folders": folders}
+        # Propagate to every existing plant: create any *new* template
+        # folders on disk (idempotent — existing folders untouched, files
+        # preserved).  Folders removed from the template are NOT deleted
+        # because they may contain user files.
+        propagated = 0
+        try:
+            async for site in db.sites.find({}, {"_id": 0, "site_id": 1}):
+                sid = site.get("site_id")
+                if not sid:
+                    continue
+                root = _plant_root(sid)
+                for f in folders:
+                    (root / f).mkdir(parents=True, exist_ok=True)
+                propagated += 1
+        except Exception:  # noqa: BLE001
+            pass
+        return {"folders": folders, "propagated_to_plants": propagated}
 
     # ---------- Init template folders for a plant ----------
     async def _init_folders(site_id: str) -> List[str]:
@@ -167,10 +183,18 @@ def build_router(db, get_current_user):
     async def list_folders(site_id: str, user=Depends(get_current_user)):
         await _assert_plant_visible(site_id, user)
         root = _plant_root(site_id)
-        # Auto-provision on first visit if root is empty and template exists.
-        if not root.exists() or not any(root.iterdir()):
-            if user.role in ("super_admin", "admin"):
-                await _init_folders(site_id)
+        # Always ensure the current template folders exist on disk (idempotent
+        # backfill).  This way updating the template in Settings shows up
+        # immediately when a plant's Documents tab is opened, even if the
+        # plant already has other folders.
+        if user.role in ("super_admin", "admin"):
+            try:
+                template = await _load_template()
+                root.mkdir(parents=True, exist_ok=True)
+                for f in template:
+                    (root / f).mkdir(parents=True, exist_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
         out = []
         if root.exists():
             for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):

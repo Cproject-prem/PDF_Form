@@ -202,8 +202,13 @@ function PlantDocsTemplateCard() {
   const save = async () => {
     setSaving(true);
     try {
-      await api.put("/plant-docs/template", { folders });
-      toast.success("Folder template saved");
+      const r = await api.put("/plant-docs/template", { folders });
+      const n = r?.data?.propagated_to_plants;
+      toast.success(
+        typeof n === "number"
+          ? `Folder template saved · applied to ${n} plant${n === 1 ? "" : "s"}`
+          : "Folder template saved"
+      );
     } catch (e) { toast.error(e?.response?.data?.detail || "Save failed"); }
     finally { setSaving(false); }
   };
@@ -216,7 +221,7 @@ function PlantDocsTemplateCard() {
         <Folder className="w-4 h-4 text-blue-500" /> Plant document folders
       </div>
       <p className="text-xs text-slate-500 -mt-2">
-        These sub-folders are auto-created for every new plant. Existing plants can be back-filled by opening their Documents card.
+        These sub-folders are auto-created for every plant. Saving here also back-fills the new folders on all existing plants (files & extra folders you added manually are never touched).
       </p>
       <div className="flex flex-wrap gap-1.5">
         {folders.map((f) => (

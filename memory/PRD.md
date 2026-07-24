@@ -251,3 +251,13 @@ Any match on any of the three grants access, so an admin can be regional, cluste
 - Frontend `BackupRestoreCard` gained a new green outlined **"Migration bundle"** button (`data-testid=backup-migration-bundle`): one click creates a fresh snapshot AND triggers a blob download so operators can move the whole stack without touching a shell.
 - **Testing agent (iteration_10.json, 16/16 backend + 100% frontend PASS)**: loop-variable-leak fix verified, tar contents contain all 4 upload roots, upload marker survives delete→restore round-trip, non-super-admin still 403.
 
+
+
+## iter 17 — Plant document template propagation fix (Feb 2026)
+- **Bug**: Adding a folder in Settings → *Plant document folders* had no effect on existing plants — the auto-provisioner only fired when a plant's folder was completely empty.
+- **Fix (backend, `plant_docs_routes.py`)**:
+  - `PUT /api/plant-docs/template` now iterates all `sites` and `mkdir`s any new template folders on each. Response includes `propagated_to_plants: <count>`.
+  - `GET /api/plants/{site_id}/folders` always backfills current template folders on read (idempotent `mkdir(exist_ok=True)`) for admins.
+  - Folders removed from the template are **never** deleted on-disk (data-safety). Custom per-plant folders untouched.
+- **Fix (frontend, `Settings.jsx`)**: Toast now shows "applied to N plants" and description reflects new behaviour.
+- **Verified via curl**: added `Compliance` to template → `propagated_to_plants: 7` → `Compliance` visible on existing plant immediately.
