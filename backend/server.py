@@ -1826,44 +1826,110 @@ async def download_file(file_id: str):
 # ---------- Dashboard ----------
 @api.get("/dashboard/stats")
 async def dashboard_stats(user: User = Depends(get_current_user)):
+    """Aggregated stats across BOTH standard forms/submissions AND PDF
+    templates/submissions.  Since iter 4d the form library is shared, so
+    admins see all forms — only vendor-scoped roles get filtered."""
+    now = datetime.now(timezone.utc)
+    today_iso = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+    # ---- Forms & PDF templates -------------------------------------------------
     form_q: Dict[str, Any] = {"is_deleted": False}
-    if user.role != "super_admin":
+    pdf_q: Dict[str, Any] = {"is_deleted": False}
+    # vendor_admin / vendor_user only see forms owned by them / assigned to them.
+    if user.role in ("vendor_admin", "vendor_user"):
         form_q["owner_id"] = user.user_id
-    total_forms = await db.forms.count_documents(form_q)
+        pdf_q["owner_id"] = user.user_id
+    total_forms = (await db.forms.count_documents(form_q)
+                   + await db.pdf_templates.count_documents(pdf_q))
+
     form_ids = [d["form_id"] async for d in db.forms.find(form_q, {"form_id": 1})]
-    sub_q: Dict[str, Any] = {"form_id": {"$in": form_ids}} if form_ids else {"form_id": {"$in": []}}
-    total_subs = await db.submissions.count_documents(sub_q)
-    today_iso = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    today_subs = await db.submissions.count_documents({**sub_q, "created_at": {"$gte": today_iso}})
-    pending = await db.submissions.count_documents({**sub_q, "status": "submitted"})
-    users_count = await db.users.count_documents({}) if user.role == "super_admin" else 1
+    pdf_ids  = [d["template_id"] async for d in db.pdf_templates.find(pdf_q, {"template_id": 1})]
+    form_titles = {d["form_id"]: d.get("title", "Form")
+                   async for d in db.forms.find({"form_id": {"$in": form_ids}},
+                                                {"form_id": 1, "title": 1})}
+    pdf_titles  = {d["template_id"]: (d.get("title") or d.get("name") or "PDF form")
+                   async for d in db.pdf_templates.find({"template_id": {"$in": pdf_ids}},
+                                                        {"template_id": 1, "title": 1, "name": 1})}
+
+    # ---- RLS on submissions (super_admin & admin see all, vendors scoped) -----
+    from permissions import async_submission_filter, is_super_admin, has_access_override
+    if is_super_admin(user) or has_access_override(user) or user.role == "admin":
+        rls: Dict[str, Any] = {}
+    else:
+        rls = await async_submission_filter(db, user) or {}
+
+    def _q(base: Dict[str, Any]) -> Dict[str, Any]:
+        return {"$and": [base, rls]} if rls else base
+
+    std_q = _q({"form_id": {"$in": form_ids}}) if form_ids else {"form_id": {"$in": []}}
+    pdf_sub_q = _q({"template_id": {"$in": pdf_ids}}) if pdf_ids else {"template_id": {"$in": []}}
+
+    # ---- Totals ---------------------------------------------------------------
+    total_subs = (await db.submissions.count_documents(std_q)
+                  + await db.pdf_submissions.count_documents(pdf_sub_q))
+    today_subs = (await db.submissions.count_documents({**std_q, "created_at": {"$gte": today_iso}})
+                  + await db.pdf_submissions.count_documents({**pdf_sub_q, "created_at": {"$gte": today_iso}}))
+    pending = (await db.submissions.count_documents({**std_q, "status": "submitted"})
+               + await db.pdf_submissions.count_documents({**pdf_sub_q, "status": "submitted"}))
+
+    users_count = await db.users.count_documents({}) if is_super_admin(user) else 1
+
     # storage
     files_q: Dict[str, Any] = {"is_deleted": False}
-    if user.role != "super_admin":
+    if user.role in ("vendor_admin", "vendor_user"):
         files_q["uploaded_by"] = user.user_id
     storage_bytes = 0
     async for d in db.files.find(files_q, {"size": 1, "_id": 0}):
         storage_bytes += int(d.get("size") or 0)
-    # 14-day series
+
+    # 14-day series ------------------------------------------------------------
     series = []
     for i in range(13, -1, -1):
-        day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=i)
+        day = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=i)
         next_day = day + timedelta(days=1)
-        c = await db.submissions.count_documents({**sub_q, "created_at": {"$gte": day.isoformat(), "$lt": next_day.isoformat()}})
+        c = (await db.submissions.count_documents(
+                {**std_q, "created_at": {"$gte": day.isoformat(), "$lt": next_day.isoformat()}})
+             + await db.pdf_submissions.count_documents(
+                {**pdf_sub_q, "created_at": {"$gte": day.isoformat(), "$lt": next_day.isoformat()}}))
         series.append({"date": day.strftime("%b %d"), "count": c})
-    # recent activity
-    recent_subs = await db.submissions.find(sub_q, {"_id": 0}).sort("created_at", -1).limit(8).to_list(8)
-    form_titles = {d["form_id"]: d["title"] async for d in db.forms.find({"form_id": {"$in": form_ids}}, {"form_id": 1, "title": 1})}
-    activity = [{
-        "type": "submission", "form_title": form_titles.get(s["form_id"], "Form"),
-        "submission_id": s["submission_id"], "created_at": s["created_at"], "status": s["status"]
-    } for s in recent_subs]
-    # form analytics
-    per_form = []
-    for fid in form_ids[:10]:
-        cnt = await db.submissions.count_documents({"form_id": fid})
-        per_form.append({"form_id": fid, "title": form_titles.get(fid, ""), "count": cnt})
+
+    # recent activity (union of both, sorted, top 8) ---------------------------
+    std_recent = await db.submissions.find(std_q, {"_id": 0}).sort("created_at", -1).limit(8).to_list(8)
+    pdf_recent = await db.pdf_submissions.find(pdf_sub_q, {"_id": 0}).sort("created_at", -1).limit(8).to_list(8)
+    activity_all: List[Dict[str, Any]] = []
+    for s in std_recent:
+        activity_all.append({
+            "type": "submission",
+            "kind": "form",
+            "form_title": form_titles.get(s.get("form_id"), "Form"),
+            "submission_id": s.get("submission_id"),
+            "created_at": s.get("created_at"),
+            "status": s.get("status"),
+        })
+    for s in pdf_recent:
+        activity_all.append({
+            "type": "submission",
+            "kind": "pdf",
+            "form_title": pdf_titles.get(s.get("template_id"), "PDF form"),
+            "submission_id": s.get("submission_id"),
+            "created_at": s.get("created_at"),
+            "status": s.get("status"),
+        })
+    activity_all.sort(key=lambda a: a.get("created_at") or "", reverse=True)
+    activity = activity_all[:8]
+
+    # per_form top 6 ----------------------------------------------------------
+    per_form: List[Dict[str, Any]] = []
+    for fid in form_ids[:20]:
+        cnt = await db.submissions.count_documents(_q({"form_id": fid}))
+        if cnt:
+            per_form.append({"form_id": fid, "title": form_titles.get(fid, ""), "count": cnt, "kind": "form"})
+    for tid in pdf_ids[:20]:
+        cnt = await db.pdf_submissions.count_documents(_q({"template_id": tid}))
+        if cnt:
+            per_form.append({"form_id": tid, "title": pdf_titles.get(tid, ""), "count": cnt, "kind": "pdf"})
     per_form.sort(key=lambda x: x["count"], reverse=True)
+
     return {
         "totals": {
             "forms": total_forms, "submissions": total_subs, "today": today_subs,
