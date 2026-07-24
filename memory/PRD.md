@@ -219,3 +219,27 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - Site bootstrap: new site auto-provisions folders on disk.
   - Filename resolver: filled-PDF Content-Disposition contains the resolved name; missing placeholders collapse; default fallback works; PDF template & form persistence via PUT verified.
 
+
+## iter 15 — Env-driven storage + Backup/Restore + Docker (Feb 2026)
+- **Phase 1 — env-driven storage paths**
+  - `pdf_routes.py` reads `LOCAL_PDF_TEMPLATES_ROOT`, `LOCAL_COMPLETED_PDF_ROOT`, `LOCAL_ASSETS_ROOT`. All roots mkdir on module import so a fresh container starts clean.
+  - `.env.example` documents every storage key (uploads / plants / pdf / completed / assets / backups + `BACKUP_RETENTION_DAYS`).
+- **Phase 2 — Backup & Restore** (new module `/app/backend/backup_routes.py`)
+  - Endpoints (super_admin only): `GET/POST /api/backups`, `GET /api/backups/{name}/download`, `POST /api/backups/{name}/restore`, `DELETE /api/backups/{name}`, `GET/PUT /api/backup-config`.
+  - Snapshot = MongoDB gzip archive (`mongodump --archive --gzip`) + full copy of `LOCAL_UPLOAD_ROOT` + `manifest.json`, bundled as a `.tar.gz` under `BACKUP_ROOT`.
+  - Retention: rolling 3-day window (configurable via `retention_days`). Old snapshots auto-pruned on every create call and after each scheduler run.
+  - Scheduler: async loop wakes every 30s; when wall-clock UTC matches `hour_utc:minute_utc` and `enabled=True`, fires a snapshot and dedup-writes `last_run_at`.
+  - Frontend: new `BackupRestoreCard` on `Settings.jsx` — toggle, time picker, "Backup now" button, snapshots list with Download / Restore / Delete controls.
+- **Phase 3 — Docker containerization**
+  - `Dockerfile.backend` (python:3.11-slim + mongodb-database-tools + fonts).
+  - `Dockerfile.frontend` (two-stage: node build → nginx:alpine).
+  - `nginx/default.conf` gateway (proxies `/api/*` → backend, `/*` → frontend, WebSocket upgrade for notifications).
+  - `docker-compose.yml` — 4 services (mongo + backend + frontend + gateway), 6 named volumes for uploads / backups / mongo / assets.
+  - `DOCKER.md` — first-boot commands, volume layout, single-command migration between hosts, port & security notes, troubleshooting matrix.
+- **Verified by testing agent (iteration_9.json, 24/24 PASS)**:
+  - Full RBAC on backups (super_admin allowed, admin 403).
+  - Snapshot round-trip: insert marker → snapshot → delete → restore → marker returns.
+  - Retention pruning correctly kills tarballs older than N days.
+  - Env-driven auto-recreate: `rm -rf uploads/assets && supervisorctl restart backend` → dir reappears on boot.
+  - Regression: PDF, plant docs, dashboard/sites/users all still 200.
+
