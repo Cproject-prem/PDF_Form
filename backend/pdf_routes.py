@@ -858,13 +858,13 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         return payload
 
     # --- Public download of the filled PDF (token-scoped, anonymous-safe) ---
-    @pub_subs.get("/{submission_id}/completed")
     def _resolve_pdf_name(tpl: Dict[str, Any], sub: Dict[str, Any]) -> str:
         """Resolve the download filename for a filled PDF submission using
         the parent template's `filename_template` (or the global default)."""
         from filename_resolver import resolve_filename as _rf
         return _rf(tpl.get("filename_template"), form=tpl, submission=sub)
 
+    @pub_subs.get("/{submission_id}/completed")
     async def public_download_completed(submission_id: str, token: str):
         if not verify_download_token:
             raise HTTPException(500, "Download token verifier not configured")
