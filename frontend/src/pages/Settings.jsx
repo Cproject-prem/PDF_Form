@@ -290,6 +290,28 @@ function BackupRestoreCard() {
     finally { setBusy(false); }
   };
 
+  /**
+   * Create a fresh snapshot AND download it in one click — the resulting
+   * .tar.gz is compatible with `./migrate.sh import` on another machine.
+   */
+  const downloadMigrationBundle = async () => {
+    setBusy(true);
+    try {
+      const created = await api.post("/backups");
+      const name = created?.data?.name;
+      if (!name) throw new Error("Snapshot creation returned no name");
+      const r = await api.get(`/backups/${encodeURIComponent(name)}/download`, { responseType: "blob" });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Migration bundle downloaded");
+      load();
+    } catch (e) { toast.error(e?.response?.data?.detail || "Download failed"); }
+    finally { setBusy(false); }
+  };
+
   const restore = async (name) => {
     if (!window.confirm(`Restore "${name}"?\n\nThis will REPLACE the current MongoDB data and all uploaded files.`)) return;
     setBusy(true);
@@ -364,6 +386,13 @@ function BackupRestoreCard() {
                 data-testid="backup-now"
                 className="bg-blue-600 hover:bg-blue-700">
           <Archive className="w-3.5 h-3.5 mr-1" /> {busy ? "Working…" : "Backup now"}
+        </Button>
+        <Button size="sm" variant="outline" onClick={downloadMigrationBundle}
+                disabled={busy}
+                data-testid="backup-migration-bundle"
+                className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                title="Create a fresh snapshot and download it right away — compatible with ./migrate.sh import on another host.">
+          <DownloadCloud className="w-3.5 h-3.5 mr-1" /> Migration bundle
         </Button>
       </div>
 

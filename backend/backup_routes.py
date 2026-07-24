@@ -42,6 +42,17 @@ BACKUP_ROOT = Path(os.environ.get("BACKUP_ROOT", "/app/backend/uploads/backups")
 UPLOAD_ROOT = Path(os.environ.get("LOCAL_UPLOAD_ROOT", "/app/backend/uploads/local"))
 DEFAULT_RETENTION_DAYS = int(os.environ.get("BACKUP_RETENTION_DAYS", "3"))
 
+# Every upload root that must live inside a migration-complete snapshot.
+# Each pair is (destination-name-inside-tar, source-path).  Missing paths
+# are silently skipped so a partially-set-up environment still snapshots.
+def _upload_roots():
+    return [
+        ("local",     UPLOAD_ROOT),
+        ("pdf",       Path(os.environ.get("LOCAL_PDF_TEMPLATES_ROOT", "/app/backend/uploads/pdf"))),
+        ("completed", Path(os.environ.get("LOCAL_COMPLETED_PDF_ROOT", "/app/backend/uploads/completed"))),
+        ("assets",    Path(os.environ.get("LOCAL_ASSETS_ROOT",         "/app/backend/uploads/assets"))),
+    ]
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -97,15 +108,17 @@ def _create_snapshot_sync(reason: str = "manual") -> Dict[str, Any]:
         except subprocess.TimeoutExpired:
             raise HTTPException(500, "mongodump timed out (>10min)")
 
-        # 2) uploads/ — copy entire LOCAL_UPLOAD_ROOT tree if it exists.
+        # 2) uploads/ — copy every configured upload root as its own
+        # subdirectory so the snapshot is a true migration bundle (Mongo +
+        # `local/`, `pdf/`, `completed/`, `assets/`).
         uploads_dst = tmp_dir / "uploads"
-        if UPLOAD_ROOT.exists():
-            try:
-                shutil.copytree(UPLOAD_ROOT, uploads_dst)
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(500, f"failed to copy uploads: {e}")
-        else:
-            uploads_dst.mkdir()
+        uploads_dst.mkdir()
+        for _sub, _src in _upload_roots():
+            if _src.exists():
+                try:
+                    shutil.copytree(_src, uploads_dst / _sub)
+                except Exception as e:  # noqa: BLE001
+                    raise HTTPException(500, f"failed to copy {_sub}: {e}")
 
         # 3) manifest
         manifest = {
@@ -158,12 +171,20 @@ def _restore_snapshot_sync(name: str) -> Dict[str, Any]:
         except subprocess.CalledProcessError as e:
             raise HTTPException(500, f"mongorestore failed: {e.stderr.decode(errors='ignore')[:400]}")
 
-        # 3) restore uploads — wipe LOCAL_UPLOAD_ROOT then copy over
+        # 3) restore uploads — each configured root gets re-populated from
+        # its matching sub-folder inside the bundle.  Existing content is
+        # replaced.  Missing sub-folders are ignored so partial bundles
+        # still restore whatever they carry.
         uploads_src = tmp_dir / "uploads"
         if uploads_src.exists():
-            if UPLOAD_ROOT.exists():
-                shutil.rmtree(UPLOAD_ROOT)
-            shutil.copytree(uploads_src, UPLOAD_ROOT)
+            for _sub, _dst in _upload_roots():
+                _src = uploads_src / _sub
+                if not _src.exists():
+                    continue
+                if _dst.exists():
+                    shutil.rmtree(_dst)
+                _dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(_src, _dst)
     return {"restored_at": _now().isoformat(), "name": name}
 
 

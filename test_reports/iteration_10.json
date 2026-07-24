@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 10 — verified the loop-variable-leak fix in POST /api/backups and the new Migration bundle button in Settings. All 16 pytest tests in /app/backend/tests/test_backup_iter10.py pass on the live preview backend. Playwright: /settings renders cleanly (no red React overlay), Backup & Restore card visible, new 'Migration bundle' button (data-testid=backup-migration-bundle) present next to 'Backup now', click triggers POST /api/backups followed by GET /api/backups/{name}/download, downloaded file name is `formforge-2026-07-24_054710.tar.gz` (NOT the leaked loop-variable 'assets'), success toast 'Migration bundle downloaded' shown.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_backup_iter10.py",
+    "/app/test_reports/pytest/iter10.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "backup_routes.py:_upload_roots() now consistently yields (subdir_name, source_path); the create loop (line 116) and restore loop (line 180) both use `_sub`/`_src`/`_dst` (underscore-prefixed) so they can no longer shadow the outer `name` variable. Loop-variable-leak fix verified end-to-end: POST /api/backups returns `formforge-YYYY-MM-DD_HHMMSS.tar.gz`, tar `tzf` shows all four uploads/{local,pdf,completed,assets}/ subdirs, and a marker file dropped into completed/ survives a full delete→restore cycle.",
+    "Settings.jsx:downloadMigrationBundle() correctly awaits POST /backups → grabs `created.data.name` → downloads via blob URL + <a download>. Uses encodeURIComponent(name) so future filename shape changes won't break it. Toast + list-refresh both fire on success.",
+    "Settings.jsx has a small structural quirk: BackupRestoreCard is declared OUTSIDE SettingsPage() (after line 255) but PlantDocsTemplateCard is nested INSIDE SettingsPage. Both work at runtime (function decls hoist), but hoisting the nested one out for consistency would be cleaner. Non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_backup_iter10.py (new — 16 tests, 8 classes, focused on iter10 review-request items)"
+  ],
+  "success_rate": {
+    "backend": "100% (16/16)",
+    "frontend": "100% (all UI + integration assertions passed)"
+  },
+  "test_credentials": "admin@example.com / Admin@12345 (super_admin) — HTTP 200 on login, dashboard, users, sites. rahul.verma@example.com / Admin@12345 (cluster admin) — HTTP 403 on every /api/backups/* + /api/backup-config verb as expected.",
+  "seed_data_creation": "Ephemeral: (1) marker doc `{_id:'iter10_marker'}` in db.settings — deleted after the restore round-trip test. (2) marker file /app/backend/uploads/completed/iter10_upload_marker.txt — deleted after the upload-restore test. (3) 3 dummy old .tar.gz files under /app/backend/uploads/backups (formforge-iter10-old-*.tar.gz) with mtime -5 days — all deleted by the retention prune assertion. (4) ~5 legit snapshots created during testing remain under /app/backend/uploads/backups/ within the 3-day retention window.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest -o addopts= /app/backend/tests/test_backup_iter10.py` for iter10 review-request coverage. Iter9 suite (`/app/backend/tests/test_backup_restore.py`) is still green and remains the broader regression net (24 tests including value clamping, env-storage auto-recreate, PDF/plant-docs regressions). Preview URL is rate-limited under pytest-xdist bursts — always disable addopts for serial execution.",
+  "rca of the issue": "N/A — no defects found in iter10. The loop-variable-leak bug (name being clobbered inside `for name, path in _upload_roots()`) is fully fixed by renaming loop vars to `_sub`/`_src`/`_dst` inside both `_create_snapshot_sync` and `_restore_snapshot_sync`. Verified by both direct pytest assertion (`name` matches formforge-*.tar.gz regex) and by the UI download flow (browser suggested_filename is a proper snapshot filename)."
+}
