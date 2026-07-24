@@ -44,14 +44,33 @@ DEFAULT_TEMPLATE_FOLDERS = [
 
 
 def _safe_name(name: str) -> str:
-    """Reject path-traversal and normalise a folder / file name."""
+    """Reject path-traversal and normalise a folder name (strict).
+
+    Used ONLY for folder names — file names are sanitised instead of
+    rejected via `_sanitize_filename` so real-world filenames (spaces,
+    commas, accents, apostrophes …) still upload successfully.
+    """
     name = (name or "").strip()
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         raise HTTPException(400, "Invalid name")
-    # Allow letters, digits, spaces, and common punctuation
     if not re.match(r"^[A-Za-z0-9 _.\-()&+]+$", name):
         raise HTTPException(400, "Name may only contain letters, digits, spaces and _-.()&+")
     return name
+
+
+def _sanitize_filename(name: str) -> str:
+    """Best-effort sanitisation for uploaded filenames — replace unsafe
+    characters with `_` instead of 400-ing. Still blocks path-traversal.
+    """
+    name = os.path.basename((name or "").strip()) or "upload.bin"
+    if name in (".", ".."):
+        name = "upload.bin"
+    # Replace anything outside a permissive whitelist (also strips control chars).
+    cleaned = re.sub(r"[^A-Za-z0-9 _.\-()&+,'!@#\[\]{}=]", "_", name)
+    # Collapse consecutive underscores + strip leading/trailing dots so the
+    # file always has a valid name on all OSes (Windows especially).
+    cleaned = re.sub(r"_+", "_", cleaned).strip("._ ")
+    return cleaned or "upload.bin"
 
 
 def _now() -> str:
@@ -214,7 +233,7 @@ def build_router(db, get_current_user):
         await _require_doc_editor(user)
         await _assert_plant_visible(site_id, user)
         folder = _safe_name(folder)
-        fname = _safe_name(file.filename or "upload.bin")
+        fname = _sanitize_filename(file.filename or "upload.bin")
         target_dir = _plant_root(site_id) / folder
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
@@ -235,7 +254,7 @@ def build_router(db, get_current_user):
                             user=Depends(get_current_user)):
         await _assert_plant_visible(site_id, user)
         folder = _safe_name(folder)
-        filename = _safe_name(filename)
+        filename = _sanitize_filename(filename)
         target = _plant_root(site_id) / folder / filename
         if not target.exists() or not target.is_file():
             raise HTTPException(404, "File not found")
@@ -247,7 +266,7 @@ def build_router(db, get_current_user):
         await _require_doc_editor(user)
         await _assert_plant_visible(site_id, user)
         folder = _safe_name(folder)
-        filename = _safe_name(filename)
+        filename = _sanitize_filename(filename)
         target = _plant_root(site_id) / folder / filename
         if not target.exists():
             raise HTTPException(404, "File not found")
