@@ -243,3 +243,11 @@ Any match on any of the three grants access, so an admin can be regional, cluste
   - Env-driven auto-recreate: `rm -rf uploads/assets && supervisorctl restart backend` → dir reappears on boot.
   - Regression: PDF, plant docs, dashboard/sites/users all still 200.
 
+
+## iter 16 — Migration bundle button + snapshot covers all upload roots (Feb 2026)
+- Snapshots now include ALL upload roots (`local/`, `pdf/`, `completed/`, `assets/`) inside a single `uploads/` folder — previously only `LOCAL_UPLOAD_ROOT` was included.
+- Fixed loop-variable-leak in `_create_snapshot_sync`: the inner `for name, src in _upload_roots()` was clobbering the outer `name` variable, so POST `/api/backups` was returning `name: 'assets'` instead of the actual snapshot filename. Loop vars renamed to `_sub`/`_src`/`_dst`.
+- Restore path (`_restore_snapshot_sync`) iterates the same roots so a restore correctly repopulates each of the four upload dirs.
+- Frontend `BackupRestoreCard` gained a new green outlined **"Migration bundle"** button (`data-testid=backup-migration-bundle`): one click creates a fresh snapshot AND triggers a blob download so operators can move the whole stack without touching a shell.
+- **Testing agent (iteration_10.json, 16/16 backend + 100% frontend PASS)**: loop-variable-leak fix verified, tar contents contain all 4 upload roots, upload marker survives delete→restore round-trip, non-super-admin still 403.
+
