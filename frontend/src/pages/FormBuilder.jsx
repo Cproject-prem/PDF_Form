@@ -231,6 +231,23 @@ function SettingsPanel({ form, onUpdate }) {
               <Label>Description</Label>
               <Textarea rows={3} value={form.description || ""} onChange={(e) => onUpdate({ ...form, description: e.target.value })} />
             </div>
+            <div>
+              <Label>Download filename template</Label>
+              <Input
+                data-testid="filename-template"
+                value={form.filename_template ?? ""}
+                placeholder="{asset_id}_{submitter_name}_{datetime}"
+                onChange={(e) => onUpdate({ ...form, filename_template: e.target.value })}
+              />
+              <p className="text-xs text-slate-500 mt-1.5">
+                Applied when a filled submission is downloaded. Available placeholders:
+                <code className="mx-1 px-1 bg-slate-100 rounded">{"{form_name}"}</code>
+                <code className="mx-1 px-1 bg-slate-100 rounded">{"{asset_id}"}</code>
+                <code className="mx-1 px-1 bg-slate-100 rounded">{"{submitter_name}"}</code>
+                <code className="mx-1 px-1 bg-slate-100 rounded">{"{datetime}"}</code>.
+                Leave blank to use the system default (<code>{"{asset_id}_{submitter_name}_{datetime}"}</code>).
+              </p>
+            </div>
           </div>
         </div>
 

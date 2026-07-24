@@ -127,6 +127,8 @@ class PDFTemplateIn(BaseModel):
     assigned_department_ids: List[str] = Field(default_factory=list)
     assigned_team_ids: List[str] = Field(default_factory=list)
     assigned_cluster_managers: List[str] = Field(default_factory=list)
+    # Optional per-template filename template — see /app/backend/filename_resolver.py.
+    filename_template: Optional[str] = ""
 
 
 class PDFTemplate(PDFTemplateIn):
@@ -147,6 +149,7 @@ class PDFTemplatePatch(BaseModel):
     status: Optional[str] = None
     title: Optional[str] = None
     settings: Optional[Dict[str, Any]] = None
+    filename_template: Optional[str] = None
 
 
 class PDFSubmissionIn(BaseModel):
@@ -852,6 +855,12 @@ def build_pdf_router(db, get_current_user, get_optional_user,
 
     # --- Public download of the filled PDF (token-scoped, anonymous-safe) ---
     @pub_subs.get("/{submission_id}/completed")
+    def _resolve_pdf_name(tpl: Dict[str, Any], sub: Dict[str, Any]) -> str:
+        """Resolve the download filename for a filled PDF submission using
+        the parent template's `filename_template` (or the global default)."""
+        from filename_resolver import resolve_filename as _rf
+        return _rf(tpl.get("filename_template"), form=tpl, submission=sub)
+
     async def public_download_completed(submission_id: str, token: str):
         if not verify_download_token:
             raise HTTPException(500, "Download token verifier not configured")
@@ -869,7 +878,7 @@ def build_pdf_router(db, get_current_user, get_optional_user,
             raise HTTPException(404, "Completed PDF missing")
         return Response(content=path.read_bytes(), media_type="application/pdf",
                         headers={"Content-Disposition":
-                                 f'attachment; filename="{tpl["title"]}-{submission_id}.pdf"'})
+                                 f'attachment; filename="{_resolve_pdf_name(tpl, sub)}"'})
 
     # --- Submissions (owner) ---------------------------------------------
     @router.get("/{template_id}/submissions", response_model=List[PDFSubmission])
@@ -985,7 +994,7 @@ def build_pdf_router(db, get_current_user, get_optional_user,
             raise HTTPException(404, "Completed PDF missing")
         return Response(content=path.read_bytes(), media_type="application/pdf",
                         headers={"Content-Disposition":
-                                 f'attachment; filename="{tpl["title"]}-{submission_id}.pdf"'})
+                                 f'attachment; filename="{_resolve_pdf_name(tpl, sub)}"'})
 
     @subs.get("/{submission_id}/original")
     async def download_original(submission_id: str, user=Depends(get_current_user)):

@@ -357,6 +357,8 @@ export default function PdfBuilderPage() {
           onZ={onZ}
           onLock={onLock}
           onVisible={onVisible}
+          template={tpl}
+          onTemplateChange={(patch) => update({ ...tpl, ...patch })}
         />
       </div>
 

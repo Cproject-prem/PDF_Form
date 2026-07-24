@@ -261,6 +261,11 @@ class FormIn(BaseModel):
     theme: FormTheme = FormTheme()
     settings: FormSettings = FormSettings()
     status: str = "draft"     # draft | published | archived
+    # Optional per-form filename template used when the submitter (or an
+    # admin) downloads a filled submission. Placeholders: {form_name},
+    # {asset_id}, {submitter_name}, {datetime}. Left empty → resolver uses
+    # the global default `{asset_id}_{submitter_name}_{datetime}`.
+    filename_template: Optional[str] = ""
     # ---- Assignment fields (row-level security) ----
     assigned_site_ids: List[str] = []
     assigned_vendor_ids: List[str] = []
@@ -1718,7 +1723,9 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
         except Exception:
             pass
     buf.seek(0)
-    fname = f"{form.get('slug') or form['form_id']}-{sub['submission_id']}.pdf"
+    from filename_resolver import resolve_filename as _rf
+    fname = _rf(form.get("filename_template"),
+                form=form, submission=sub)
     return Response(
         content=buf.getvalue(),
         media_type="application/pdf",

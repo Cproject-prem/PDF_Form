@@ -17,16 +17,22 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
   ArrowUp, ArrowDown, Lock, Unlock, Eye, EyeOff, Copy, Trash2, ImageIcon,
-  ArrowsUpFromLine, LayoutList, LayoutGrid, RotateCcw,
+  ArrowsUpFromLine, LayoutList, LayoutGrid, RotateCcw, Settings2,
 } from "lucide-react";
 import { defaultOptionPositions, resolveOptionBoxes } from "@/lib/pdfFieldTypes";
 
 export default function PdfProperties({
   field, fields, onChange, onDuplicate, onDelete, onZ, onLock, onVisible,
+  template, onTemplateChange,
 }) {
   if (!field) {
-    // Empty state — reuse the standard builder's empty aside for visual parity.
-    return <EmptyPropertiesAside />;
+    // Empty state — show template-level settings (filename template etc.)
+    return (
+      <TemplateSettingsAside
+        template={template}
+        onTemplateChange={onTemplateChange}
+      />
+    );
   }
 
   // Wrap the (id, patch) API expected by PdfBuilder into the (patch) API used
@@ -268,3 +274,54 @@ function OptionLayoutSection({ field, update }) {
     </div>
   );
 }
+
+/**
+ * TemplateSettingsAside — shown in the properties panel when no field is
+ * selected.  Lets the editor configure template-level options like the
+ * downloadable filename template (mirrors the standard form builder).
+ */
+function TemplateSettingsAside({ template, onTemplateChange }) {
+  if (!template || !onTemplateChange) {
+    return <EmptyPropertiesAside />;
+  }
+  return (
+    <aside
+      className="w-96 shrink-0 border-l border-slate-200 bg-white overflow-hidden flex flex-col"
+      data-testid="properties-panel"
+    >
+      <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+        <Settings2 className="w-4 h-4 text-slate-500" />
+        <div className="font-heading font-semibold text-slate-900 text-sm">
+          PDF form settings
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 nice-scroll space-y-5">
+        <div>
+          <Label className="text-xs text-slate-600">Download filename template</Label>
+          <Input
+            data-testid="pdf-filename-template"
+            value={template.filename_template ?? ""}
+            placeholder="{asset_id}_{submitter_name}_{datetime}"
+            className="mt-1"
+            onChange={(e) => onTemplateChange({ filename_template: e.target.value })}
+          />
+          <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+            Used when the submitter downloads the filled PDF. Placeholders:
+          </p>
+          <ul className="text-[11px] text-slate-500 space-y-0.5 mt-1 pl-2">
+            <li><code className="bg-slate-100 px-1 rounded">{"{form_name}"}</code> — this template's title</li>
+            <li><code className="bg-slate-100 px-1 rounded">{"{asset_id}"}</code> — site / plant code from the submission</li>
+            <li><code className="bg-slate-100 px-1 rounded">{"{submitter_name}"}</code> — logged-in user's name</li>
+            <li><code className="bg-slate-100 px-1 rounded">{"{datetime}"}</code> — YYYY-MM-DD_HHMM</li>
+          </ul>
+          <p className="text-[11px] text-slate-400 mt-1.5">
+            Leave blank to fall back to <code className="bg-slate-100 px-1 rounded">{"{asset_id}_{submitter_name}_{datetime}"}</code>. Missing placeholders collapse silently.
+          </p>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+// keep `Settings2` import shape consistent — it's already loaded above.
+
