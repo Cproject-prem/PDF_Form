@@ -16,6 +16,7 @@ import {
   Search, MapPin, Zap, Building2, User as UserIcon, Mail, Calendar,
   ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
   History, ChevronRight, ChevronDown, LayoutGrid, Rows3,
+  Folder, FolderPlus, Upload, Trash2, Download,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -499,6 +500,9 @@ function PlantDetail({ siteCode }) {
           )}
         </Card>
 
+        {/* Documents vault */}
+        <PlantDocumentsCard siteId={p.site_id} />
+
         {/* Edit history timeline */}
         <PlantEditHistory siteCode={siteCode} />
       </div>
@@ -818,4 +822,248 @@ function Row({ label, value, monospace }) {
       </div>
     </div>
   );
+}
+
+
+/* -----------------------------------------------------------------------
+   PlantDocumentsCard — per-plant document vault. Admin & super_admin can
+   create/upload/delete; other roles get read-only.  Wire-format matches
+   /app/backend/plant_docs_routes.py.
+   ----------------------------------------------------------------------- */
+function PlantDocumentsCard({ siteId }) {
+  const { user: me } = useAuth();
+  const canEdit = me?.role === "super_admin" || me?.role === "admin";
+  const [folders, setFolders] = useState([]);
+  const [openFolder, setOpenFolder] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [newFolder, setNewFolder] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    api.get(`/plants/${siteId}/folders`)
+      .then((r) => setFolders(r.data.folders || []))
+      .catch(() => setFolders([]));
+  };
+  useEffect(() => { if (siteId) load(); }, [siteId]);
+
+  const loadFiles = (name) => {
+    setOpenFolder(name);
+    api.get(`/plants/${siteId}/folders/${encodeURIComponent(name)}/files`)
+      .then((r) => setFiles(r.data.files || []))
+      .catch(() => setFiles([]));
+  };
+
+  const addFolder = async () => {
+    const name = newFolder.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      await api.post(`/plants/${siteId}/folders`, { name });
+      setNewFolder("");
+      setCreating(false);
+      load();
+      toast.success(`Folder "${name}" created`);
+    } catch (e) { toast.error(getErrorMessage(e, "Create failed")); }
+    finally { setBusy(false); }
+  };
+
+  const removeFolder = async (name) => {
+    if (!window.confirm(`Delete folder "${name}" and everything inside?`)) return;
+    try {
+      await api.delete(`/plants/${siteId}/folders/${encodeURIComponent(name)}`);
+      if (openFolder === name) { setOpenFolder(null); setFiles([]); }
+      load();
+    } catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
+  };
+
+  const upload = async (evt) => {
+    const file = evt.target.files?.[0];
+    evt.target.value = "";
+    if (!file || !openFolder) return;
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      await api.post(
+        `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/upload`,
+        fd, { headers: { "Content-Type": "multipart/form-data" } },
+      );
+      loadFiles(openFolder);
+      load();
+      toast.success(`Uploaded ${file.name}`);
+    } catch (e) { toast.error(getErrorMessage(e, "Upload failed")); }
+    finally { setBusy(false); }
+  };
+
+  const removeFile = async (name) => {
+    if (!window.confirm(`Delete "${name}"?`)) return;
+    try {
+      await api.delete(
+        `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(name)}`,
+      );
+      loadFiles(openFolder);
+      load();
+    } catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
+  };
+
+  const downloadUrl = (name) => {
+    const token = localStorage.getItem("ff_token") || "";
+    return `${api.defaults.baseURL}/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(name)}?_t=${token}`;
+  };
+
+  const download = async (name) => {
+    // Use axios so the Authorization header is sent; then trigger a save.
+    try {
+      const r = await api.get(
+        `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(name)}`,
+        { responseType: "blob" },
+      );
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) { toast.error(getErrorMessage(e, "Download failed")); }
+    void downloadUrl;
+  };
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white mt-4"
+          data-testid="plant-documents-card">
+      <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <div className="font-heading font-semibold text-slate-900 flex items-center gap-2">
+            <Folder className="w-4 h-4 text-blue-500" />
+            Documents
+          </div>
+          <div className="text-xs text-slate-500 mt-0.5">
+            {canEdit
+              ? "Organise contracts, certifications and photos per plant. Admin-only."
+              : "Read-only view of documents uploaded by your admin."}
+          </div>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-1.5">
+            {!creating ? (
+              <Button size="sm" variant="outline" data-testid="plant-doc-new-folder"
+                      onClick={() => setCreating(true)}>
+                <FolderPlus className="w-3.5 h-3.5 mr-1" /> New folder
+              </Button>
+            ) : (
+              <div className="flex items-center gap-1">
+                <Input value={newFolder} onChange={(e) => setNewFolder(e.target.value)}
+                       placeholder="Folder name" className="h-8 text-xs w-40"
+                       data-testid="plant-doc-folder-input"
+                       onKeyDown={(e) => e.key === "Enter" && addFolder()} />
+                <Button size="sm" onClick={addFolder} disabled={busy}
+                        data-testid="plant-doc-folder-save"
+                        className="bg-blue-600 hover:bg-blue-700">Add</Button>
+                <Button size="sm" variant="ghost" onClick={() => { setCreating(false); setNewFolder(""); }}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3">
+        {/* Folders column */}
+        <div className="lg:col-span-1 lg:border-r border-slate-100 p-3 min-h-[220px]">
+          {folders.length === 0 ? (
+            <div className="text-xs text-slate-400 text-center py-8">
+              No folders yet.
+            </div>
+          ) : folders.map((f) => (
+            <div
+              key={f.name}
+              onClick={() => loadFiles(f.name)}
+              className={`px-3 py-2 rounded-lg cursor-pointer flex items-center gap-2 text-sm ${
+                openFolder === f.name ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50 text-slate-700"
+              }`}
+              data-testid={`plant-doc-folder-${f.name}`}
+            >
+              <Folder className="w-4 h-4 shrink-0 text-slate-400" />
+              <span className="flex-1 truncate">{f.name}</span>
+              <span className="text-[10px] text-slate-400">{f.file_count}</span>
+              {canEdit && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); removeFolder(f.name); }}
+                  className="text-slate-400 hover:text-red-600 opacity-0 group-hover:opacity-100"
+                  title="Delete folder"
+                  data-testid={`plant-doc-folder-del-${f.name}`}
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+        {/* Files column */}
+        <div className="lg:col-span-2 p-3 min-h-[220px]">
+          {!openFolder ? (
+            <div className="text-xs text-slate-400 text-center py-8">
+              Select a folder to see its files.
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold text-slate-800">{openFolder}</div>
+                {canEdit && (
+                  <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
+                                    bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
+                         data-testid="plant-doc-upload-btn">
+                    <Upload className="w-3.5 h-3.5" />
+                    {busy ? "Uploading…" : "Upload file"}
+                    <input type="file" className="hidden" onChange={upload} disabled={busy} />
+                  </label>
+                )}
+              </div>
+              {files.length === 0 ? (
+                <div className="text-xs text-slate-400 text-center py-6">
+                  This folder is empty.
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg">
+                  {files.map((f) => (
+                    <div key={f.name} className="flex items-center gap-2 p-2 hover:bg-slate-50">
+                      <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm truncate">{f.name}</div>
+                        <div className="text-[10px] text-slate-400">
+                          {formatBytes(f.size_bytes)} · {formatDate(f.modified_at)}
+                        </div>
+                      </div>
+                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
+                              onClick={() => download(f.name)}
+                              data-testid={`plant-doc-file-dl-${f.name}`}
+                              title="Download">
+                        <Download className="w-3.5 h-3.5 text-slate-600" />
+                      </Button>
+                      {canEdit && (
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
+                                onClick={() => removeFile(f.name)}
+                                data-testid={`plant-doc-file-del-${f.name}`}
+                                title="Delete">
+                          <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function formatBytes(n) {
+  if (!n) return "0 B";
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
 }

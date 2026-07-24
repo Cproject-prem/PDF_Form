@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { Upload } from "lucide-react";
+import { Upload, Folder, Plus } from "lucide-react";
 
 export default function SettingsPage() {
   const { reloadBranding } = useAuth();
@@ -160,6 +160,8 @@ export default function SettingsPage() {
           <p className="text-xs text-slate-400">Configure outbound notifications (Gmail, Office 365 or custom SMTP). The credentials are stored securely on this server.</p>
         </Card>
 
+        <PlantDocsTemplateCard />
+
         <div className="mt-6 flex justify-end">
           <Button data-testid="save-settings" onClick={save} disabled={saving} className="bg-blue-600 hover:bg-blue-700">
             {saving ? "Saving…" : "Save settings"}
@@ -168,4 +170,84 @@ export default function SettingsPage() {
       </div>
     </AppLayout>
   );
+
+/**
+ * PlantDocsTemplateCard — super_admin edits the default folder list that
+ * gets auto-created for every new plant.  Reads/writes /api/plant-docs/template.
+ */
+function PlantDocsTemplateCard() {
+  const [folders, setFolders] = useState([]);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    api.get("/plant-docs/template")
+      .then((r) => setFolders(r.data.folders || []))
+      .catch(() => setFolders([]))
+      .finally(() => setLoaded(true));
+  }, []);
+
+  const add = () => {
+    const n = draft.trim();
+    if (!n) return;
+    if (folders.includes(n)) { setDraft(""); return; }
+    setFolders([...folders, n]);
+    setDraft("");
+  };
+  const remove = (n) => setFolders(folders.filter((x) => x !== n));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put("/plant-docs/template", { folders });
+      toast.success("Folder template saved");
+    } catch (e) { toast.error(e?.response?.data?.detail || "Save failed"); }
+    finally { setSaving(false); }
+  };
+
+  if (!loaded) return null;
+  return (
+    <Card className="p-5 rounded-2xl border-slate-100 card-soft mt-4 space-y-3 bg-white"
+          data-testid="plant-docs-template-card">
+      <div className="font-heading font-semibold flex items-center gap-2">
+        <Folder className="w-4 h-4 text-blue-500" /> Plant document folders
+      </div>
+      <p className="text-xs text-slate-500 -mt-2">
+        These sub-folders are auto-created for every new plant. Existing plants can be back-filled by opening their Documents card.
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {folders.map((f) => (
+          <span key={f}
+                className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full bg-blue-50 text-blue-700 text-xs">
+            {f}
+            <button onClick={() => remove(f)}
+                    className="w-4 h-4 rounded-full hover:bg-blue-200 flex items-center justify-center"
+                    data-testid={`tpl-folder-del-${f}`}>×</button>
+          </span>
+        ))}
+        {folders.length === 0 && (
+          <span className="text-xs text-slate-400">No default folders configured.</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <Input value={draft} onChange={(e) => setDraft(e.target.value)}
+               placeholder="Add folder name…"
+               className="h-8 text-sm max-w-xs"
+               data-testid="tpl-folder-input"
+               onKeyDown={(e) => e.key === "Enter" && add()} />
+        <Button size="sm" variant="outline" onClick={add}
+                data-testid="tpl-folder-add">
+          <Plus className="w-3.5 h-3.5 mr-1" /> Add
+        </Button>
+        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 ml-auto"
+                onClick={save} disabled={saving}
+                data-testid="tpl-folder-save">
+          {saving ? "Saving…" : "Save template"}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 }

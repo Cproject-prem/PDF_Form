@@ -1506,6 +1506,13 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
     }
     await db.sites.insert_one(dict(new))
     await _audit_master(db, user, "site.create", new["site_id"], {"name": new.get("site_name")})
+    # Auto-provision the plant's document vault folders on disk so admins
+    # find a pre-organised structure the first time they open the tab.
+    try:
+        from plant_docs_routes import bootstrap_new_plant
+        await bootstrap_new_plant(db, new["site_id"])
+    except Exception:
+        pass
     return new
 
 

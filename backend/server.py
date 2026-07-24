@@ -2103,6 +2103,12 @@ async def _resolve_ws_user(token: str) -> Optional[User]:
 from notifications import build_notifications_router
 api.include_router(build_notifications_router(db, get_current_user, _resolve_ws_user))
 
+# ---------- Plant Document Vault ----------
+from plant_docs_routes import build_router as _build_plant_docs
+_pd_router, _pd_plants = _build_plant_docs(db, get_current_user)
+api.include_router(_pd_router)
+api.include_router(_pd_plants)
+
 # Mount router
 app.include_router(api)
 
