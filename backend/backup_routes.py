@@ -34,7 +34,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 
 
@@ -174,17 +174,20 @@ def _create_snapshot_sync(reason: str = "manual") -> Dict[str, Any]:
             "reason": reason}
 
 
-def _restore_snapshot_sync(name: str) -> Dict[str, Any]:
-    _ensure_backup_root()
-    src = BACKUP_ROOT / name
-    if not src.exists():
-        raise HTTPException(404, "Backup not found")
+def _restore_from_path_sync(src: Path) -> Dict[str, Any]:
+    """Extract & restore any `.tar.gz` snapshot from an arbitrary disk path.
+    Used by both server-side snapshot restore and file-upload restore."""
+    if not src.exists() or not src.is_file():
+        raise HTTPException(404, "Backup file not found")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         # 1) extract
-        with tarfile.open(src, "r:gz") as tar:
-            tar.extractall(tmp_dir)  # trusted source (super_admin only)
+        try:
+            with tarfile.open(src, "r:gz") as tar:
+                tar.extractall(tmp_dir)  # trusted source (super_admin only)
+        except tarfile.ReadError as e:
+            raise HTTPException(400, f"Not a valid .tar.gz backup: {e}")
         # 2) restore Mongo (drop-existing)
         archive = tmp_dir / "mongo" / "dump.archive"
         if not archive.exists():
@@ -221,7 +224,17 @@ def _restore_snapshot_sync(name: str) -> Dict[str, Any]:
                     shutil.rmtree(_dst)
                 _dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(_src, _dst)
-    return {"restored_at": _now().isoformat(), "name": name}
+    return {"restored_at": _now().isoformat(), "source": src.name}
+
+
+def _restore_snapshot_sync(name: str) -> Dict[str, Any]:
+    _ensure_backup_root()
+    src = BACKUP_ROOT / name
+    if not src.exists():
+        raise HTTPException(404, "Backup not found")
+    info = _restore_from_path_sync(src)
+    info["name"] = name
+    return info
 
 
 def _dir_size(p: Path) -> int:
@@ -352,6 +365,45 @@ def build_router(db, get_current_user):
         if "/" in name or ".." in name or not name.endswith(".tar.gz"):
             raise HTTPException(400, "Invalid backup name")
         info = await asyncio.to_thread(_restore_snapshot_sync, name)
+        return info
+
+    @router.post("/upload-restore")
+    async def upload_restore(file: UploadFile = File(...),
+                             user=Depends(get_current_user)):
+        """Restore from a `.tar.gz` bundle the user uploads from their own
+        disk (e.g. one produced by `./migrate.sh export` or the Migration
+        Bundle button).  The file is saved into BACKUP_ROOT alongside the
+        server-generated snapshots so it appears in the list afterwards."""
+        await _require_super(user)
+        _ensure_backup_root()
+        fname = os.path.basename(file.filename or "").strip()
+        if not fname or not (fname.endswith(".tar.gz") or fname.endswith(".tgz")):
+            raise HTTPException(400, "File must be a .tar.gz / .tgz bundle")
+        # Prefix with `uploaded-` + timestamp so filename can never collide
+        # with an auto-snapshot and the origin is obvious in the UI list.
+        ts = _now().strftime("%Y-%m-%d_%H%M%S")
+        safe_stem = fname.replace("/", "_").replace("\\", "_")
+        if not safe_stem.endswith(".tar.gz"):
+            safe_stem = safe_stem.rsplit(".tgz", 1)[0] + ".tar.gz"
+        dest = BACKUP_ROOT / f"uploaded-{ts}-{safe_stem}"
+        try:
+            with open(dest, "wb") as fh:
+                while True:
+                    chunk = await file.read(1024 * 1024)  # 1 MB
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+        except Exception as e:  # noqa: BLE001
+            dest.unlink(missing_ok=True)
+            raise HTTPException(500, f"Failed to save uploaded file: {e}")
+
+        try:
+            info = await asyncio.to_thread(_restore_from_path_sync, dest)
+        except HTTPException:
+            # Bad archive — remove the failed upload so the list stays clean.
+            dest.unlink(missing_ok=True)
+            raise
+        info["name"] = dest.name
         return info
 
     @router.delete("/{name}")

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { formatDate } from "@/lib/utils2";
-import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2 } from "lucide-react";
+import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2, UploadCloud } from "lucide-react";
 
 export default function SettingsPage() {
   const { reloadBranding } = useAuth();
@@ -268,6 +268,7 @@ function BackupRestoreCard() {
   const [cfg, setCfg] = useState(null);
   const [snaps, setSnaps] = useState([]);
   const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef(null);
 
   const load = () => {
     api.get("/backup-config").then((r) => setCfg(r.data)).catch(() => setCfg(null));
@@ -325,6 +326,45 @@ function BackupRestoreCard() {
       toast.success("Restored — reload the page");
     } catch (e) { toast.error(e?.response?.data?.detail || "Restore failed"); }
     finally { setBusy(false); }
+  };
+
+  /**
+   * Upload-restore: user picks a `.tar.gz` from their own disk (typically
+   * produced by `./migrate.sh export` on another host, or the Migration
+   * Bundle button here).  Backend saves it into BACKUP_ROOT and immediately
+   * restores it.  Great for disaster recovery when the server has no
+   * snapshots of its own yet.
+   */
+  const restoreFromFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file later
+    if (!file) return;
+    if (!file.name.endsWith(".tar.gz") && !file.name.endsWith(".tgz")) {
+      toast.error("Please pick a .tar.gz (or .tgz) backup file");
+      return;
+    }
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    if (!window.confirm(
+      `Restore "${file.name}" (${mb} MB)?\n\n` +
+      "This will REPLACE the current MongoDB data and all uploaded files.\n" +
+      "This action cannot be undone."
+    )) return;
+    setBusy(true);
+    const fd = new FormData();
+    fd.append("file", file);
+    try {
+      await api.post("/backups/upload-restore", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+        // long timeout — bundles can be sizeable
+        timeout: 15 * 60 * 1000,
+      });
+      toast.success("Restored from uploaded file — reload the page");
+      load();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Restore failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const del = async (name) => {
@@ -399,6 +439,22 @@ function BackupRestoreCard() {
                 title="Create a fresh snapshot and download it right away — compatible with ./migrate.sh import on another host.">
           <DownloadCloud className="w-3.5 h-3.5 mr-1" /> Migration bundle
         </Button>
+        <Button size="sm" variant="outline"
+                disabled={busy}
+                onClick={() => fileInputRef.current?.click()}
+                data-testid="backup-upload-restore"
+                className="border-amber-300 text-amber-700 hover:bg-amber-50"
+                title="Restore the whole app from a .tar.gz bundle stored on your computer.">
+          <UploadCloud className="w-3.5 h-3.5 mr-1" /> Restore from file…
+        </Button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".tar.gz,.tgz,application/gzip,application/x-gzip,application/x-tar"
+          className="hidden"
+          onChange={restoreFromFile}
+          data-testid="backup-upload-restore-input"
+        />
       </div>
 
       {/* Snapshots list */}
