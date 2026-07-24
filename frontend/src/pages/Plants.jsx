@@ -16,9 +16,10 @@ import {
   Search, MapPin, Zap, Building2, User as UserIcon, Mail, Calendar,
   ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
   History, ChevronRight, ChevronDown, LayoutGrid, Rows3,
-  Folder, FolderPlus, Upload, Trash2, Download, X, Check, FolderArchive,
+  Folder, FolderPlus, Upload, Trash2, Download, X, Check, FolderArchive, Eye,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
+import DocFileViewer from "@/components/plants/DocFileViewer";
 
 /**
  * Plants — a friendlier, read-only view of Site Master.
@@ -842,6 +843,7 @@ function PlantDocumentsCard({ siteId }) {
   const [renameFor, setRenameFor] = useState(null);   // folder name being edited
   const [renameDraft, setRenameDraft] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
+  const [viewFile, setViewFile] = useState(null);      // { name } or null
 
   const load = () => {
     api.get(`/plants/${siteId}/folders`)
@@ -1184,11 +1186,25 @@ function PlantDocumentsCard({ siteId }) {
                     <div key={f.name} className="flex items-center gap-2 p-2 hover:bg-slate-50">
                       <FileText className="w-4 h-4 text-slate-400 shrink-0" />
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm truncate">{f.name}</div>
+                        <button
+                          type="button"
+                          onClick={() => setViewFile({ name: f.name })}
+                          className="text-sm text-left truncate w-full hover:text-blue-700 hover:underline"
+                          title="Open preview"
+                          data-testid={`plant-doc-file-open-${f.name}`}
+                        >
+                          {f.name}
+                        </button>
                         <div className="text-[10px] text-slate-400">
                           {formatBytes(f.size_bytes)} · {formatDate(f.modified_at)}
                         </div>
                       </div>
+                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
+                              onClick={() => setViewFile({ name: f.name })}
+                              data-testid={`plant-doc-file-view-${f.name}`}
+                              title="Open in viewer">
+                        <Eye className="w-3.5 h-3.5 text-slate-600" />
+                      </Button>
                       <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
                               onClick={() => download(f.name)}
                               data-testid={`plant-doc-file-dl-${f.name}`}
@@ -1211,6 +1227,14 @@ function PlantDocumentsCard({ siteId }) {
           )}
         </div>
       </div>
+      <DocFileViewer
+        open={!!viewFile}
+        onClose={() => setViewFile(null)}
+        fetchUrl={viewFile && openFolder
+          ? `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(viewFile.name)}`
+          : null}
+        fileName={viewFile?.name || ""}
+      />
     </Card>
   );
 }
