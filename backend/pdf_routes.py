@@ -40,10 +40,14 @@ from reportlab.pdfgen import canvas as rl_canvas
 logger = logging.getLogger("jotform.pdf")
 
 # --------------------------------------------------------------------- config
+# --------------------------------------------------------------------- config
+# All storage locations are overridable via env so operators can point them
+# at Docker volumes or shared network mounts.  Missing folders are created
+# on boot so the container starts cleanly on a fresh disk.
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/app/backend/uploads"))
-PDF_DIR = UPLOAD_DIR / "pdf"
-COMPLETED_DIR = UPLOAD_DIR / "completed"
-ASSET_DIR = UPLOAD_DIR / "assets"
+PDF_DIR = Path(os.environ.get("LOCAL_PDF_TEMPLATES_ROOT", str(UPLOAD_DIR / "pdf")))
+COMPLETED_DIR = Path(os.environ.get("LOCAL_COMPLETED_PDF_ROOT", str(UPLOAD_DIR / "completed")))
+ASSET_DIR = Path(os.environ.get("LOCAL_ASSETS_ROOT", str(UPLOAD_DIR / "assets")))
 for _d in (PDF_DIR, COMPLETED_DIR, ASSET_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 

@@ -1,63 +1,93 @@
-# One-command local dev stack for FormForge.
-# Usage:
-#   docker compose up          # foreground
-#   docker compose up -d       # background
-#   docker compose down        # stop everything
+# =============================================================================
+#  FormForge — docker-compose (portable, single command boot)
+# =============================================================================
 #
-# Services:
-#   - mongo:    MongoDB 7 with a named volume (data survives restarts)
-#   - backend:  FastAPI on http://localhost:8001
-#   - frontend: React (CRA/craco) on http://localhost:3000
+#   $ cp backend/.env.example backend/.env      # edit as needed
+#   $ docker compose up -d --build              # first boot builds images
+#   $ docker compose logs -f backend            # tail server logs
+#   $ docker compose down                       # stop everything (keeps data)
+#   $ docker compose down -v                    # stop AND wipe mongo + uploads
+#
+#  Volumes:
+#      formforge_mongo_data     — Mongo dataset
+#      formforge_uploads        — user uploads / plant docs / backups
+#      formforge_completed      — filled PDF outputs
+#      formforge_assets         — image assets
+#
+#  Ports exposed to the host:
+#      80  → gateway (frontend + /api → backend)
+#      27017 → mongo (dev only; remove for prod)
+#
+# =============================================================================
 
 services:
   mongo:
     image: mongo:7
-    container_name: formforge-mongo
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
-      - mongo_data:/data/db
+      - formforge_mongo_data:/data/db
+    ports:
+      - "27017:27017"      # remove for prod so Mongo is private
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: formforge-backend
+      context: .
+      dockerfile: Dockerfile.backend
     restart: unless-stopped
-    depends_on:
-      - mongo
+    env_file:
+      - ./backend/.env
     environment:
+      # Override anything from .env that must point at container hosts
       MONGO_URL: "mongodb://mongo:27017"
-      DB_NAME: "formforge"
-      CORS_ORIGINS: "*"
-      APP_NAME: "formforge"
-      JWT_SECRET: "local-dev-secret-change-me-in-prod"
-      JWT_EXPIRE_HOURS: "168"
-      SEED_ADMIN_EMAIL: "admin@example.com"
-      SEED_ADMIN_PASSWORD: "Admin@12345"
-      SEED_ADMIN_NAME: "Super Admin"
-      MAX_UPLOAD_MB: "25"
-    ports:
-      - "8001:8001"
+      LOCAL_UPLOAD_ROOT: "/app/backend/uploads/local"
+      LOCAL_PLANT_DOCS_ROOT: "/app/backend/uploads/local/plants"
+      LOCAL_PDF_TEMPLATES_ROOT: "/app/backend/uploads/pdf"
+      LOCAL_COMPLETED_PDF_ROOT: "/app/backend/uploads/completed"
+      LOCAL_ASSETS_ROOT: "/app/backend/uploads/assets"
+      BACKUP_ROOT: "/app/backend/uploads/backups"
     volumes:
-      # Persist uploaded files on the host machine
-      - ./backend/uploads:/app/uploads
+      - formforge_uploads:/app/backend/uploads/local
+      - formforge_completed:/app/backend/uploads/completed
+      - formforge_assets:/app/backend/uploads/assets
+      - formforge_pdf_templates:/app/backend/uploads/pdf
+      - formforge_backups:/app/backend/uploads/backups
+    depends_on:
+      mongo:
+        condition: service_healthy
+    expose:
+      - "8001"
 
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: formforge-frontend
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # Empty → SPA hits same-origin `/api/...`, which the gateway proxies.
+        REACT_APP_BACKEND_URL: ""
     restart: unless-stopped
+    expose:
+      - "80"
+
+  gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
     depends_on:
       - backend
-    environment:
-      REACT_APP_BACKEND_URL: "http://localhost:8001"
-      WDS_SOCKET_PORT: "3000"
-      ENABLE_HEALTH_CHECK: "false"
-    ports:
-      - "3000:3000"
+      - frontend
 
 volumes:
-  mongo_data:
+  formforge_mongo_data:
+  formforge_uploads:
+  formforge_completed:
+  formforge_assets:
+  formforge_pdf_templates:
+  formforge_backups:

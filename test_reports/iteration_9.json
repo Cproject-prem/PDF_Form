@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 9 — Backup & Restore + Env-driven storage. Wrote /app/backend/tests/test_backup_restore.py covering the entire backup surface + all called-out regressions. 24/24 pytest tests pass on the live preview backend. Verified: RBAC (super_admin allowed / admin 403 on both /api/backup-config and /api/backups), value clamping on PUT /api/backup-config (hour 0-23, minute 0-59, retention 1-30), snapshot lifecycle (POST creates real .tar.gz on disk, GET lists it, DELETE removes it), download returns Content-Type gzip, extraction reveals top-level manifest.json with all 6 required keys, mongo/dump.archive starts with 0x1f 0x8b gzip magic, restore round-trip (insert marker → snapshot → delete marker → restore → marker back), retention pruning kills 4 fake old snapshots aged 5 days (retention=3), env-driven storage dirs all present, auto-recreate confirmed by moving /app/backend/uploads/assets aside → `supervisorctl restart backend` → dir reappears on boot, and PDF/plant-docs/dashboard/sites/users regressions all pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_backup_restore.py",
+    "/app/test_reports/pytest/iter9.xml"
+  ],
+  "action_items": [
+    "None blocking. Optional hardening: (a) validate `enabled/hour_utc/minute_utc/retention_days` via Pydantic model rather than raw dict — currently the endpoint accepts arbitrary extra keys silently. (b) `_require_super` in backup_routes.py checks `user.access_override` via getattr but the User model already exposes it as a first-class boolean — should just do `if user.role != 'super_admin' and not user.access_override`. (c) restore path calls `shutil.rmtree(UPLOAD_ROOT)` before copytree — safe here because the snapshot tar has a full `uploads/` tree, but there's a small window where an in-flight upload could hit ENOENT. Consider staging the new tree under a sibling name and doing an atomic rename.",
+    "Optional test-infra: PUT /api/backup-config could return a Pydantic-validated model so schema drift is caught at code-review time."
+  ],
+  "critical_code_review_comments": [
+    "backup_routes.py:88 — mongodump command uses `--uri=<value>` equal-form → correctly avoids the argparse positional bug flagged by the main agent. mongorestore also uses equal-form (line 149). Verified: dump.archive is gzipped (magic 0x1f 0x8b) and restore round-trip recovers the marker doc.",
+    "backup_routes.py:41-43 — BACKUP_ROOT / UPLOAD_ROOT / DEFAULT_RETENTION_DAYS read from env with sensible fallbacks; matches .env.example. `_ensure_backup_root()` is called on every create/list so first-boot works even if the folder was never made.",
+    "backup_routes.py:183-197 — retention prune walks BACKUP_ROOT/*.tar.gz and drops files with mtime < now-N days; test verified with 4 dummy files aged 5 days.",
+    "backup_routes.py:161-166 — restore wipes LOCAL_UPLOAD_ROOT and re-copies from snapshot. The snapshot ALWAYS contains a full uploads/ tree (line 108 makes an empty one if UPLOAD_ROOT missing), so re-copy always succeeds. Regression: `submissions/`, `plants/`, `tmp/` are all preserved because they are inside the snapshot.",
+    "backup_routes.py:203-239 — scheduler loop wakes every 30s, dedups via `last_run_at` (55s window). NOT tested at runtime (would need 60+ minute wait) but code logic is sound.",
+    "backup_routes.py:281-290 — name safety check rejects `..`, `/`, and non-`.tar.gz` names. Verified via URL-encoded traversal → 400.",
+    "backup_routes.py:325-338 — PUT /api/backup-config clamps hour_utc [0,23], minute_utc [0,59], retention_days [1,30]. Verified with body {hour:99, minute:400, retention:500} → clamped to {23,59,30}, and negative values → {0,0,1}.",
+    "backup_routes.py:54-56 — `_require_super` checks role OR access_override. Consistent with other admin endpoints; RBAC works (admin@ 403, super_admin 200).",
+    "server.py:2119-2129 — backup router + config router included under /api, and scheduler task fires from `@app.on_event('startup')`. Both routers correctly gated by get_current_user.",
+    "pdf_routes.py:47-52 — LOCAL_PDF_TEMPLATES_ROOT / LOCAL_COMPLETED_PDF_ROOT / LOCAL_ASSETS_ROOT read from env with fallbacks; mkdir(parents=True, exist_ok=True) on module import. Confirmed by moving /app/backend/uploads/assets away and restarting backend — dir was recreated automatically.",
+    "server.py:73-77 — LOCAL_UPLOAD_ROOT + tmp + submissions folders auto-created on import. Same mechanism as pdf_routes; safe for fresh containers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_backup_restore.py (new — 24 tests, 9 classes)"
+  ],
+  "success_rate": {
+    "backend": "100% (24/24)",
+    "frontend": "not tested per request"
+  },
+  "test_credentials": "Super Admin admin@example.com / Admin@12345 and cluster-admin rahul.verma@example.com / Admin@12345 both authenticated OK.",
+  "seed_data_creation": "Ephemeral only. Created a temporary marker doc `{_id:'iter9_marker'}` in db.settings — deleted at the end of the restore test. Created 4 dummy tar.gz files under /app/backend/uploads/backups (formforge-testold-iter9-*.tar.gz) — all deleted by the retention prune assertion. Also created 3-4 legitimate snapshots (formforge-YYYY-MM-DD_HHMMSS.tar.gz) during testing; these remain on disk within the 3-day retention window.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run with `pytest -o addopts= /app/backend/tests/test_backup_restore.py` for reliable serial execution (preview URL rate-limits under xdist bursts, per iter8 note). Requires pymongo (already installed). The test `TestEnvStorage::test_auto_recreate_after_restart` restarts the backend via supervisor — expect ~5s downtime mid-suite. All snapshots created during the test are kept on disk under /app/backend/uploads/backups (retention=3 days) so nothing accumulates long-term.",
+  "rca of the issue": "N/A — no defects. Iter9 backup implementation is production-ready: RBAC, clamping, snapshot integrity, restore correctness, retention pruning, and env-driven storage all verified. Docker files not tested (out of scope per problem statement)."
+}

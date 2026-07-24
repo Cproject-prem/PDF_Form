@@ -2116,6 +2116,18 @@ _pd_router, _pd_plants = _build_plant_docs(db, get_current_user)
 api.include_router(_pd_router)
 api.include_router(_pd_plants)
 
+# ---------- Backup / Restore ----------
+from backup_routes import build_router as _build_backup_router, start_scheduler as _start_backup_scheduler
+_bk_router, _bk_cfg = _build_backup_router(db, get_current_user)
+api.include_router(_bk_router)
+api.include_router(_bk_cfg)
+
+
+@app.on_event("startup")
+async def _kick_backup_scheduler():
+    # Runs alongside the FastAPI event loop. Safe no-op if scheduler is off.
+    _start_backup_scheduler(db)
+
 # Mount router
 app.include_router(api)
 

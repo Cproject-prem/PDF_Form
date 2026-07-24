@@ -1,0 +1,46 @@
+# FormForge Backend — production image
+# --------------------------------------
+# Multi-stage build so the final image doesn't carry Python build deps.
+# The container ships with mongodump/mongorestore so the Backup & Restore
+# feature works out of the box.
+
+FROM python:3.11-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app/backend
+
+# --- system deps: mongo tools + fonts for PDF rendering ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl gnupg ca-certificates \
+        libjpeg-dev zlib1g-dev \
+        fonts-dejavu-core \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /etc/apt/keyrings/mongodb-7.0.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/mongodb-7.0.gpg] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" > /etc/apt/sources.list.d/mongodb-org-7.0.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        mongodb-database-tools \
+    && apt-get purge -y --auto-remove curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- python deps ---
+COPY backend/requirements.txt .
+RUN pip install --upgrade pip \
+ && pip install -r requirements.txt
+
+# --- app code ---
+COPY backend/ .
+
+# --- writable volumes for uploads + backups ---
+RUN mkdir -p /app/backend/uploads/local \
+             /app/backend/uploads/pdf \
+             /app/backend/uploads/completed \
+             /app/backend/uploads/assets \
+             /app/backend/uploads/backups
+
+EXPOSE 8001
+
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers"]
