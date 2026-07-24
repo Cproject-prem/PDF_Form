@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -159,6 +160,51 @@ def _clean(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
+
+
+# ---------------------------------------------------------------------------
+# Manpower integration helper — a subset of what `manpower_routes.py` does,
+# reused here so form/PDF Data-Source dropdowns can pull manpower directly.
+# The manpower directory lives in a separate DB (default `cmes_mp_db`) on
+# the SAME Mongo instance; env vars decide the exact names.
+# ---------------------------------------------------------------------------
+def _mp_enabled() -> bool:
+    v = (os.environ.get("MANPOWER_ENABLED", "true") or "").strip().strip('"').strip("'")
+    return v.lower() not in ("0", "false", "no", "off")
+
+
+def _manpower_coll(db):
+    """Returns a Motor Collection handle for the external manpower table,
+    or None if the integration is disabled or the client isn't available."""
+    if not _mp_enabled():
+        return None
+    client = getattr(db, "client", None)
+    if client is None:
+        return None
+    db_name = (os.environ.get("MANPOWER_DB_NAME", "cmes_mp_db") or "").strip().strip('"').strip("'")
+    coll_name = (os.environ.get("MANPOWER_COLLECTION", "manpower") or "").strip().strip('"').strip("'")
+    return client[db_name][coll_name]
+
+
+# Columns exposed to the form/PDF designers when the Data Source is Manpower.
+# Order matters — this is the order they appear in the dropdown.
+MANPOWER_COLUMNS = [
+    {"key": "manpower_id",  "label": "Manpower ID", "core": True},
+    {"key": "full_name",    "label": "Full Name",   "core": True},
+    {"key": "status",       "label": "Status",      "core": False},
+    {"key": "company_name", "label": "Company",     "core": False},
+    {"key": "work_state",   "label": "Work State",  "core": False},
+    {"key": "location",     "label": "Location",    "core": False},
+    {"key": "city",         "label": "City",        "core": False},
+    {"key": "state",        "label": "Home State",  "core": False},
+    {"key": "phone",        "label": "Phone",       "core": False},
+    {"key": "blood_group",  "label": "Blood Group", "core": False},
+    {"key": "subvendor",    "label": "Subvendor",   "core": False},
+    {"key": "reporting_cluster_manager", "label": "Reporting Manager", "core": False},
+    {"key": "reporting_manager_email",   "label": "Manager Email",     "core": False},
+    {"key": "postal_code",  "label": "Postal Code", "core": False},
+    {"key": "reference",    "label": "Reference",   "core": False},
+]
 
 
 def apply_vendor_scope(user, query: Dict[str, Any]) -> Dict[str, Any]:
@@ -1212,6 +1258,21 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
                 "matched": True,
                 "row": data,
             }
+        if source == "manpower":
+            # Manpower Portal integration — resolves against the external
+            # cmes_mp_db.manpower collection (see manpower_routes.py).
+            coll = _manpower_coll(db)
+            if coll is None:
+                return {"value": None, "fill": {}, "matched": False}
+            row = _clean(await coll.find_one({display: chosen}, {"_id": 0}))
+            if not row:
+                return {"value": None, "fill": {}, "matched": False}
+            return {
+                "value": row.get(return_col, chosen),
+                "fill": {c: row.get(c) for c in fill_cols},
+                "matched": True,
+                "row": row,
+            }
         raise HTTPException(400, f"Unknown lookup source '{source}'")
 
     @lookup.get("/options")
@@ -1258,6 +1319,15 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
                 flt[f"data.{column}"] = {"$regex": re.escape(q), "$options": "i"}
             vals = await db.master_data.distinct(f"data.{column}", flt)
             out = [v for v in vals if v not in (None, "")]
+        elif source == "manpower":
+            coll = _manpower_coll(db)
+            if coll is None:
+                return []
+            flt = {}
+            if q:
+                flt[column] = {"$regex": re.escape(q), "$options": "i"}
+            vals = await coll.distinct(column, flt)
+            out = [v for v in vals if v not in (None, "")]
         else:
             raise HTTPException(400, "Unknown source")
         return sorted([str(v) for v in out])[:limit]
@@ -1268,6 +1338,8 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         if source == "sites":
             cols = await list_columns(user=user)
             return cols
+        if source == "manpower":
+            return MANPOWER_COLUMNS
         if source.startswith("master:"):
             table = source.split(":", 1)[1]
             # discover columns by union of `data` keys across the table

@@ -34,6 +34,7 @@ const DATA_SOURCE_KINDS = [
   { value: "manual",            label: "Manual list (default)" },
   { value: "sites",             label: "Site Management" },
   { value: "vendors",           label: "Vendor Management" },
+  { value: "manpower",          label: "Manpower" },
   { value: "master_data",       label: "Master Data Tables" },
   { value: "rest_api",          label: "REST API" },
   { value: "json",              label: "JSON (inline)" },
@@ -278,6 +279,7 @@ function DataSourceTab({ field, update, formFields }) {
     let src = null;
     if (ds.type === "sites") src = "sites";
     else if (ds.type === "vendors") src = "vendors";
+    else if (ds.type === "manpower") src = "manpower";
     else if (ds.type === "master_data" && ds.table) src = `master:${ds.table.replace(/^master:/, "")}`;
     if (!src) { setColumns([]); return; }
     api.get(`/lookup/columns?source=${encodeURIComponent(src)}`)
@@ -305,7 +307,7 @@ function DataSourceTab({ field, update, formFields }) {
         </div>
       )}
 
-      {(ds.type === "sites" || ds.type === "vendors" || ds.type === "master_data") && (
+      {(ds.type === "sites" || ds.type === "vendors" || ds.type === "master_data" || ds.type === "manpower") && (
         <>
           {ds.type === "master_data" && (
             <div>
@@ -427,6 +429,7 @@ function DataSourceTab({ field, update, formFields }) {
 function legacySource(type, ds) {
   if (type === "sites") return "sites";
   if (type === "vendors") return "vendors";
+  if (type === "manpower") return "manpower";
   if (type === "master_data") return ds?.table ? `master:${ds.table.replace(/^master:/, "")}` : "";
   if (type === "logged_in_user") return "logged_in_user";
   if (type === "logged_in_vendor") return "logged_in_vendor";
@@ -572,6 +575,7 @@ function LookupTab({ field, update, formFields }) {
   const trigSource = trigger?.data_source?.source || trigger?.data_source?.type;
   const sourceKey = trigSource === "sites" || trigSource === "site_management" ? "sites"
                   : trigSource === "vendors" || trigSource === "vendor_management" ? "vendors"
+                  : trigSource === "manpower" ? "manpower"
                   : trigSource?.startsWith("master") ? trigSource
                   : null;
   const [columns, setColumns] = useState([]);
@@ -598,12 +602,12 @@ function LookupTab({ field, update, formFields }) {
               className="w-full h-9 border border-slate-200 rounded-md px-2 text-sm mt-1" data-testid="lk-trigger">
               <option value="">— choose field —</option>
               {formFields
-                .filter((f) => f.id !== field.id && (f.data_source?.kind === "lookup" || ["sites", "vendors", "master_data"].includes(f.data_source?.type)))
+                .filter((f) => f.id !== field.id && (f.data_source?.kind === "lookup" || ["sites", "vendors", "master_data", "manpower"].includes(f.data_source?.type)))
                 .map((f) => <option key={f.id} value={f.id}>{f.label || f.id}</option>)}
             </select>
             {!trigger && (
               <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded p-2 mt-2">
-                Bind a Dropdown/Radio/Checkbox field to a Data Source (Site Management, Vendors or Master Data), then choose it here.
+                Bind a Dropdown/Radio/Checkbox field to a Data Source (Site Management, Vendors, Manpower or Master Data), then choose it here.
               </p>
             )}
           </div>

@@ -17,6 +17,7 @@ const DATA_SOURCE_KINDS = [
   { v: "manual",            l: "Manual list" },
   { v: "sites",             l: "Site Management" },
   { v: "vendors",           l: "Vendor Management" },
+  { v: "manpower",          l: "Manpower" },
   { v: "master_data",       l: "Master Data Tables" },
   { v: "rest_api",          l: "REST API" },
   { v: "json",              l: "JSON" },
@@ -63,6 +64,7 @@ function DataSourcePanel({ field, onChange }) {
     let src = null;
     if (ds.type === "sites") src = "sites";
     else if (ds.type === "vendors") src = "vendors";
+    else if (ds.type === "manpower") src = "manpower";
     else if (ds.type === "master_data" && ds.table) src = `master:${ds.table.replace(/^master:/, "")}`;
     if (!src) { setColumns([]); return; }
     api.get(`/lookup/columns?source=${encodeURIComponent(src)}`)
@@ -78,7 +80,7 @@ function DataSourcePanel({ field, onChange }) {
           {DATA_SOURCE_KINDS.map((k) => <option key={k.v} value={k.v}>{k.l}</option>)}
         </select>
       </div>
-      {(ds.type === "sites" || ds.type === "vendors" || ds.type === "master_data") && columns.length > 0 && (
+      {(ds.type === "sites" || ds.type === "vendors" || ds.type === "master_data" || ds.type === "manpower") && columns.length > 0 && (
         <>
           {ds.type === "master_data" && (
             <Input className="text-xs" placeholder="Master table name (e.g. customers)" value={ds.table || ""}
@@ -129,6 +131,7 @@ function DataSourcePanel({ field, onChange }) {
 function legacySource(type, ds) {
   if (type === "sites") return "sites";
   if (type === "vendors") return "vendors";
+  if (type === "manpower") return "manpower";
   if (type === "master_data") return ds?.table ? `master:${ds.table.replace(/^master:/, "")}` : "";
   if (type === "logged_in_user") return "logged_in_user";
   if (type === "logged_in_vendor") return "logged_in_vendor";
@@ -139,7 +142,7 @@ function LookupPanel({ field, formFields, onChange }) {
   const lk = field.lookup || { enabled: false };
   const set = (patch) => onChange({ lookup: { ...lk, ...patch } });
   const triggers = formFields.filter((f) => f.id !== field.id &&
-    (f.data_source?.kind === "lookup" || ["sites", "vendors", "master_data"].includes(f.data_source?.type)));
+    (f.data_source?.kind === "lookup" || ["sites", "vendors", "master_data", "manpower"].includes(f.data_source?.type)));
   const trigger = triggers.find((t) => t.id === lk.trigger_field_id);
   const [columns, setColumns] = useState([]);
   useEffect(() => {

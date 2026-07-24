@@ -309,3 +309,12 @@ Any match on any of the three grants access, so an admin can be regional, cluste
 - **Menu (`permissions.py`)**: `manpower` repointed to `/manpower`, added to super_admin + admin menus.
 - **App route (`App.js`)**: `/manpower` protected → `ManpowerPage`.
 - **Verified**: curl endpoints + live UI screenshot with 4-record seed data.
+
+
+## iter 23 — Manpower as a Data Source in Form + PDF builders (Feb 2026)
+- **Backend (`vendor_routes.py`)**: extended `lookup_options`, `lookup_columns`, and `lookup_resolve` to accept `source=manpower`. Added `_manpower_coll(db)` helper and `MANPOWER_COLUMNS` constant (15 columns: manpower_id, full_name, status, company, work_state, location, city, state, phone, blood group, subvendor, reporting manager, manager email, postal code, reference).
+- **Frontend**:
+  - `FieldDataLookupFormulaTabs.jsx` (used by both Form and PDF builders): "Manpower" appears in the Data-Source dropdown. Column-fetch effect + display/return dropdown gating + legacySource + LookupPanel triggers all updated.
+  - `PropertiesPanel.jsx` (legacy builder path): parallel updates in DATA_SOURCE_KINDS, useEffect, gate, legacySource, LookupTab source-key branch, and trigger filter.
+- **Runtime**: designer picks Manpower → chooses display column (e.g. `full_name`) → chooses return column (e.g. `manpower_id`). Dropdown pulls distinct values via `/api/lookup/options?source=manpower&column=full_name`. Selection auto-resolves to `manpower_id` and fills other configured columns via `/api/lookup/resolve`.
+- **Verified via curl**: columns endpoint returns 15 items; options endpoint returns sorted distinct values; resolve endpoint fills `work_state`, `location`, `company_name` correctly for a name lookup.
