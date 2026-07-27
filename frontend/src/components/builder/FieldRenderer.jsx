@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Star, Upload, X, FileText } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 
 // Renders a single field. `value` and `onChange` enable controlled input.
 // `mode` = "preview" | "fill" | "builder-static"
@@ -271,17 +272,15 @@ function DropdownField({ field, value, onChange, disabled, renderLabel, renderDe
   return (
     <div className="space-y-1.5">
       {renderLabel()}
-      <Select value={value || ""} onValueChange={handleChange} disabled={disabled}>
-        <SelectTrigger><SelectValue placeholder={field.placeholder || "Select…"} /></SelectTrigger>
-        <SelectContent className="max-h-72">
-          {opts.length === 0 && (
-            <div className="px-2 py-1.5 text-xs text-slate-400">No options.</div>
-          )}
-          {opts.map((opt, i) => (
-            <SelectItem key={i} value={opt}>{opt}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <SearchableDropdown
+        options={opts}
+        value={value || ""}
+        onChange={handleChange}
+        placeholder={field.placeholder || "Select…"}
+        disabled={disabled}
+        testId={`dropdown-${field.id}`}
+        className="h-10 border-slate-200"
+      />
       {renderDesc()}
     </div>
   );

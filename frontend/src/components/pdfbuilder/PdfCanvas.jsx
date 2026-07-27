@@ -34,7 +34,7 @@ export default function PdfCanvas({
   const file = useMemo(() => authPdfFile(fileUrl), [fileUrl]);
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-auto bg-slate-100 nice-scroll"
+    <div ref={containerRef} className="w-full h-full overflow-auto bg-slate-100 nice-scroll"
          data-testid="pdf-canvas-scroll"
          onClick={() => onSelect && onSelect(null)}>
       <div className="py-8 flex flex-col items-center gap-8">

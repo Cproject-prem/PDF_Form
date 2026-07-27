@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
 import { Card } from "@/components/ui/card";
@@ -29,6 +30,9 @@ import {
 import { formatDate } from "@/lib/utils2";
 
 export default function VendorsPage() {
+  const { user: authUser } = useAuth();
+  const isVendorAdmin = authUser?.role === "vendor_admin";
+
   const [vendors, setVendors] = useState([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -41,11 +45,16 @@ export default function VendorsPage() {
     try {
       const r = await api.get("/vendors");
       setVendors(r.data);
+      // vendor_admin: immediately open their own vendor detail
+      if (isVendorAdmin && r.data.length > 0 && !detailVendor) {
+        setDetailVendor(r.data[0]);
+      }
     } catch (e) {
       toast.error("Failed to load vendors");
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
 
   const filtered = vendors.filter((v) =>
     !q || `${v.name} ${v.code} ${v.email}`.toLowerCase().includes(q.toLowerCase()));
@@ -55,13 +64,13 @@ export default function VendorsPage() {
     setEditOpen(true);
   };
 
-  const startEdit = (v) => { setEditing({ ...v }); setEditOpen(true); };
+  const startEdit = (v) => { setEditing({ ...v, _orig_vendor_id: v.vendor_id }); setEditOpen(true); };
 
   const save = async () => {
     if (!editing.name?.trim()) { toast.error("Vendor name required"); return; }
     try {
-      if (editing.vendor_id) {
-        await api.put(`/vendors/${editing.vendor_id}`, editing);
+      if (editing._orig_vendor_id) {
+        await api.put(`/vendors/${editing._orig_vendor_id}`, editing);
         toast.success("Saved");
       } else {
         const r = await api.post("/vendors", editing);
@@ -86,7 +95,8 @@ export default function VendorsPage() {
     return (
       <VendorDetail
         vendor={detailVendor}
-        onBack={() => { setDetailVendor(null); load(); }}
+        isVendorAdmin={isVendorAdmin}
+        onBack={isVendorAdmin ? null : () => { setDetailVendor(null); load(); }}
       />
     );
   }
@@ -179,6 +189,10 @@ export default function VendorsPage() {
           {editing && (
             <div className="grid grid-cols-2 gap-3">
               <Field label="Vendor name"><Input data-testid="vendor-name" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
+              <Field label="Scope Name (Vendor ID)">
+                <Input value={editing.vendor_id || ""} onChange={(e) => setEditing({ ...editing, vendor_id: e.target.value })} placeholder="Leave blank to auto-generate" />
+                <p className="text-[10px] text-slate-400 mt-1">Updates to this ID will automatically apply to all linked users and sites.</p>
+              </Field>
               <Field label="Code"><Input data-testid="vendor-code" value={editing.code} onChange={(e) => setEditing({ ...editing, code: e.target.value })} /></Field>
               <Field label="Contact person"><Input value={editing.contact_person} onChange={(e) => setEditing({ ...editing, contact_person: e.target.value })} /></Field>
               <Field label="Email"><Input data-testid="vendor-email" value={editing.email} onChange={(e) => setEditing({ ...editing, email: e.target.value })} /></Field>
@@ -219,7 +233,7 @@ function Field({ label, children, className = "" }) {
 
 // ---------- Vendor detail (users + assignments) ----------
 
-function VendorDetail({ vendor: v0, onBack }) {
+function VendorDetail({ vendor: v0, onBack, isVendorAdmin = false }) {
   const [vendor, setVendor] = useState(v0);
   const [tab, setTab] = useState("users");
   const [users, setUsers] = useState([]);
@@ -238,14 +252,15 @@ function VendorDetail({ vendor: v0, onBack }) {
       api.get(`/vendors/${v0.vendor_id}`),
       api.get(`/vendor-users/${v0.vendor_id}`),
       api.get("/forms").catch(() => ({ data: [] })),
-      // PDF forms list — same endpoint
       api.get("/pdf-forms").catch(() => ({ data: [] })),
       api.get("/sites").catch(() => ({ data: [] })),
       api.get("/workflows").catch(() => ({ data: [] })),
     ]);
     setVendor(v.data);
     setUsers(u.data);
-    setForms(fr.data); setPdfForms(pf.data); setSites(s.data); setWorkflows(wf.data);
+    setForms(fr.data); setPdfForms(pf.data);
+    setSites(s.data || []);
+    setWorkflows(wf.data);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
@@ -284,7 +299,11 @@ function VendorDetail({ vendor: v0, onBack }) {
   };
 
   const openAssign = (u) => {
-    setAssignTarget({ ...u, assignments: u.assignments || { forms: [], pdf_forms: [], sites: [], workflows: [] } });
+    const a = u.assignments || { forms: [], pdf_forms: [], sites: [], workflows: [] };
+    if (!a.sites?.length && sites.length === 1) {
+      a.sites = [sites[0].site_id];
+    }
+    setAssignTarget({ ...u, assignments: a });
     setAssignOpen(true);
   };
   const toggleAssign = (kind, id) => {
@@ -305,10 +324,14 @@ function VendorDetail({ vendor: v0, onBack }) {
     <AppLayout>
       <div className="max-w-7xl">
         <div className="flex items-center gap-3 mb-2">
-          <button onClick={onBack} className="p-2 rounded-md hover:bg-slate-100 text-slate-600" data-testid="vendor-back">
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <span className="text-xs uppercase tracking-[0.1em] text-slate-400 font-bold">Vendor</span>
+          {onBack && (
+            <button onClick={onBack} className="p-2 rounded-md hover:bg-slate-100 text-slate-600" data-testid="vendor-back">
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          )}
+          <span className="text-xs uppercase tracking-[0.1em] text-slate-400 font-bold">
+            {isVendorAdmin ? "My Vendor" : "Vendor"}
+          </span>
         </div>
         <h1 className="text-3xl sm:text-4xl font-heading font-bold tracking-tight text-slate-900">{vendor.name}</h1>
         <div className="flex gap-4 text-sm text-slate-500 mt-1 mb-6">

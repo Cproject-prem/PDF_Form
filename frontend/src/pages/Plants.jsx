@@ -4,6 +4,7 @@ import AppLayout from "@/components/layout/AppLayout";
 import { api, getErrorMessage } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -17,6 +18,7 @@ import {
   ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
   History, ChevronRight, ChevronDown, LayoutGrid, Rows3,
   Folder, FolderPlus, Upload, Trash2, Download, X, Check, FolderArchive, Eye,
+  Wrench, SprayCan,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 import DocFileViewer from "@/components/plants/DocFileViewer";
@@ -37,6 +39,8 @@ export default function PlantsPage() {
 /* ------------------------------ LIST VIEW ------------------------------- */
 function PlantsList() {
   const [rows, setRows] = useState([]);
+  const [eqCycles, setEqCycles] = useState([]);
+  const [gcCycles, setGcCycles] = useState([]);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
   const [loading, setLoading] = useState(true);
@@ -50,11 +54,89 @@ function PlantsList() {
 
   useEffect(() => {
     setLoading(true);
-    api.get("/sites")
-      .then((r) => setRows(r.data || []))
+    const currentYear = new Date().getFullYear();
+    Promise.all([
+      api.get("/sites"),
+      api.get(`/site-cycles?activity=equipment_testing&year=${currentYear}`),
+      api.get(`/site-cycles?activity=grasscutting&year=${currentYear}`),
+    ])
+      .then(([rSites, rCycles, rGc]) => {
+        setRows(rSites.data || []);
+        setEqCycles(rCycles.data?.cycles || []);
+        setGcCycles(rGc.data?.cycles || []);
+      })
       .catch((e) => toast.error(getErrorMessage(e, "Failed to load plants")))
       .finally(() => setLoading(false));
   }, []);
+
+  const alerts = useMemo(() => {
+     const m = {};
+     const items = [
+        { cn: 1, countKey: "ert_count" },
+        { cn: 2, countKey: "transformer_count" },
+        { cn: 3, countKey: "acb_count" },
+        { cn: 4, countKey: "dc_pm_count" },
+        { cn: 5, countKey: "meter_cal_count" },
+     ];
+     
+     for (const site of rows) {
+        let st = null;
+        const siteCycles = eqCycles.filter(c => c.site_id === site.site_id);
+        
+        for (const it of items) {
+           const v = parseInt(site[it.countKey] || "0", 10);
+           if (v <= 0) continue;
+
+           const cyc = siteCycles.find(c => c.cycle_number === it.cn);
+           let nextDue = "—";
+           
+           if (cyc?.actual?.actual_date && cyc?.actual?.result === "Done") {
+              // Once done for the year, no more alerts for this item
+              continue;
+           } else if (cyc?.schedule?.planned_date) {
+              nextDue = cyc.schedule.planned_date;
+           }
+           
+           if (nextDue !== "—") {
+              const diffDays = (new Date(nextDue).getTime() - new Date().getTime()) / (1000 * 3600 * 24);
+              const result = cyc?.actual?.result || "—";
+              if (diffDays < 0 && result !== "Done") {
+                 st = "overdue";
+                 break;
+              } else if (diffDays <= 30 && diffDays >= 0 && result !== "Done") {
+                 st = "nearing";
+              }
+           }
+        }
+        m[site.site_id] = st;
+     }
+     return m;
+  }, [rows, eqCycles]);
+
+  // Grasscutting alerts — check if any grasscutting cycle planned_date has passed without Done
+  const gcAlerts = useMemo(() => {
+    const m = {};
+    const today = new Date();
+    for (const site of rows) {
+      const v = String(site.grass_cutting_enabled ?? "0").trim().toLowerCase();
+      if (v !== "1" && v !== "true" && v !== "yes") { m[site.site_id] = null; continue; }
+      const cap = parseInt(site.grass_cutting_frequency, 10) || 1;
+      let st = null;
+      for (let i = 1; i <= cap; i++) {
+        const cyc = gcCycles.find(c => c.site_id === site.site_id && c.cycle_number === i);
+        const result = cyc?.actual?.result || null;
+        const planned = cyc?.schedule?.planned_date || null;
+        if (result === "Done") continue;
+        if (planned) {
+          const diff = (new Date(planned).getTime() - today.getTime()) / (1000 * 3600 * 24);
+          if (diff < 0) { st = "overdue"; break; }
+          else if (diff <= 45) st = st === "overdue" ? "overdue" : "nearing";
+        }
+      }
+      m[site.site_id] = st;
+    }
+    return m;
+  }, [rows, gcCycles]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -149,7 +231,7 @@ function PlantsList() {
         ) : (
           <div className="max-h-[calc(100vh-260px)] overflow-y-auto nice-scroll pr-1 -mr-1">
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {filtered.map((p) => <PlantCard key={p.site_code || p.site_id} plant={p} />)}
+              {filtered.map((p) => <PlantCard key={p.site_code || p.site_id} plant={p} alert={alerts[p.site_id]} gcAlert={gcAlerts[p.site_id]} />)}
             </div>
           </div>
         )}
@@ -158,23 +240,47 @@ function PlantsList() {
   );
 }
 
-function PlantCard({ plant }) {
+function PlantCard({ plant, alert, gcAlert }) {
   const stColor = statusColor(plant.site_status);
   return (
     <Link
       to={`/plants/${encodeURIComponent(plant.site_code || plant.site_id)}`}
       data-testid={`plant-card-${plant.site_code || plant.site_id}`}
-      className="group"
+      className="group block relative"
     >
-      <Card className="rounded-2xl border-slate-100 card-soft bg-white hover:shadow-lg hover:border-blue-200 transition-all">
+      <Card className="rounded-2xl border-slate-100 card-soft bg-white hover:shadow-lg hover:border-blue-200 transition-all overflow-hidden">
+        {alert === "overdue" && (
+           <div className="absolute top-0 right-0 left-0 h-1 bg-red-500" />
+        )}
+        {alert !== "overdue" && gcAlert === "overdue" && (
+           <div className="absolute top-0 right-0 left-0 h-1 bg-red-400" />
+        )}
+        {alert !== "overdue" && gcAlert !== "overdue" && alert === "nearing" && (
+           <div className="absolute top-0 right-0 left-0 h-1 bg-amber-400" />
+        )}
+        {alert !== "overdue" && gcAlert !== "overdue" && alert !== "nearing" && gcAlert === "nearing" && (
+           <div className="absolute top-0 right-0 left-0 h-1 bg-lime-400" />
+        )}
         <div className="p-5">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <div className="font-heading font-bold text-lg text-slate-900 group-hover:text-blue-700 truncate">
                 {plant.site_name || "—"}
               </div>
-              <div className="text-xs text-slate-400 font-mono mt-0.5">
+              <div className="text-xs text-slate-400 font-mono mt-0.5 flex flex-wrap items-center gap-1.5">
                 {plant.site_code || plant.asset_id || "—"}
+                {alert === "overdue" && (
+                   <span className="inline-flex items-center text-[9px] bg-red-100 text-red-700 px-1 py-0.5 rounded-sm font-bold uppercase tracking-wider"><Wrench className="w-2.5 h-2.5 mr-0.5"/> Testing Overdue</span>
+                )}
+                {alert === "nearing" && (
+                   <span className="inline-flex items-center text-[9px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded-sm font-bold uppercase tracking-wider"><Wrench className="w-2.5 h-2.5 mr-0.5"/> Testing Due</span>
+                )}
+                {gcAlert === "overdue" && (
+                   <span className="inline-flex items-center text-[9px] bg-red-100 text-red-700 px-1 py-0.5 rounded-sm font-bold uppercase tracking-wider"><SprayCan className="w-2.5 h-2.5 mr-0.5"/> Grass Overdue</span>
+                )}
+                {gcAlert === "nearing" && (
+                   <span className="inline-flex items-center text-[9px] bg-lime-100 text-lime-700 px-1 py-0.5 rounded-sm font-bold uppercase tracking-wider"><SprayCan className="w-2.5 h-2.5 mr-0.5"/> Grass Due</span>
+                )}
               </div>
             </div>
             <Badge className={`${stColor} shrink-0 capitalize`}>{plant.site_status || "—"}</Badge>
@@ -233,6 +339,8 @@ const PLANT_PREFERRED_COLS = [
   ["approver_email",        "Approver"],
   ["cycles_per_month",      "Cleaning /mo"],
   ["pm_cycles_per_quarter", "PM /qtr"],
+  ["grass_cutting_enabled", "Grasscutting Enabled"],
+  ["grass_cutting_frequency", "Grasscutting /yr"],
   ["commission_date",       "Commissioned"],
 ];
 
@@ -328,6 +436,9 @@ function PlantDetail({ siteCode }) {
   const [columns, setColumns] = useState([]);
   const [error, setError] = useState(null);
   const [editOpen, setEditOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("main");
+  const [roofEditOpen, setRoofEditOpen] = useState(false);
+  const [roofToEdit, setRoofToEdit] = useState(null); // null = new, number = index
 
   const load = () => {
     Promise.all([
@@ -359,6 +470,7 @@ function PlantDetail({ siteCode }) {
   }
   const p = data.site || {};
   const subs = data.recent_submissions || [];
+  const roofs = Array.isArray(p.roofs) ? p.roofs : [];
 
   // Group columns into curated sections; any remaining custom columns
   // (added later via Site Management) land in "Additional details".
@@ -435,7 +547,41 @@ function PlantDetail({ siteCode }) {
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+        {/* Roof Tabs */}
+        <div className="flex items-center gap-2 mb-6 border-b border-slate-200 pb-2 overflow-x-auto nice-scroll">
+          <button
+            onClick={() => setActiveTab("main")}
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === "main" ? "border-blue-600 text-blue-600 bg-blue-50/50" : "border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+            }`}
+          >
+            Main Plant Details
+          </button>
+          {roofs.map((r, i) => (
+            <button
+              key={i}
+              onClick={() => setActiveTab(i)}
+              className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors whitespace-nowrap ${
+                activeTab === i ? "border-blue-600 text-blue-600 bg-blue-50/50" : "border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50"
+              }`}
+            >
+              {r.name || `Roof ${i + 1}`}
+            </button>
+          ))}
+          {canEdit && (
+            <Button 
+              variant="ghost" size="sm" 
+              onClick={() => { setRoofToEdit(null); setRoofEditOpen(true); }}
+              className="ml-2 text-slate-500 hover:text-slate-900"
+            >
+              <Plus className="w-4 h-4 mr-1" /> Add Roof
+            </Button>
+          )}
+        </div>
+
+        {activeTab === "main" ? (
+          <>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
           {SECTIONS.map((s) => {
             const rows = s.keys
               .filter((k) => p[k] !== undefined)
@@ -459,55 +605,81 @@ function PlantDetail({ siteCode }) {
               ))}
             </Section>
           )}
-        </div>
+            </div>
 
-        {/* Recent submissions */}
-        <Card className="rounded-2xl border-slate-100 card-soft bg-white">
-          <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-            <div>
-              <div className="font-heading font-semibold text-slate-900">Recent submissions</div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                Submissions that mention this plant (form / PDF)
-              </div>
-            </div>
-            <Link to="/submissions" className="text-xs text-blue-600 hover:underline">
-              Open Submissions Hub <ExternalLink className="w-3 h-3 inline" />
-            </Link>
-          </div>
-          {subs.length === 0 ? (
-            <div className="p-8 text-center text-sm text-slate-400">
-              No submissions reference this plant yet.
-            </div>
-          ) : (
-            <ul className="divide-y divide-slate-100 max-h-[420px] overflow-y-auto nice-scroll">
-              {subs.map((s) => (
-                <li key={s.submission_id} className="p-4 flex items-center justify-between hover:bg-slate-50">
-                  <div className="flex items-center gap-3 min-w-0">
-                    {s.kind === "pdf" ? (
-                      <FileType2 className="w-4 h-4 text-violet-500 shrink-0" />
-                    ) : (
-                      <FileText className="w-4 h-4 text-blue-500 shrink-0" />
-                    )}
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-slate-800 truncate">
-                        {s.submission_id}
-                      </div>
-                      <div className="text-xs text-slate-500">
-                        {formatDate(s.created_at)} · {s.status}
-                      </div>
-                    </div>
+            {/* Equipment Testing Status */}
+            <PlantEquipmentTestingCard site={p} />
+
+            {/* Recent submissions */}
+            <Card className="rounded-2xl border-slate-100 card-soft bg-white">
+              <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <div className="font-heading font-semibold text-slate-900">Recent submissions</div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    Submissions that mention this plant (form / PDF)
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
+                </div>
+                <Link to="/submissions" className="text-xs text-blue-600 hover:underline">
+                  Open Submissions Hub <ExternalLink className="w-3 h-3 inline" />
+                </Link>
+              </div>
+              {subs.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-400">
+                  No submissions reference this plant yet.
+                </div>
+              ) : (
+                <ul className="divide-y divide-slate-100 max-h-[420px] overflow-y-auto nice-scroll">
+                  {subs.map((s) => (
+                    <li key={s.submission_id} className="p-4 flex items-center justify-between hover:bg-slate-50">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {s.kind === "pdf" ? (
+                          <FileType2 className="w-4 h-4 text-violet-500 shrink-0" />
+                        ) : (
+                          <FileText className="w-4 h-4 text-blue-500 shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-slate-800 truncate">
+                            {s.submission_id}
+                          </div>
+                          <div className="text-xs text-slate-500">
+                            {formatDate(s.created_at)} · {s.status}
+                          </div>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
 
-        {/* Documents vault */}
-        <PlantDocumentsCard siteId={p.site_id} />
+            {/* Documents vault */}
+            <PlantDocumentsCard siteId={p.site_id} />
 
-        {/* Edit history timeline */}
-        <PlantEditHistory siteCode={siteCode} />
+            {/* Edit history timeline */}
+            <PlantEditHistory siteCode={siteCode} />
+          </>
+        ) : typeof activeTab === "number" && roofs[activeTab] ? (
+          <RoofDetailView 
+            site={p} 
+            roof={roofs[activeTab]} 
+            roofIndex={activeTab} 
+            canEdit={canEdit}
+            onEdit={() => { setRoofToEdit(activeTab); setRoofEditOpen(true); }}
+            onDelete={async () => {
+              if (!window.confirm(`Delete roof ${roofs[activeTab].name || `Roof ${activeTab + 1}`}?`)) return;
+              try {
+                const newRoofs = [...roofs];
+                newRoofs.splice(activeTab, 1);
+                await api.put(`/sites/${p.site_id}`, { roofs: newRoofs });
+                toast.success("Roof deleted");
+                setActiveTab("main");
+                load();
+              } catch (e) {
+                toast.error("Failed to delete roof");
+              }
+            }}
+          />
+        ) : null}
       </div>
 
       {editOpen && (
@@ -518,6 +690,16 @@ function PlantDetail({ siteCode }) {
           columns={columns}
           onSaved={() => { setEditOpen(false); load(); }}
           onColumnsChanged={(cols) => setColumns(cols)}
+        />
+      )}
+
+      {roofEditOpen && (
+        <EditRoofDialog
+          open={roofEditOpen}
+          onOpenChange={setRoofEditOpen}
+          site={p}
+          roofIndex={roofToEdit}
+          onSaved={(index) => { setRoofEditOpen(false); load(); setActiveTab(index); }}
         />
       )}
     </AppLayout>
@@ -1247,4 +1429,233 @@ function formatBytes(n) {
   let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
+}
+
+function PlantEquipmentTestingCard({ site }) {
+  const [cycles, setCycles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const currentYear = new Date().getFullYear();
+
+  useEffect(() => {
+    if (!site?.site_id) return;
+    setLoading(true);
+    api.get(`/site-cycles?site_id=${encodeURIComponent(site.site_id)}&activity=equipment_testing&year=${currentYear}`)
+      .then((r) => setCycles(r.data?.cycles || []))
+      .catch(() => setCycles([]))
+      .finally(() => setLoading(false));
+  }, [site?.site_id, currentYear]);
+
+  const items = [
+    { cn: 1, key: "freq_ert",          name: "ERT" },
+    { cn: 2, key: "freq_transformer",  name: "Transformer maintenance & Oil Filtration" },
+    { cn: 3, key: "freq_acb",          name: "ACB Maintenance" },
+    { cn: 4, key: "freq_dc_pm",        name: "DC PM" },
+    { cn: 5, key: "freq_meter_cal",    name: "Meter calibration" },
+  ];
+
+  const statusPillLocal = (st) => {
+    const map = {
+      draft:     "bg-slate-100 text-slate-600 border-slate-200",
+      submitted: "bg-amber-100 text-amber-800 border-amber-200",
+      approved:  "bg-emerald-100 text-emerald-800 border-emerald-200",
+      pending:   "bg-slate-100 text-slate-400 border-slate-200",
+    };
+    return map[st] || map.pending;
+  };
+
+  if (!site) return null;
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white mb-6">
+      <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <div className="font-heading font-semibold text-slate-900 flex items-center gap-2">
+            <Wrench className="w-4 h-4 text-blue-600" />
+            Equipment Testing Schedule & Frequency ({currentYear})
+          </div>
+          <div className="text-xs text-slate-500 mt-0.5">
+            Default frequency: 1 year (12 months) from date of completion. Configurable in Site Management.
+          </div>
+        </div>
+        <Link to="/schedule" className="text-xs text-blue-600 hover:underline">
+          Go to Schedule & Actual →
+        </Link>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs text-left border-collapse">
+          <thead className="bg-slate-50 text-slate-700 border-b border-slate-200">
+            <tr>
+              <th className="p-3 font-semibold">Equipment Test</th>
+              <th className="p-3 font-semibold">Frequency (Site Mgr)</th>
+              <th className="p-3 font-semibold">Planned Date</th>
+              <th className="p-3 font-semibold">Completion Date</th>
+              <th className="p-3 font-semibold">Result</th>
+              <th className="p-3 font-semibold">Next Due Date (1 yr / Freq)</th>
+              <th className="p-3 font-semibold">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {loading ? (
+              <tr>
+                <td colSpan={7} className="p-4 text-center text-slate-400">Loading...</td>
+              </tr>
+            ) : items.map((it) => {
+              const freqMos = parseInt(site[it.key], 10) || 12;
+              const cyc = cycles.find((c) => c.cycle_number === it.cn);
+              const schDate = cyc?.schedule?.planned_date || "—";
+              const actDate = cyc?.actual?.actual_date || "—";
+              const result = cyc?.actual?.result || "—";
+              const status = cyc?.actual?.status || cyc?.schedule?.status || "pending";
+
+              // Calculate Next Due Date: Completion date + freqMos months
+              let nextDue = "—";
+              let badge = null;
+              if (cyc?.actual?.actual_date && cyc?.actual?.result === "Done") {
+                const dt = new Date(cyc.actual.actual_date);
+                if (!isNaN(dt.getTime())) {
+                  dt.setMonth(dt.getMonth() + freqMos);
+                  nextDue = dt.toISOString().split("T")[0];
+                }
+              } else if (cyc?.schedule?.planned_date) {
+                nextDue = `Planned: ${cyc.schedule.planned_date}`;
+              }
+
+              if (nextDue !== "—") {
+                 const targetDate = nextDue.startsWith("Planned: ") ? nextDue.replace("Planned: ", "") : nextDue;
+                 const diffDays = (new Date(targetDate).getTime() - new Date().getTime()) / (1000 * 3600 * 24);
+                 if (diffDays < 0 && result !== "Done") {
+                    badge = <span className="ml-2 inline-flex items-center text-[10px] bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider whitespace-nowrap">Overdue</span>;
+                 } else if (diffDays <= 30 && diffDays >= 0 && result !== "Done") {
+                    badge = <span className="ml-2 inline-flex items-center text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-bold uppercase tracking-wider whitespace-nowrap">Due Soon</span>;
+                 }
+              }
+
+              return (
+                <tr key={it.cn} className="hover:bg-slate-50/50 transition-colors">
+                  <td className="p-3 font-medium text-slate-800">{it.name}</td>
+                  <td className="p-3 text-slate-600">
+                    <span className="font-mono bg-blue-50 text-blue-700 px-2 py-1 rounded text-[11px]">
+                      {freqMos} Months {freqMos === 12 ? "(1 Year default)" : ""}
+                    </span>
+                  </td>
+                  <td className="p-3 text-slate-600 font-mono">{schDate}</td>
+                  <td className="p-3 text-slate-600 font-mono">{actDate}</td>
+                  <td className="p-3">
+                    {result === "Done" ? (
+                      <span className="text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded">Done</span>
+                    ) : result === "Missed" ? (
+                      <span className="text-red-700 font-semibold bg-red-50 px-2 py-0.5 rounded">Missed</span>
+                    ) : (
+                      <span className="text-slate-400">—</span>
+                    )}
+                  </td>
+                  <td className="p-3 text-slate-800 font-mono font-medium flex items-center">
+                    {nextDue} {badge}
+                  </td>
+                  <td className="p-3">
+                    <Badge className={`text-[10px] capitalize ${statusPillLocal(status)}`}>{status}</Badge>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+/* --------------------------- Roof Components --------------------------- */
+function RoofDetailView({ site, roof, roofIndex, canEdit, onEdit, onDelete }) {
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white p-6">
+      <div className="flex items-center justify-between mb-4 border-b border-slate-100 pb-4">
+        <h2 className="text-xl font-bold text-slate-900">{roof.name || `Roof ${roofIndex + 1}`}</h2>
+        {canEdit && (
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={onEdit}>
+              <Pencil className="w-4 h-4 mr-1.5" /> Edit
+            </Button>
+            <Button variant="outline" size="sm" onClick={onDelete}
+              className="text-red-600 hover:text-red-700 hover:bg-red-50">
+              <Trash2 className="w-4 h-4 mr-1.5" /> Delete
+            </Button>
+          </div>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Row label="Capacity" value={roof.capacity ? `${roof.capacity} MW` : "—"} />
+        <Row label="Inverter Make" value={roof.inverter_make || "—"} />
+        <Row label="Module Make" value={roof.module_make || "—"} />
+        <Row label="Notes" value={roof.notes || "—"} />
+      </div>
+    </Card>
+  );
+}
+
+function EditRoofDialog({ open, onOpenChange, site, roofIndex, onSaved }) {
+  const isNew = roofIndex === null;
+  const roofs = Array.isArray(site.roofs) ? site.roofs : [];
+  const roof = isNew ? {} : (roofs[roofIndex] || {});
+  const [form, setForm] = useState({
+    name: roof.name || "",
+    capacity: roof.capacity || "",
+    inverter_make: roof.inverter_make || "",
+    module_make: roof.module_make || "",
+    notes: roof.notes || "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.name.trim()) return toast.error("Roof name is required");
+    setSaving(true);
+    try {
+      const newRoofs = [...roofs];
+      if (isNew) { newRoofs.push(form); } else { newRoofs[roofIndex] = form; }
+      await api.put(`/sites/${site.site_id}`, { roofs: newRoofs });
+      toast.success(isNew ? "Roof added" : "Roof updated");
+      onSaved(isNew ? newRoofs.length - 1 : roofIndex);
+    } catch (e) {
+      toast.error("Failed to save roof");
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{isNew ? "Add Roof" : `Edit: ${roof.name || "Roof"}`}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+          <div>
+            <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wide">Roof Name *</label>
+            <Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. Roof 1" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wide">Capacity (MW)</label>
+            <Input value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })} placeholder="e.g. 5.5" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wide">Inverter Make</label>
+            <Input value={form.inverter_make} onChange={e => setForm({ ...form, inverter_make: e.target.value })} placeholder="e.g. Huawei" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wide">Module Make</label>
+            <Input value={form.module_make} onChange={e => setForm({ ...form, module_make: e.target.value })} placeholder="e.g. Jinko" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-500 mb-1 block uppercase tracking-wide">Notes</label>
+            <Textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Optional notes..." />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={save} disabled={saving} className="bg-blue-600 hover:bg-blue-700 text-white">
+            {saving ? "Saving..." : "Save Roof"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }

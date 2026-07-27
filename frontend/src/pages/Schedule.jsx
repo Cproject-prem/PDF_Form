@@ -17,7 +17,8 @@ import {
 import {
   Calendar as CalendarIcon, CheckCircle2, Send, Save, Unlock, Lock,
   ListChecks, TrendingUp, Download, Grid3x3, Wrench, SprayCan,
-  Paperclip, X as XIcon, FileText, Image as ImageIcon,
+  Paperclip, X as XIcon, FileText, Image as ImageIcon, Pencil,
+  Search,
 } from "lucide-react";
 import { API } from "@/lib/api";
 
@@ -35,9 +36,26 @@ const PM_QUARTERS = [
   { v: 12, n: "Q4 (Oct–Dec)" },
 ];
 
+export const EQUIPMENT_TESTING_ITEMS = [
+  { id: 1, key: "ert",          name: "ERT",                                      countKey: "ert_count" },
+  { id: 2, key: "transformer",  name: "Transformer maintenance & Oil Filtration", countKey: "transformer_count" },
+  { id: 3, key: "acb",          name: "ACB Maintenance",                          countKey: "acb_count" },
+  { id: 4, key: "dc_pm",        name: "DC PM",                                    countKey: "dc_pm_count" },
+  { id: 5, key: "meter_cal",    name: "Meter calibration",                        countKey: "meter_cal_count" },
+];
+
+/** Returns true when a site has a count > 0 for the given equipment item */
+export const eqItemEnabled = (site, item) => {
+  const v = site[item.countKey];
+  if (!v) return false;
+  return parseInt(v, 10) > 0;
+};
+
 const ACTIVITIES = [
-  { v: "cleaning", n: "Module Cleaning (monthly)" },
-  { v: "pm",       n: "PM (quarterly)" },
+  { v: "cleaning",          n: "Module Cleaning (monthly)" },
+  { v: "pm",                n: "PM (quarterly)" },
+  { v: "equipment_testing", n: "Equipment Testing (annual)" },
+  { v: "grasscutting",      n: "Grasscutting (yearly)" },
 ];
 
 /** Build [prevYear, currentYear, nextYear] + auto-add next year when the
@@ -84,6 +102,7 @@ export default function SchedulePage() {
   const [summary, setSummary] = useState([]);
   const [gridData, setGridData] = useState({ sites: [], cycles: [] });
   const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
 
   const monthOptions = activity === "pm" ? PM_QUARTERS : MONTHS;
 
@@ -102,7 +121,9 @@ export default function SchedulePage() {
     setLoading(true);
     try {
       if (view === "month") {
-        const r = await api.get(`/site-cycles?year=${year}&month=${month}&activity=${activity}`);
+        let qs = `year=${year}&activity=${activity}`;
+        if (activity !== "equipment_testing" && activity !== "grasscutting") qs += `&month=${month}`;
+        const r = await api.get(`/site-cycles?${qs}`);
         setData(r.data);
       } else if (view === "grid") {
         // fetch full year, then group client-side
@@ -120,6 +141,55 @@ export default function SchedulePage() {
   }, [year, month, view, activity]);
 
   useEffect(() => { load(); }, [load]);
+
+  const isSiteActiveForActivity = (s, act) => {
+    if (act === "grasscutting") {
+      const v = String(s.grass_cutting_enabled ?? "0").trim().toLowerCase();
+      return v === "1" || v === "true" || v === "yes";
+    }
+    if (act === "equipment_testing") {
+      return EQUIPMENT_TESTING_ITEMS.some(it => eqItemEnabled(s, it));
+    }
+    return true; // cleaning, pm always active for all sites
+  };
+
+  const filteredData = useMemo(() => {
+    let sites = data.sites.filter(s => isSiteActiveForActivity(s, activity));
+    if (q.trim()) {
+      const needle = q.toLowerCase();
+      sites = sites.filter(s => 
+        (s.site_name || "").toLowerCase().includes(needle) || 
+        (s.site_code || "").toLowerCase().includes(needle) || 
+        (s.asset_id || "").toLowerCase().includes(needle)
+      );
+    }
+    return { sites, cycles: data.cycles };
+  }, [data, q, activity]);
+
+  const filteredGridData = useMemo(() => {
+    let sites = gridData.sites.filter(s => isSiteActiveForActivity(s, activity));
+    if (q.trim()) {
+      const needle = q.toLowerCase();
+      sites = sites.filter(s => 
+        (s.site_name || "").toLowerCase().includes(needle) || 
+        (s.site_code || "").toLowerCase().includes(needle) || 
+        (s.asset_id || "").toLowerCase().includes(needle)
+      );
+    }
+    return { sites, cycles: gridData.cycles };
+  }, [gridData, q, activity]);
+
+  const filteredSummary = useMemo(() => {
+    let sites = summary.filter(s => isSiteActiveForActivity(s, activity));
+    if (q.trim()) {
+      const needle = q.toLowerCase();
+      sites = sites.filter(s => 
+        (s.site_name || "").toLowerCase().includes(needle) || 
+        (s.site_code || "").toLowerCase().includes(needle)
+      );
+    }
+    return sites;
+  }, [summary, q, activity]);
 
   return (
     <AppLayout>
@@ -202,6 +272,17 @@ export default function SchedulePage() {
         {/* Filters */}
         <Card className="mb-4 rounded-2xl border-slate-100 card-soft bg-white">
           <div className="flex flex-wrap items-center gap-3 p-4">
+            <div className="relative flex-1 min-w-[240px] max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Input
+                data-testid="schedule-search"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search by plant name or ID…"
+                className="pl-10 h-9"
+              />
+            </div>
+            <div className="w-px h-6 bg-slate-200 mx-2 hidden sm:block" />
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500 uppercase tracking-wider">Activity</span>
               <Select value={activity} onValueChange={setActivity}>
@@ -230,7 +311,7 @@ export default function SchedulePage() {
                 </SelectContent>
               </Select>
             </div>
-            {view === "month" && (
+            {view === "month" && !["equipment_testing", "grasscutting"].includes(activity) && (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-500 uppercase tracking-wider">
                   {activity === "pm" ? "Quarter" : "Month"}
@@ -251,27 +332,121 @@ export default function SchedulePage() {
         {loading ? (
           <div className="p-12 text-center text-slate-400">Loading…</div>
         ) : view === "month" ? (
-          <MonthlyTable
-            data={data}
-            year={year}
-            month={month}
-            activity={activity}
-            reload={load}
-            isAdminOrMore={isAdminOrMore}
-            role={user?.role}
-          />
+          activity === "equipment_testing" ? (
+            <EquipmentMonthlyTable
+              data={filteredData}
+              year={year}
+              month={12}
+              activity={activity}
+              reload={load}
+              isAdminOrMore={isAdminOrMore}
+              role={user?.role}
+            />
+          ) : activity === "grasscutting" ? (
+            <GrasscuttingTable
+              data={filteredData}
+              year={year}
+              activity={activity}
+              reload={load}
+              isAdminOrMore={isAdminOrMore}
+              role={user?.role}
+            />
+          ) : (
+            <MonthlyTable
+              data={filteredData}
+              year={year}
+              month={month}
+              activity={activity}
+              reload={load}
+              isAdminOrMore={isAdminOrMore}
+              role={user?.role}
+            />
+          )
         ) : view === "grid" ? (
           <YearlyGrid
-            data={gridData}
+            data={filteredGridData}
             year={year}
             activity={activity}
             onCellClick={(m) => { setMonth(m); setView("month"); }}
           />
         ) : (
-          <YearlySummary summary={summary} year={year} activity={activity} />
+          <YearlySummary summary={filteredSummary} year={year} activity={activity} />
         )}
       </div>
     </AppLayout>
+  );
+}
+
+/* ------------------------- Grasscutting Table ---------------------------- */
+function GrasscuttingTable({ data, year, activity, reload, isAdminOrMore, role }) {
+  const { sites, cycles } = data;
+
+  // Only show sites where grass_cutting_enabled is truthy
+  const activeSites = sites.filter(s => {
+    const v = String(s.grass_cutting_enabled ?? "0").trim().toLowerCase();
+    return v === "1" || v === "true" || v === "yes";
+  });
+
+  const byKey = useMemo(() => {
+    const m = {};
+    for (const c of cycles) m[`${c.site_id}::${c.cycle_number}`] = c;
+    return m;
+  }, [cycles]);
+
+  if (!activeSites.length) {
+    return (
+      <div className="p-16 text-center bg-white rounded-2xl border border-dashed border-slate-200">
+        <SprayCan className="w-10 h-10 mx-auto text-slate-300" />
+        <p className="text-sm text-slate-500 mt-3">
+          No plants have Grasscutting enabled. Set <code>grass_cutting_enabled = 1</code> in Site Management.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm border-collapse" data-testid="grasscutting-table">
+          <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700">
+            <tr className="text-left">
+              <th className="p-3 font-semibold w-[220px] border-r border-slate-200">Site</th>
+              <th className="p-3 font-semibold w-[180px] border-r border-slate-200">Occurrence</th>
+              <th className="p-3 font-semibold w-[150px] border-r border-slate-200">Schedule</th>
+              <th className="p-3 font-semibold w-[210px] border-r border-slate-200">Actual</th>
+              <th className="p-3 font-semibold border-r border-slate-200">Remark</th>
+              <th className="p-3 font-semibold w-[130px] border-r border-slate-200">Status</th>
+              <th className="p-3 font-semibold w-[220px] text-right">Save / Submit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {activeSites.map((site) => {
+              const cap = parseInt(site.grass_cutting_frequency, 10) || 1;
+              return Array.from({ length: cap }).map((_, i) => {
+                const cn = i + 1;
+                const cyc = byKey[`${site.site_id}::${cn}`];
+                return (
+                  <CycleRow
+                    key={`${site.site_id}-${cn}`}
+                    site={site}
+                    cn={cn}
+                    cap={cap}
+                    cyc={cyc}
+                    year={year}
+                    month={12}
+                    activity={activity}
+                    reload={reload}
+                    isAdminOrMore={isAdminOrMore}
+                    role={role}
+                    showPlant={i === 0}
+                  />
+                );
+              });
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }
 
@@ -285,8 +460,12 @@ function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role
     return m;
   }, [cycles]);
 
-  const capOf = (s) => Math.max(1, parseInt(
-    activity === "pm" ? s.pm_cycles_per_quarter : s.cycles_per_month, 10) || 1);
+  const capOf = (s) => {
+    if (activity === "equipment_testing") return 5;
+    if (activity === "grasscutting") return parseInt(s.grass_cutting_frequency, 10) || 1;
+    if (activity === "pm") return Math.max(1, parseInt(s.pm_cycles_per_quarter, 10) || 1);
+    return Math.max(1, parseInt(s.cycles_per_month, 10) || 1);
+  };
 
   if (!sites.length) {
     return (
@@ -306,7 +485,9 @@ function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role
           <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700">
             <tr className="text-left">
               <th className="p-3 font-semibold w-[220px] border-r border-slate-200">Site</th>
-              <th className="p-3 font-semibold w-[110px] border-r border-slate-200">Cycle</th>
+              <th className="p-3 font-semibold w-[180px] border-r border-slate-200">
+                {activity === "equipment_testing" ? "Equipment Test" : "Cycle"}
+              </th>
               <th className="p-3 font-semibold w-[150px] border-r border-slate-200">Schedule</th>
               <th className="p-3 font-semibold w-[210px] border-r border-slate-200">Actual</th>
               <th className="p-3 font-semibold border-r border-slate-200">Remark</th>
@@ -350,6 +531,8 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
   const [saving, setSaving] = useState(false);
   const sch = cyc?.schedule || {};
   const act = cyc?.actual || {};
+
+  const eqItem = activity === "equipment_testing" ? EQUIPMENT_TESTING_ITEMS[cn - 1] : null;
 
   const [form, setForm] = useState({
     planned_date: sch.planned_date || "",
@@ -424,27 +607,41 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
   const actHasAttachments = ((act.evidence_files || []).length > 0);
   void schHasAttachments;
 
-  const minDate = `${year}-${String(month).padStart(2, "0")}-01`;
-  const maxDate = `${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`;
+  const isYearly = ["equipment_testing", "grasscutting"].includes(activity);
+  const minDate = isYearly ? `${year}-01-01` : `${year}-${String(month).padStart(2, "0")}-01`;
+  const maxDate = isYearly ? `${year}-12-31` : `${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`;
 
   return (
     <>
       <tr className="border-b border-slate-200 align-middle hover:bg-slate-50/40">
-        {/* Site column — merged across every cycle of this plant */}
-        {showPlant && (
+          {showPlant && (
           <td rowSpan={cap} className="p-3 border-r border-slate-200 align-middle bg-slate-50/40">
             <div className="font-semibold text-slate-900">{site.site_name}</div>
             <div className="text-[11px] text-slate-500 font-mono mt-0.5">{site.site_code}</div>
             <div className="text-[10px] text-slate-400 mt-1">
-              {cap} {activity === "pm" ? "PM cycle" : "cycle"}{cap > 1 ? "s" : ""}
-              {activity === "pm" ? " / quarter" : " / month"}
+              {activity === "equipment_testing"
+                ? "5 Equipment Tests"
+                : activity === "grasscutting"
+                ? `${cap} grasscut${cap > 1 ? "s" : ""} / year`
+                : `${cap} ${activity === "pm" ? "PM cycle" : "cycle"}${cap > 1 ? "s" : ""} ${activity === "pm" ? "/ quarter" : "/ month"}`}
             </div>
           </td>
         )}
 
-        {/* Cycle label */}
+        {/* Cycle / Equipment item label */}
         <td className="p-3 border-r border-slate-200 text-slate-700 font-medium">
-          {ordinal(cn)} cycle
+          {eqItem ? (
+            <div>
+              <div className="font-semibold text-slate-900 text-xs">{eqItem.name}</div>
+              <div className="text-[10px] text-blue-600 mt-0.5 font-normal">
+                Count: {site[eqItem?.countKey] || 0}
+              </div>
+            </div>
+          ) : activity === "grasscutting" ? (
+            `Occurrence ${cn} of ${cap}`
+          ) : (
+            `${ordinal(cn)} cycle`
+          )}
         </td>
 
         {/* Schedule — planned date */}
@@ -463,7 +660,7 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
 
         {/* Actual — actual date + Done/Missed result */}
         <td className="p-2 border-r border-slate-200">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <Input
               type="date"
               data-testid={`act-date-${site.site_id}-${cn}`}
@@ -719,8 +916,12 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
     return m;
   }, [cycles]);
 
-  const capOf = (s) => Math.max(1, parseInt(
-    activity === "pm" ? s.pm_cycles_per_quarter : s.cycles_per_month, 10) || 1);
+  const capOf = (s) => {
+    if (activity === "equipment_testing") return 5;
+    if (activity === "grasscutting") return parseInt(s.grass_cutting_frequency, 10) || 1;
+    return Math.max(1, parseInt(
+      activity === "pm" ? s.pm_cycles_per_quarter : s.cycles_per_month, 10) || 1);
+  };
 
   if (!sites.length) {
     return (
@@ -750,7 +951,9 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
           <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700 sticky top-0">
             <tr className="text-left">
               <th className="p-3 font-semibold w-[220px] border-r border-slate-200">Site</th>
-              <th className="p-3 font-semibold w-[90px] border-r border-slate-200">Cycle</th>
+              <th className="p-3 font-semibold w-[160px] border-r border-slate-200">
+                 {activity === "equipment_testing" ? "Equipment Test" : "Cycle"}
+              </th>
               {cols.map((c) => (
                 <th key={c.v} className="p-2 font-semibold text-center border-r border-slate-200">
                   {c.n}
@@ -776,8 +979,8 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
                         </div>
                       </td>
                     )}
-                    <td className="p-2 border-r border-slate-200 text-slate-700 font-medium">
-                      {ordinal(cn)}
+                    <td className="p-2 border-r border-slate-200 text-slate-700 font-medium whitespace-pre-wrap">
+                      {activity === "equipment_testing" ? EQUIPMENT_TESTING_ITEMS[cn - 1]?.name : ordinal(cn)}
                     </td>
                     {cols.map((c) => {
                       const cy  = byKey[`${s.site_id}::${c.v}::${cn}`] || null;
@@ -999,6 +1202,340 @@ function AttachStrip({ cycleId, which, canEdit, files, reload, required = false 
             />
           </label>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------- Equipment Monthly Table --------------------------- */
+function EquipmentMonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role }) {
+  const { sites, cycles } = data;
+
+  const byKey = useMemo(() => {
+    const m = {};
+    for (const c of cycles) m[`${c.site_id}::${c.cycle_number}`] = c;
+    return m;
+  }, [cycles]);
+
+  // Only show columns where at least 1 site has that item enabled
+  const visibleItems = useMemo(() =>
+    EQUIPMENT_TESTING_ITEMS.filter(it => sites.some(s => eqItemEnabled(s, it))),
+  [sites]);
+
+  if (!sites.length) {
+    return (
+      <div className="p-16 text-center bg-white rounded-2xl border border-dashed border-slate-200">
+        <CalendarIcon className="w-10 h-10 mx-auto text-slate-300" />
+        <p className="text-sm text-slate-500 mt-3">
+          No plants visible for your access scope.
+        </p>
+      </div>
+    );
+  }
+
+  if (!visibleItems.length) {
+    return (
+      <div className="p-16 text-center bg-white rounded-2xl border border-dashed border-slate-200">
+        <Wrench className="w-10 h-10 mx-auto text-slate-300" />
+        <p className="text-sm text-slate-500 mt-3">
+          No equipment items are enabled. Set <code>ert_enabled = 1</code>, <code>transformer_enabled = 1</code>, etc. in Site Management.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white overflow-hidden">
+      <div className="overflow-x-auto nice-scroll">
+        <table className="w-full text-sm border-collapse min-w-[1000px]">
+          <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700">
+            <tr className="text-left">
+              <th className="p-3 font-semibold w-[220px] border-r border-slate-200 bg-white sticky left-0 z-10 shadow-[1px_0_0_0_#e2e8f0]">Site</th>
+              {visibleItems.map((it) => (
+                <th key={it.id} className="p-3 font-semibold min-w-[180px] border-r border-slate-200">
+                  {it.name}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sites.map((s) => (
+              <tr key={s.site_id} className="border-b border-slate-200 hover:bg-slate-50/40">
+                <td className="p-3 border-r border-slate-200 bg-white sticky left-0 z-10 shadow-[1px_0_0_0_#e2e8f0] align-top">
+                  <div className="font-semibold text-slate-900">{s.site_name}</div>
+                  <div className="text-[11px] text-slate-500 font-mono mt-0.5">{s.site_code}</div>
+                </td>
+                {visibleItems.map((it) => {
+                  const cn = it.id;
+                  const enabled = eqItemEnabled(s, it);
+                  const cyc = byKey[`${s.site_id}::${cn}`] || null;
+                  return (
+                    <td key={it.id} className={`p-2 border-r border-slate-200 align-top h-full ${!enabled ? "bg-slate-50" : ""}`}>
+                      {enabled ? (
+                        <EquipmentCycleCell
+                          site={s} cn={cn} eqItem={it} cyc={cyc} year={year} month={month}
+                          activity={activity} reload={reload} isAdminOrMore={isAdminOrMore} role={role}
+                        />
+                      ) : (
+                        <div className="flex items-center justify-center h-full min-h-[60px] text-[10px] text-slate-300 italic">N/A</div>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function EquipmentCycleCell({ site, cn, eqItem, cyc, year, month, activity, reload, isAdminOrMore, role }) {
+  const [open, setOpen] = useState(false);
+
+  const sch = cyc?.schedule || {};
+  const act = cyc?.actual || {};
+  const status = act.status || sch.status || "pending";
+  
+  const schDate = sch.planned_date;
+  const actDate = act.actual_date;
+  const result = act.result;
+
+  const statusPillLocal = (st) => {
+    const map = {
+      draft:     "bg-slate-100 text-slate-600 border-slate-200",
+      submitted: "bg-amber-100 text-amber-800 border-amber-200",
+      approved:  "bg-emerald-100 text-emerald-800 border-emerald-200",
+      pending:   "bg-slate-100 text-slate-400 border-slate-200",
+    };
+    return map[st] || map.pending;
+  };
+
+  return (
+    <>
+      <div 
+        className="group relative flex flex-col gap-1.5 p-2 rounded-lg border border-transparent hover:border-blue-200 hover:bg-blue-50/50 cursor-pointer transition-colors h-full min-h-[60px]"
+        onClick={() => setOpen(true)}
+      >
+         <div className="flex items-center justify-between">
+           <Badge className={`text-[9px] px-1 py-0 capitalize ${statusPillLocal(status)}`}>{status}</Badge>
+           <div className="text-[9px] text-slate-400 font-mono">Count: {site[eqItem.countKey] || 0}</div>
+         </div>
+         {schDate || actDate ? (
+            <div className="text-xs space-y-1 mt-1">
+              {schDate && <div><span className="text-slate-400 inline-block w-3">P:</span> <span className="font-mono">{schDate}</span></div>}
+              {actDate && <div><span className="text-slate-400 inline-block w-3">A:</span> <span className="font-mono">{actDate}</span> {result === 'Done' ? <span className="text-emerald-600 font-bold ml-1 text-[10px]">✔</span> : result === 'Missed' ? <span className="text-red-600 font-bold ml-1 text-[10px]">✖</span> : null}</div>}
+            </div>
+         ) : (
+            <div className="text-[10px] text-slate-300 italic mt-1 text-center py-2 border border-dashed border-transparent group-hover:border-blue-200 rounded">Unscheduled</div>
+         )}
+         <div className="absolute inset-0 bg-blue-500/5 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+           <span className="bg-white text-blue-600 text-[10px] font-medium px-2 py-1 rounded shadow-sm flex items-center gap-1 border border-blue-100"><Pencil className="w-3 h-3"/> Edit</span>
+         </div>
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-xl">
+           <DialogHeader>
+             <DialogTitle className="flex flex-col gap-1">
+               <span className="text-lg">{site.site_name}</span>
+               <span className="text-sm text-slate-500 font-normal">{eqItem.name} (Count: {site[eqItem.countKey] || 0})</span>
+             </DialogTitle>
+           </DialogHeader>
+           <div className="mt-2">
+             <EquipmentCycleEditForm 
+                site={site} cn={cn} cyc={cyc} year={year} month={month} activity={activity} 
+                reload={() => { reload(); setOpen(false); }} 
+                isAdminOrMore={isAdminOrMore} role={role}
+                onCancel={() => setOpen(false)}
+             />
+           </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function EquipmentCycleEditForm({ site, cn, cyc, year, month, activity, reload, isAdminOrMore, role, onCancel }) {
+  const [saving, setSaving] = useState(false);
+  const sch = cyc?.schedule || {};
+  const act = cyc?.actual || {};
+
+  const [form, setForm] = useState({
+    planned_date: sch.planned_date || "",
+    sch_notes:    sch.notes || "",
+    actual_date:  act.actual_date || "",
+    result:       act.result || "",
+    act_notes:    act.notes || "",
+  });
+
+  const canEditSch = sch.status !== "approved" && (sch.status !== "submitted" || isAdminOrMore);
+  const canEditAct = act.status !== "approved" && (act.status !== "submitted" || isAdminOrMore);
+
+  const save = async (which) => {
+    setSaving(true);
+    try {
+      const body = { site_id: site.site_id, year, month, cycle_number: cn, activity };
+      if (which === "schedule") body.schedule = {
+        planned_date: form.planned_date || null, notes: form.sch_notes || null,
+      };
+      else body.actual = {
+        actual_date: form.actual_date || null,
+        result:      form.result || null,
+        notes:       form.act_notes || null,
+      };
+      await api.post("/site-cycles/upsert", body);
+      toast.success(which === "schedule" ? "Schedule saved" : "Actual saved");
+      await reload();
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Save failed"));
+    } finally { setSaving(false); }
+  };
+
+  const submit = async (which) => {
+    if (!cyc?.cycle_id) return toast.error("Save a draft first");
+    setSaving(true);
+    try {
+      await api.post(`/site-cycles/${cyc.cycle_id}/submit-${which}`);
+      toast.success("Submitted for approval");
+      await reload();
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Submit failed"));
+    } finally { setSaving(false); }
+  };
+
+  const approve = async (which) => {
+    if (!cyc?.cycle_id) return;
+    setSaving(true);
+    try {
+      await api.post(`/site-cycles/${cyc.cycle_id}/approve-${which}`);
+      toast.success("Approved");
+      await reload();
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Approve failed"));
+    } finally { setSaving(false); }
+  };
+
+  const statusPillLocal = (st) => {
+    const map = {
+      draft:     "bg-slate-100 text-slate-600 border-slate-200",
+      submitted: "bg-amber-100 text-amber-800 border-amber-200",
+      approved:  "bg-emerald-100 text-emerald-800 border-emerald-200",
+      pending:   "bg-slate-100 text-slate-400 border-slate-200",
+    };
+    return map[st] || map.pending;
+  };
+
+  const isYearly = ["equipment_testing", "grasscutting"].includes(activity);
+  const minDate = isYearly ? `${year}-01-01` : `${year}-${String(month).padStart(2, "0")}-01`;
+  const monthLastDay = (y, m) => new Date(y, m, 0).getDate();
+  const maxDate = isYearly ? `${year}-12-31` : `${year}-${String(month).padStart(2, "0")}-${monthLastDay(year, month)}`;
+
+  return (
+    <div className="space-y-4">
+      {/* SCHEDULE */}
+      <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-200">
+        <h4 className="font-semibold text-slate-800 mb-3 flex items-center justify-between">
+          <span>Schedule</span>
+          <Badge className={`capitalize ${statusPillLocal(sch.status || "draft")}`}>{sch.status || "draft"}</Badge>
+        </h4>
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block font-medium">Planned Date</label>
+            <Input
+              type="date"
+              value={form.planned_date || ""}
+              disabled={!canEditSch}
+              min={minDate} max={maxDate}
+              onChange={(e) => setForm({ ...form, planned_date: e.target.value })}
+              className="text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block font-medium">Notes</label>
+            <Input
+              placeholder="Remarks..."
+              value={form.sch_notes || ""}
+              disabled={!canEditSch}
+              onChange={(e) => setForm({ ...form, sch_notes: e.target.value })}
+              className="text-sm"
+            />
+          </div>
+        </div>
+        <div className="flex gap-2">
+           {canEditSch && <Button size="sm" onClick={() => save("schedule")} disabled={saving} variant="outline">Save Draft</Button>}
+           {sch.status === "draft" && <Button size="sm" onClick={() => submit("schedule")} disabled={saving}>Submit</Button>}
+           {sch.status === "submitted" && isAdminOrMore && <Button size="sm" onClick={() => approve("schedule")} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">Approve</Button>}
+        </div>
+        <div className="mt-4 pt-4 border-t border-slate-200 border-dashed">
+          <label className="text-xs text-slate-500 mb-2 block font-medium">Attachments</label>
+          <AttachStrip
+            cycleId={cyc?.cycle_id}
+            which="schedule"
+            canEdit={canEditSch}
+            files={sch.evidence_files}
+            reload={reload}
+            required={false}
+          />
+        </div>
+      </div>
+
+      {/* ACTUAL */}
+      <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-200">
+        <h4 className="font-semibold text-slate-800 mb-3 flex items-center justify-between">
+          <span>Actual Work</span>
+          <Badge className={`capitalize ${statusPillLocal(act.status || "draft")}`}>{act.status || "draft"}</Badge>
+        </h4>
+        <div className="grid grid-cols-3 gap-4 mb-4">
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block font-medium">Actual Date</label>
+            <Input
+              type="date"
+              value={form.actual_date || ""}
+              disabled={!canEditAct}
+              min={minDate} max={maxDate}
+              onChange={(e) => setForm({ ...form, actual_date: e.target.value })}
+              className="text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block font-medium">Result</label>
+            <Select value={form.result || ""} onValueChange={(v) => setForm({ ...form, result: v })} disabled={!canEditAct}>
+              <SelectTrigger className="text-sm h-9"><SelectValue placeholder="—" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Done">Done</SelectItem>
+                <SelectItem value="Missed">Missed</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block font-medium">Notes</label>
+            <Input
+              placeholder="Remarks..."
+              value={form.act_notes || ""}
+              disabled={!canEditAct}
+              onChange={(e) => setForm({ ...form, act_notes: e.target.value })}
+              className="text-sm"
+            />
+          </div>
+        </div>
+        <div className="flex gap-2">
+           {canEditAct && <Button size="sm" onClick={() => save("actual")} disabled={saving} variant="outline">Save Draft</Button>}
+           {act.status === "draft" && <Button size="sm" onClick={() => submit("actual")} disabled={saving}>Submit</Button>}
+           {act.status === "submitted" && isAdminOrMore && <Button size="sm" onClick={() => approve("actual")} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">Approve</Button>}
+        </div>
+        <div className="mt-4 pt-4 border-t border-slate-200 border-dashed">
+          <label className="text-xs text-slate-500 mb-2 block font-medium">Attachments</label>
+          <AttachStrip
+            cycleId={cyc?.cycle_id}
+            which="actual"
+            canEdit={canEditAct}
+            files={act.evidence_files}
+            reload={reload}
+            required={true}
+          />
+        </div>
       </div>
     </div>
   );

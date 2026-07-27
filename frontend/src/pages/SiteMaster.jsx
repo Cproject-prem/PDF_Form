@@ -43,6 +43,10 @@ export default function SiteMasterPage() {
   const [importing, setImporting] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [imports, setImports] = useState([]);
+  const [roofImportOpen, setRoofImportOpen] = useState(false);
+  const [roofImportFile, setRoofImportFile] = useState(null);
+  const [roofImporting, setRoofImporting] = useState(false);
+  const roofFileRef = useRef(null);
   const gridRef = useRef(null);
   const fileRef = useRef(null);
 
@@ -221,6 +225,34 @@ export default function SiteMasterPage() {
     setHistoryOpen(true);
   };
 
+  const doRoofImport = async () => {
+    if (!roofImportFile) { toast.error("Choose a file"); return; }
+    setRoofImporting(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", roofImportFile);
+      const token = localStorage.getItem("ff_token");
+      const r = await fetch(`${API}/sites/roofs/import`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || "Import failed");
+      const data = await r.json();
+      toast.success(data.message || "Roofs imported");
+      if (data.not_found?.length) {
+        toast.warning(`Plants not found: ${data.not_found.join(", ")}`);
+      }
+      setRoofImportOpen(false);
+      setRoofImportFile(null);
+      await load();
+    } catch (e) {
+      toast.error(e.message || "Import failed");
+    } finally {
+      setRoofImporting(false);
+    }
+  };
+
   return (
     <AppLayout>
       <div className="max-w-[1400px]">
@@ -267,6 +299,17 @@ export default function SiteMasterPage() {
               title="Re-attach every site whose vendor_id is empty to the matching vendor by name or email."
             >
               <Link2 className="w-4 h-4 mr-1" /> Relink vendors
+            </Button>
+            {/* ── Roofs section ── */}
+            <span className="h-6 border-l border-slate-200 mx-1" />
+            <Button variant="outline" size="sm" onClick={() => authedDownload(`${API}/sites/roofs/template.xlsx`, "roofs-template.xlsx")} title="Download Roofs Excel template">
+              <FileSpreadsheet className="w-4 h-4 mr-1" /> Roofs Template
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => authedDownload(`${API}/sites/roofs/export.xlsx`, "roofs-export.xlsx")} title="Export all roof data">
+              <Download className="w-4 h-4 mr-1" /> Export Roofs
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setRoofImportOpen(true)} title="Import roofs from Excel">
+              <Upload className="w-4 h-4 mr-1" /> Import Roofs
             </Button>
           </div>
         </div>
@@ -391,6 +434,35 @@ export default function SiteMasterPage() {
               </div>
             ))}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Roofs Import dialog */}
+      <Dialog open={roofImportOpen} onOpenChange={setRoofImportOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Import Roofs (Bulk)</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <p className="text-sm text-slate-500">
+              Upload an Excel/CSV with columns: <strong>Plant Name</strong>, <strong>Roof Name</strong>, Capacity (MW), Inverter Make, Module Make, Notes.
+            </p>
+            <p className="text-xs text-slate-400">
+              🔁 Roofs are <strong>merged</strong> — existing roofs with the same name are updated, new names are appended. Plants are matched by Plant Name (case-insensitive).
+            </p>
+            <input
+              ref={roofFileRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={(e) => setRoofImportFile(e.target.files?.[0])}
+              className="block w-full text-sm border border-slate-200 rounded-lg p-2"
+            />
+            {roofImportFile && <p className="text-xs text-slate-500">{roofImportFile.name} ({Math.round(roofImportFile.size / 1024)} KB)</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRoofImportOpen(false)}>Cancel</Button>
+            <Button onClick={doRoofImport} disabled={roofImporting || !roofImportFile} className="bg-blue-600 hover:bg-blue-700">
+              {roofImporting ? "Importing…" : "Import Roofs"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </AppLayout>

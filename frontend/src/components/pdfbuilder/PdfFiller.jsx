@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { resolveOptionBoxes } from "@/lib/pdfFieldTypes";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -307,10 +308,17 @@ function useDynamicOptions(field) {
 function DropdownControl({ f, common }) {
   const opts = useDynamicOptions(f);
   return (
-    <select {...common}>
-      <option value="">{f.placeholder || "Select…"}</option>
-      {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-    </select>
+    <SearchableDropdown
+      options={opts}
+      value={common.value}
+      onChange={(v) => common.onChange({ target: { value: v } })}
+      placeholder={f.placeholder || "Select…"}
+      disabled={common.readOnly}
+      testId={common["data-testid"]}
+      fontSize={common.style?.fontSize}
+      fontColor={common.style?.color}
+      textAlign={common.style?.textAlign}
+    />
   );
 }
 

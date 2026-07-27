@@ -329,38 +329,55 @@ export default function PdfBuilderPage() {
         </div>
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
-        <PdfFieldPalette onPick={onPaletteAdd} />
-        <PdfThumbnails fileUrl={fileUrl} currentPage={page} onJump={jumpTo} />
-        <PdfCanvas
-          fileUrl={fileUrl}
-          fields={tpl.fields}
-          pages={tpl.pages}
-          zoom={zoom}
-          rotation={rotation}
-          selectedId={selectedId}
-          showGrid={showGrid}
-          snapToGrid={snap}
-          onSelect={setSelectedId}
-          onFieldChange={onFieldChange}
-          onAddField={onAddField}
-          onDuplicate={onDuplicate}
-          onDelete={onDelete}
-          registerPageRef={(p, ref) => { pageRefs.current[p] = ref; }}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+
+    {/* Left Panel */}
+    <PdfFieldPalette onPick={onPaletteAdd} />
+
+    {/* Thumbnails */}
+    <PdfThumbnails
+        fileUrl={fileUrl}
+        currentPage={page}
+        onJump={jumpTo}
+    />
+
+    {/* Scrollable PDF */}
+		<div className="flex-1 h-[1020px] overflow-y-auto overflow-x-auto bg-gray-100">     
+		<PdfCanvas
+            fileUrl={fileUrl}
+            fields={tpl.fields}
+            pages={tpl.pages}
+            zoom={zoom}
+            rotation={rotation}
+            selectedId={selectedId}
+            showGrid={showGrid}
+            snapToGrid={snap}
+            onSelect={setSelectedId}
+            onFieldChange={onFieldChange}
+            onAddField={onAddField}
+            onDuplicate={onDuplicate}
+            onDelete={onDelete}
+            registerPageRef={(p, ref) => {
+            pageRefs.current[p] = ref;
+            }}
         />
-        <PdfProperties
-          field={selected}
-          fields={tpl.fields}
-          onChange={onFieldChange}
-          onDuplicate={onDuplicate}
-          onDelete={onDelete}
-          onZ={onZ}
-          onLock={onLock}
-          onVisible={onVisible}
-          template={tpl}
-          onTemplateChange={(patch) => update({ ...tpl, ...patch })}
-        />
-      </div>
+    </div>
+
+    {/* Right Panel */}
+    <PdfProperties
+        field={selected}
+        fields={tpl.fields}
+        onChange={onFieldChange}
+        onDuplicate={onDuplicate}
+        onDelete={onDelete}
+        onZ={onZ}
+        onLock={onLock}
+        onVisible={onVisible}
+        template={tpl}
+        onTemplateChange={(patch) => update({ ...tpl, ...patch })}
+    />
+
+</div>
 
       {/* Preview — Jotform-style split-pane: form view left, PDF preview right */}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>

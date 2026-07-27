@@ -5,6 +5,7 @@ import { api, API } from "@/lib/api";
 import { Upload, FileType2, X } from "lucide-react";
 import { toast } from "sonner";
 import { resolveOptionBoxes } from "@/lib/pdfFieldTypes";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 
 /**
  * Read-only PDF viewer with fillable overlay inputs for the public submitter.
@@ -258,19 +259,19 @@ function useDynamicOptions(field) {
 function DropdownOverlay({ field, style, baseCls, value, disabled, onChange }) {
   const opts = useDynamicOptions(field);
   return (
-    <select
-      data-testid={`pdf-overlay-${field.id}`}
-      style={style}
+    <SearchableDropdown
+      options={opts}
       value={value ?? ""}
+      onChange={onChange}
+      placeholder={field.placeholder || field.label || "Select…"}
       disabled={disabled}
-      onChange={(e) => onChange(e.target.value)}
+      testId={`pdf-overlay-${field.id}`}
+      fontSize={style?.fontSize}
+      fontColor={field.font_color}
+      textAlign={field.alignment}
+      style={style}
       className={baseCls}
-    >
-      <option value="">{field.placeholder || "Select…"}</option>
-      {opts.map((o, i) => (
-        <option key={i} value={o}>{o}</option>
-      ))}
-    </select>
+    />
   );
 }
 

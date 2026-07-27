@@ -168,15 +168,16 @@ export default function Manpower() {
                   <th className="px-4 py-3">Company</th>
                   <th className="px-4 py-3">Work State</th>
                   <th className="px-4 py-3">Location</th>
+                  <th className="px-4 py-3">Vendor ID</th>
                   <th className="px-4 py-3">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {loading && (
-                  <tr><td colSpan={6} className="text-center text-slate-400 py-10">Loading…</td></tr>
+                  <tr><td colSpan={7} className="text-center text-slate-400 py-10">Loading…</td></tr>
                 )}
                 {!loading && rows.length === 0 && (
-                  <tr><td colSpan={6} className="text-center text-slate-400 py-10">
+                  <tr><td colSpan={7} className="text-center text-slate-400 py-10">
                     No manpower records match your filters.
                   </td></tr>
                 )}
@@ -210,6 +211,9 @@ export default function Manpower() {
                     </td>
                     <td className="px-4 py-3 text-slate-600">
                       {mp.location || <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="px-4 py-3 text-slate-600 font-mono text-xs">
+                      {mp.vendor_id || <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-3">{badge(mp.status)}</td>
                   </tr>
@@ -318,6 +322,7 @@ function ManpowerDetailDialog({ open, manpowerId, photoUrlBuilder, onClose }) {
               {kv("Work State", doc.work_state)}
               {kv("Location", doc.location)}
               {kv("City", doc.city)}
+              {kv("Vendor ID", doc.vendor_id)}
               {kv("State (Home)", doc.state)}
               {kv("Phone", doc.phone)}
               {kv("Blood Group", doc.blood_group)}
