@@ -55,9 +55,24 @@ def _safe_name(name: str) -> str:
     name = (name or "").strip()
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         raise HTTPException(400, "Invalid name")
-    if not re.match(r"^[A-Za-z0-9 _.\-()&+]+$", name):
+    if not re.match(r"^[A-Za-z0-9 _.(-)&+]+$", name):
         raise HTTPException(400, "Name may only contain letters, digits, spaces and _-.()&+")
     return name
+
+
+def _safe_subfolder(subfolder: str) -> str:
+    """Validate a subfolder name — same rules as _safe_name but called
+    separately so callers can clearly distinguish root-folder from subfolder."""
+    return _safe_name(subfolder)
+
+
+def _resolve_dir(site_id: str, folder: str, subfolder: str = "") -> Path:
+    """Return the absolute Path for a (folder, optional subfolder) pair.
+    Raises HTTPException 400 on invalid names."""
+    base = _plant_root(site_id) / _safe_name(folder)
+    if subfolder:
+        return base / _safe_subfolder(subfolder)
+    return base
 
 
 def _sanitize_filename(name: str) -> str:
@@ -99,6 +114,28 @@ def _plant_root(site_id: str) -> Path:
     root = Path(os.environ.get("LOCAL_PLANT_DOCS_ROOT", PLANT_DOCS_ROOT_DEFAULT))
     root.mkdir(parents=True, exist_ok=True)
     return root / site_id
+
+
+def save_internal_plant_doc(site_id: str, folder_name: str, file_name: str, content: bytes) -> str:
+    """Programmatically push a file to the plant's document vault.
+    Returns the path where the file was saved.
+    """
+    if not site_id:
+        return ""
+    
+    # 1. Ensure folder exists
+    f_name = _safe_name(folder_name)
+    target_dir = _plant_root(site_id) / f_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # 2. Save file
+    safe_file_name = _sanitize_filename(file_name)
+    target_path = target_dir / safe_file_name
+    
+    # Add a timestamp or unique suffix if the file already exists?
+    # (For submissions, timestamps are usually in the filename, so direct write is ok)
+    target_path.write_bytes(content)
+    return str(target_path)
 
 
 def build_router(db, get_current_user):
@@ -185,10 +222,6 @@ def build_router(db, get_current_user):
     async def list_folders(site_id: str, user=Depends(get_current_user)):
         await _assert_plant_visible(site_id, user)
         root = _plant_root(site_id)
-        # Always ensure the current template folders exist on disk (idempotent
-        # backfill).  This way updating the template in Settings shows up
-        # immediately when a plant's Documents tab is opened, even if the
-        # plant already has other folders.
         if user.role in ("super_admin", "admin"):
             try:
                 template = await _load_template()
@@ -197,21 +230,163 @@ def build_router(db, get_current_user):
                     (root / f).mkdir(parents=True, exist_ok=True)
             except Exception:  # noqa: BLE001
                 pass
+
+        def _folder_node(entry: Path) -> dict:
+            """Recursively build a folder node with children."""
+            try:
+                direct_files = [f for f in entry.iterdir() if f.is_file()]
+                subdirs = sorted([d for d in entry.iterdir() if d.is_dir()], key=lambda p: p.name.lower())
+            except OSError:
+                direct_files, subdirs = [], []
+            return {
+                "name": entry.name,
+                "file_count": len(direct_files),
+                "size_bytes": sum(f.stat().st_size for f in direct_files),
+                "children": [_folder_node(d) for d in subdirs],
+            }
+
         out = []
         if root.exists():
             for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
                 if entry.is_dir():
-                    try:
-                        files = [f for f in entry.iterdir() if f.is_file()]
-                    except OSError:
-                        files = []
-                    out.append({
-                        "name": entry.name,
-                        "file_count": len(files),
-                        "size_bytes": sum(f.stat().st_size for f in files),
-                    })
+                    out.append(_folder_node(entry))
         return {"site_id": site_id, "folders": out,
                 "can_edit": user.role in ("super_admin", "admin")}
+
+    @plants.get("/{site_id}/tree")
+    async def get_folder_tree(site_id: str, path: str = "", user=Depends(get_current_user)):
+        """Returns a recursive tree structure of folders and files.
+        
+        Args:
+            site_id: Plant ID
+            path: Optional path to a specific folder (e.g., "Contracts/Reports")
+        
+        Returns:
+            Tree structure with folders and files, supporting nested folders
+        """
+        await _assert_plant_visible(site_id, user)
+        root = _plant_root(site_id)
+        
+        # Navigate to the target path if provided
+        if path:
+            parts = path.split("/")
+            current = root
+            for part in parts:
+                if not part:
+                    continue
+                # Sanitize the path component
+                sanitized = _safe_name(part)
+                current = current / sanitized
+                if not current.exists():
+                    raise HTTPException(404, f"Folder '{path}' not found")
+        
+        result = []
+        if not path and root.exists():
+            target = root
+        else:
+            target = current if current.exists() else root
+        
+        if target.exists():
+            # Process entries in sorted order
+            for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                if entry.is_dir():
+                    try:
+                        # Recursively get files in this folder
+                        files = []
+                        for f in sorted(entry.iterdir(), key=lambda p: p.name.lower()):
+                            if f.is_file():
+                                st = f.stat()
+                                files.append({
+                                    "name": f.name,
+                                    "size_bytes": st.st_size,
+                                    "modified_at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+                                })
+
+                        # Build the relative path for this entry
+                        entry_path = f"{path}/{entry.name}" if path else entry.name
+
+                        # Recursively get subfolders
+                        subfolders = await get_folder_tree_recursive(
+                            entry, user, root, entry_path
+                        )
+
+                        result.append({
+                            "name": entry.name,
+                            "type": "folder",
+                            "path": entry_path,
+                            "file_count": len(files),
+                            "size_bytes": sum(f["size_bytes"] for f in files),
+                            "files": files,
+                            "subfolders": subfolders,
+                        })
+                    except OSError:
+                        continue
+                else:
+                    st = entry.stat()
+                    result.append({
+                        "name": entry.name,
+                        "type": "file",
+                        "path": f"{path}/{entry.name}" if path else entry.name,
+                        "size_bytes": st.st_size,
+                        "modified_at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+                    })
+        
+        return {"site_id": site_id, "path": path, "tree": result}
+
+    async def get_folder_tree_recursive(current: Path, user, root_path: Path, parent_path: str) -> List[Dict[str, Any]]:
+        """Recursively build folder tree structure.
+        
+        Args:
+            current: Current path being processed
+            user: Current user for permissions
+            root_path: Root path of the plant documents
+            parent_path: Parent path for building relative paths
+        
+        Returns:
+            List of folder objects with their contents
+        """
+        result = []
+        try:
+            for entry in sorted(current.iterdir(), key=lambda p: p.name.lower()):
+                if entry.is_dir():
+                    # Recursively get files in this folder
+                    files = []
+                    for f in sorted(entry.iterdir(), key=lambda p: p.name.lower()):
+                        if f.is_file():
+                            st = f.stat()
+                            files.append({
+                                "name": f.name,
+                                "size_bytes": st.st_size,
+                                "modified_at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+                            })
+                    
+                    # Recursively get subfolders
+                    subfolders = await get_folder_tree_recursive(
+                        entry, user, root_path, f"{parent_path}/{entry.name}"
+                    )
+                    
+                    result.append({
+                        "name": entry.name,
+                        "type": "folder",
+                        "path": f"{parent_path}/{entry.name}",
+                        "file_count": len(files),
+                        "size_bytes": sum(f["size_bytes"] for f in files),
+                        "files": files,
+                        "subfolders": subfolders,
+                    })
+                else:
+                    st = entry.stat()
+                    result.append({
+                        "name": entry.name,
+                        "type": "file",
+                        "path": f"{parent_path}/{entry.name}",
+                        "size_bytes": st.st_size,
+                        "modified_at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+                    })
+        except OSError:
+            pass
+        
+        return result
 
     @plants.post("/{site_id}/folders")
     async def create_folder(site_id: str, body: Dict[str, Any],
@@ -234,6 +409,33 @@ def build_router(db, get_current_user):
         target = _plant_root(site_id) / folder
         if not target.exists():
             raise HTTPException(404, "Folder not found")
+        shutil.rmtree(target)
+        return {"ok": True}
+
+    # ---------- Subfolder CRUD ----------
+    @plants.post("/{site_id}/folders/{folder}/subfolders")
+    async def create_subfolder(site_id: str, folder: str, body: Dict[str, Any],
+                               user=Depends(get_current_user)):
+        """Create a subfolder inside a root folder."""
+        await _require_doc_editor(user)
+        await _assert_plant_visible(site_id, user)
+        parent = _safe_name(folder)
+        name = _safe_name(body.get("name") or "")
+        target = _plant_root(site_id) / parent / name
+        if target.exists():
+            raise HTTPException(400, "Subfolder already exists")
+        target.mkdir(parents=True, exist_ok=True)
+        return {"name": name, "folder": parent}
+
+    @plants.delete("/{site_id}/folders/{folder}/subfolders/{subfolder}")
+    async def delete_subfolder(site_id: str, folder: str, subfolder: str,
+                               user=Depends(get_current_user)):
+        """Delete a subfolder and all its contents."""
+        await _require_doc_editor(user)
+        await _assert_plant_visible(site_id, user)
+        target = _plant_root(site_id) / _safe_name(folder) / _safe_name(subfolder)
+        if not target.exists():
+            raise HTTPException(404, "Subfolder not found")
         shutil.rmtree(target)
         return {"ok": True}
 
@@ -284,23 +486,35 @@ def build_router(db, get_current_user):
     # ---------- Files ----------
     @plants.get("/{site_id}/folders/{folder}/files")
     async def list_files(site_id: str, folder: str,
+                         subfolder: str = "",
                          user=Depends(get_current_user)):
+        """List files (and sub-subfolders) inside a folder or subfolder."""
         await _assert_plant_visible(site_id, user)
-        folder = _safe_name(folder)
-        target = _plant_root(site_id) / folder
+        target = _resolve_dir(site_id, folder, subfolder)
         if not target.exists():
-            return {"files": []}
+            return {"files": [], "subfolders": [], "can_edit": user.role in ("super_admin", "admin")}
         files = []
-        for f in sorted(target.iterdir(), key=lambda p: p.name.lower()):
-            if f.is_file():
-                st = f.stat()
+        subfolders_out = []
+        for entry in sorted(target.iterdir(), key=lambda p: p.name.lower()):
+            if entry.is_file():
+                st = entry.stat()
                 files.append({
-                    "name": f.name,
+                    "name": entry.name,
                     "size_bytes": st.st_size,
                     "modified_at": datetime.fromtimestamp(st.st_mtime,
                                                          timezone.utc).isoformat(),
                 })
-        return {"files": files, "can_edit": user.role in ("super_admin", "admin")}
+            elif entry.is_dir():
+                try:
+                    fc = len([f for f in entry.iterdir() if f.is_file()])
+                except OSError:
+                    fc = 0
+                subfolders_out.append({"name": entry.name, "file_count": fc})
+        return {
+            "files": files,
+            "subfolders": subfolders_out,
+            "can_edit": user.role in ("super_admin", "admin"),
+        }
 
     @plants.post("/{site_id}/folders/{folder}/upload")
     async def upload_file(site_id: str, folder: str,
@@ -309,8 +523,37 @@ def build_router(db, get_current_user):
         await _require_doc_editor(user)
         await _assert_plant_visible(site_id, user)
         folder = _safe_name(folder)
-        fname = _sanitize_filename(file.filename or "upload.bin")
-        target_dir = _plant_root(site_id) / folder
+
+        # Check if this is a folder upload (has webkitRelativePath)
+        # webkitRelativePath will be set when a folder is uploaded
+        is_folder_upload = hasattr(file, 'webkitRelativePath') and file.webkitRelativePath
+
+        if is_folder_upload:
+            # This is a folder upload
+            # webkitRelativePath looks like: "FolderName/SubFolder/File.txt"
+            full_path = file.webkitRelativePath.split("/")  # ["FolderName", "SubFolder", "File.txt"]
+
+            # The first part is the folder name we're uploading to
+            # The rest is the relative path within that folder
+            target_dir = _plant_root(site_id) / folder
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create all subdirectories (except the last part which is the filename)
+            if len(full_path) > 1:
+                for part in full_path[:-1]:  # Process all parts except the last one
+                    target_dir = target_dir / _safe_name(part)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+
+            # The last part is the actual filename
+            fname = _sanitize_filename(full_path[-1])
+
+            # For folder uploads, subfolder should be empty
+            target_dir = _resolve_dir(site_id, folder, "")
+        else:
+            # This is a standard single file upload
+            fname = _sanitize_filename(file.filename or "upload.bin")
+            target_dir = _resolve_dir(site_id, folder, subfolder)
+
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
         # If a file with the same name already exists, append a numeric suffix.
@@ -327,23 +570,23 @@ def build_router(db, get_current_user):
 
     @plants.get("/{site_id}/folders/{folder}/files/{filename}")
     async def download_file(site_id: str, folder: str, filename: str,
+                            subfolder: str = "",
                             user=Depends(get_current_user)):
         await _assert_plant_visible(site_id, user)
-        folder = _safe_name(folder)
         filename = _sanitize_filename(filename)
-        target = _plant_root(site_id) / folder / filename
+        target = _resolve_dir(site_id, folder, subfolder) / filename
         if not target.exists() or not target.is_file():
             raise HTTPException(404, "File not found")
         return FileResponse(target, filename=filename)
 
     @plants.delete("/{site_id}/folders/{folder}/files/{filename}")
     async def delete_file(site_id: str, folder: str, filename: str,
+                          subfolder: str = "",
                           user=Depends(get_current_user)):
         await _require_doc_editor(user)
         await _assert_plant_visible(site_id, user)
-        folder = _safe_name(folder)
         filename = _sanitize_filename(filename)
-        target = _plant_root(site_id) / folder / filename
+        target = _resolve_dir(site_id, folder, subfolder) / filename
         if not target.exists():
             raise HTTPException(404, "File not found")
         target.unlink()

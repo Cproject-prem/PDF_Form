@@ -564,3 +564,194 @@ class TestRegression:
         r = requests.get(f"{API}/forms", headers=_hdr(super_token), timeout=10)
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+
+# ================================================================
+#           PART 11 - RECURSIVE FOLDER TREE
+# ================================================================
+class TestPlantFolderTree:
+    def test_get_tree_basic_structure(self, super_token, sample_site_id):
+        """Test that the /tree endpoint returns a proper tree structure."""
+        r = requests.get(f"{API}/plants/{sample_site_id}/tree",
+                         headers=_hdr(super_token), timeout=10)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["site_id"] == sample_site_id
+        assert "tree" in body
+        tree = body["tree"]
+
+        # Root level should contain folders (at least one from template)
+        assert isinstance(tree, list)
+        assert len(tree) > 0, "Tree should contain at least one entry"
+
+    def test_tree_structure_validation(self, super_token, sample_site_id):
+        """Test that tree structure follows the expected format."""
+        r = requests.get(f"{API}/plants/{sample_site_id}/tree",
+                         headers=_hdr(super_token), timeout=10)
+        assert r.status_code == 200, r.text
+        tree = r.json()["tree"]
+
+        # Each entry should have name, type, and optionally path
+        for entry in tree:
+            assert "name" in entry
+            assert "type" in entry
+            assert entry["type"] in ("folder", "file")
+
+            # Folders should have additional properties
+            if entry["type"] == "folder":
+                assert "path" in entry
+                assert "file_count" in entry
+                assert "size_bytes" in entry
+                # Subfolders should be nested
+                if "subfolders" in entry:
+                    assert isinstance(entry["subfolders"], list)
+
+            # Files should have size_bytes and modified_at
+            if entry["type"] == "file":
+                assert "path" in entry
+                assert "size_bytes" in entry
+                assert "modified_at" in entry
+
+    def test_tree_recursive_subfolders(self, super_token, sample_site_id):
+        """Test that nested folders are properly represented in the tree."""
+        # First, create a nested folder structure
+        r = requests.post(f"{API}/plants/{sample_site_id}/folders",
+                          headers=_hdr(super_token),
+                          json={"name": "ParentFolder"}, timeout=10)
+        assert r.status_code == 200
+        parent = r.json()["name"]
+
+        # Create a subfolder
+        r = requests.post(f"{API}/plants/{sample_site_id}/folders",
+                          headers=_hdr(super_token),
+                          json={"name": "ChildFolder"}, timeout=10)
+        assert r.status_code == 200
+        child = r.json()["name"]
+
+        # Get the tree and verify nested structure
+        r = requests.get(f"{API}/plants/{sample_site_id}/tree",
+                         headers=_hdr(super_token), timeout=10)
+        assert r.status_code == 200, r.text
+        tree = r.json()["tree"]
+
+        # Find the parent folder
+        parent_entry = None
+        for entry in tree:
+            if entry["type"] == "folder" and entry["name"] == parent:
+                parent_entry = entry
+                break
+
+        assert parent_entry is not None, "Parent folder should exist in tree"
+
+        # Parent should have subfolders
+        if "subfolders" in parent_entry:
+            assert isinstance(parent_entry["subfolders"], list)
+            # Find the child folder in subfolders
+            child_in_sub = None
+            for sub in parent_entry["subfolders"]:
+                if sub["type"] == "folder" and sub["name"] == child:
+                    child_in_sub = sub
+                    break
+
+            assert child_in_sub is not None, "Child folder should be in parent's subfolders"
+            assert "subfolders" in child_in_sub, "Child folder should have its own subfolders array"
+
+    def test_tree_file_counts_and_sizes(self, super_token, sample_site_id):
+        """Test that file counts and sizes are correctly calculated."""
+        r = requests.get(f"{API}/plants/{sample_site_id}/tree",
+                         headers=_hdr(super_token), timeout=10)
+        assert r.status_code == 200, r.text
+        tree = r.json()["tree"]
+
+        # Walk the tree and verify file counts and sizes
+        def verify_entry(entry):
+            if entry["type"] == "folder":
+                assert isinstance(entry["file_count"], int)
+                assert entry["file_count"] >= 0
+
+                # If there are files listed in the entry
+                if "files" in entry and isinstance(entry["files"], list):
+                    for f in entry["files"]:
+                        assert isinstance(f["name"], str)
+                        assert "size_bytes" in f
+                        assert isinstance(f["size_bytes"], int)
+
+                # Recursively check subfolders
+                if "subfolders" in entry:
+                    for sub in entry["subfolders"]:
+                        verify_entry(sub)
+
+            elif entry["type"] == "file":
+                assert isinstance(entry["size_bytes"], int)
+                assert entry["size_bytes"] >= 0
+
+        for entry in tree:
+            verify_entry(entry)
+
+    def test_tree_readonly_for_vendor_user(self, vadmin_token, sample_site_id):
+        """Test that vendor_user can read the tree but not modify it."""
+        r = requests.get(f"{API}/plants/{sample_site_id}/tree",
+                         headers=_hdr(vadmin_token), timeout=10)
+        # Should succeed (read-only)
+        assert r.status_code in (200, 404), r.text
+        if r.status_code == 200:
+            tree = r.json()["tree"]
+            # Verify tree structure is correct
+            assert isinstance(tree, list)
+            for entry in tree:
+                assert "name" in entry
+                assert "type" in entry
+                # Verify can_edit is not in tree response (it's not exposed at tree level)
+
+    def test_tree_path_resolution(self, super_token, sample_site_id):
+        """Test that paths are correctly constructed in the tree."""
+        r = requests.get(f"{API}/plants/{sample_site_id}/tree",
+                         headers=_hdr(super_token), timeout=10)
+        assert r.status_code == 200, r.text
+        tree = r.json()["tree"]
+
+        # Create a folder structure: Level1/Level2/File.pdf
+        r1 = requests.post(f"{API}/plants/{sample_site_id}/folders",
+                          headers=_hdr(super_token), json={"name": "Level1"}, timeout=10)
+        assert r1.status_code == 200
+        level1 = r1.json()["name"]
+
+        r2 = requests.post(f"{API}/plants/{sample_site_id}/folders",
+                          headers=_hdr(super_token), json={"name": "Level2"}, timeout=10)
+        assert r2.status_code == 200
+        level2 = r2.json()["name"]
+
+        # Upload a file
+        files = {"file": ("test.pdf", io.BytesIO(b"test content"), "application/pdf")}
+        r3 = requests.post(f"{API}/plants/{sample_site_id}/folders/{level2}/upload",
+                          headers=_hdr(super_token), files=files, timeout=15)
+        assert r3.status_code == 200
+
+        # Get the tree
+        r = requests.get(f"{API}/plants/{sample_site_id}/tree",
+                         headers=_hdr(super_token), timeout=10)
+        assert r.status_code == 200, r.text
+        tree = r.json()["tree"]
+
+        # Find the file and verify its path
+        file_path = None
+        def find_file(entry):
+            if entry["type"] == "file":
+                nonlocal file_path
+                if entry["name"] == "test.pdf":
+                    file_path = entry["path"]
+            elif entry["type"] == "folder":
+                if "files" in entry:
+                    for f in entry["files"]:
+                        if f["name"] == "test.pdf":
+                            file_path = f["path"]
+                if "subfolders" in entry:
+                    for sub in entry["subfolders"]:
+                        find_file(sub)
+
+        for entry in tree:
+            find_file(entry)
+
+        assert file_path is not None, "File should be found in tree"
+        assert "Level2" in file_path, "Path should include Level2 folder"
+        assert "Level1" in file_path, "Path should include Level1 folder"

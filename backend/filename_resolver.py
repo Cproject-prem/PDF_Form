@@ -46,6 +46,35 @@ def _pick(d: Dict[str, Any], keys) -> str:
     return ""
 
 
+# Keywords that indicate a field holds a site/plant identifier.
+# Matched case-insensitively against the field's *label* text.
+_SITE_LABEL_KEYWORDS = (
+    "site code", "plant code", "asset id", "asset code", "plant id",
+    "sitecode", "plantcode", "assetid", "site_code", "plant_code",
+    "plant name", "site name", "plant", "site",
+)
+
+
+def _pick_by_label(
+    form_fields: list,
+    values: Dict[str, Any],
+) -> str:
+    """Scan *form_fields* for a short-text field whose label contains a
+    site/plant keyword, then return the submitted value for that field ID.
+    Returns empty string when nothing matches."""
+    for field in (form_fields or []):
+        label = (field.get("label") or "").strip().lower()
+        if any(kw in label for kw in _SITE_LABEL_KEYWORDS):
+            fid = field.get("id")
+            if fid:
+                v = values.get(fid)
+                if v not in (None, ""):
+                    # For a combined field like "Alpha Solar 50MW" or "Alpha Solar 50MW 65",
+                    # return the full value so we can try matching by site_name in the DB
+                    return str(v).strip()
+    return ""
+
+
 def resolve_filename(
     template: Optional[str],
     *,

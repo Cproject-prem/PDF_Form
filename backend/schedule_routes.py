@@ -57,7 +57,7 @@ class CycleUpsertIn(BaseModel):
     year: int = Field(..., ge=2020, le=2099)
     month: int = Field(..., ge=1, le=12)
     cycle_number: int = Field(..., ge=1, le=31)
-    activity: str = Field(default="cleaning", pattern="^(cleaning|pm)$")
+    activity: str = Field(default="cleaning", pattern="^(cleaning|pm|equipment_testing)$")
     # Only send the block you're editing. Fields inside are shallow-merged
     # onto the persisted block — status/approver metadata is server-managed.
     schedule: Optional[Dict[str, Any]] = None
@@ -159,8 +159,8 @@ def build_router(db, get_current_user):
         * The returned `sites` payload carries BOTH caps so the client can
           render the right number of rows per activity.
         """
-        if activity not in ("cleaning", "pm"):
-            raise HTTPException(400, "activity must be 'cleaning' or 'pm'")
+        if activity not in ("cleaning", "pm", "equipment_testing", "grasscutting"):
+            raise HTTPException(400, "activity must be 'cleaning', 'pm', 'equipment_testing' or 'grasscutting'")
         from permissions import site_filter as _sf, is_super_admin, has_access_override
         # 1) sites in scope
         site_q: Dict[str, Any] = {}
@@ -188,7 +188,7 @@ def build_router(db, get_current_user):
         rows = await db.site_cycles.find(row_q, _cycle_projection()) \
             .sort([("site_id", 1), ("month", 1), ("cycle_number", 1)]).to_list(20000)
 
-        # 3) return sites (with both caps) alongside the cycles so the client
+        # 3) return sites (with caps and frequencies) alongside the cycles so the client
         #    can render placeholder rows for cycles that haven't been touched.
         return {
             "sites": [
@@ -196,10 +196,21 @@ def build_router(db, get_current_user):
                     "site_id": s["site_id"],
                     "site_name": s.get("site_name"),
                     "site_code": s.get("site_code"),
+                    "asset_id": s.get("asset_id"),
                     "region": s.get("region"),
                     "vendor_name": s.get("vendor_name"),
                     "cycles_per_month": int(s.get("cycles_per_month") or 1),
                     "pm_cycles_per_quarter": int(s.get("pm_cycles_per_quarter") or 1),
+                    # Equipment Testing — enabled flags (pass as-is; client checks "1")
+                    "ert_count": s.get("ert_count", "0"),
+                    "transformer_count": s.get("transformer_count", "0"),
+                    "acb_count": s.get("acb_count", "0"),
+                    "dc_pm_count": s.get("dc_pm_count", "0"),
+                    "meter_cal_count": s.get("meter_cal_count", "0"),
+                    # Grasscutting flags — pass through as-is so the client
+                    # can compare with "1" / "true" / "yes"
+                    "grass_cutting_enabled": s.get("grass_cutting_enabled", "0"),
+                    "grass_cutting_frequency": int(s.get("grass_cutting_frequency") or 1),
                 }
                 for s in sites
             ],
@@ -224,6 +235,10 @@ def build_router(db, get_current_user):
             if body.month not in (3, 6, 9, 12):
                 raise HTTPException(400, "PM cycles must be scheduled on a quarter-end month (Mar/Jun/Sep/Dec)")
             cap = int(site.get("pm_cycles_per_quarter") or 1)
+        elif body.activity == "equipment_testing":
+            cap = 5  # 5 Equipment Testing items (ERT, Transformer maint, ACB maint, DC PM, Meter cal)
+        elif body.activity == "grasscutting":
+            cap = int(site.get("grass_cutting_frequency") or 1)
         else:
             cap = int(site.get("cycles_per_month") or 1)
         if body.cycle_number > cap:
@@ -359,7 +374,37 @@ def build_router(db, get_current_user):
             raise HTTPException(400, "Attach at least one photo / PDF before submitting the actual")
         if act.get("status") in ("submitted", "approved"):
             raise HTTPException(400, f"Actual already {act['status']}")
-        return await _set_block_status(cycle_id, "actual", "submitted", user)
+        result = await _set_block_status(cycle_id, "actual", "submitted", user)
+
+        # Auto-copy evidence files to Plant Docs Vault
+        try:
+            activity_folder_map = {
+                "cleaning": "Module cleaning",
+                "pm": "PM",
+                "equipment_testing": "Equipment",
+                "grasscutting": "Grasscutting",
+            }
+            site_id = cyc.get("site_id")
+            activity = cyc.get("activity", "cleaning")
+            folder_name = activity_folder_map.get(activity, activity.replace("_", " ").title())
+            evidence_files = act.get("evidence_files") or []
+            if site_id and evidence_files:
+                from plant_docs_routes import save_internal_plant_doc
+                for ef in evidence_files:
+                    file_id = ef.get("file_id")
+                    ext = (ef.get("filename") or "").rsplit(".", 1)[-1].lower()
+                    src_path = UPLOADS_DIR / cycle_id / f"{file_id}.{ext}"
+                    if src_path.exists():
+                        content = src_path.read_bytes()
+                        # Use the original filename, timestamp-prefixed to avoid clashes
+                        dt_str = (ef.get("uploaded_at") or _now())[:10].replace("-", "")
+                        safe_name = f"{dt_str}_{ef.get('filename') or f'{file_id}.{ext}'}"
+                        save_internal_plant_doc(site_id, folder_name, safe_name, content)
+        except Exception as _e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(f"failed to auto-sync actual files to vault: {_e}")
+
+        return result
 
     @router.post("/{cycle_id}/approve-actual")
     async def approve_actual(cycle_id: str, user=Depends(get_current_user)):
@@ -499,8 +544,8 @@ def build_router(db, get_current_user):
         are drafted / submitted / approved out of the total possible
         (cleaning: `cycles_per_month` × 12; pm: `pm_cycles_per_quarter` × 4).
         """
-        if activity not in ("cleaning", "pm"):
-            raise HTTPException(400, "activity must be 'cleaning' or 'pm'")
+        if activity not in ("cleaning", "pm", "equipment_testing", "grasscutting"):
+            raise HTTPException(400, "activity must be 'cleaning', 'pm', 'equipment_testing' or 'grasscutting'")
         from permissions import site_filter as _sf, is_super_admin, has_access_override
         site_q: Dict[str, Any] = {}
         if not (is_super_admin(user) or has_access_override(user)):
@@ -524,6 +569,18 @@ def build_router(db, get_current_user):
             if activity == "pm":
                 per = int(s.get("pm_cycles_per_quarter") or 1)
                 total_slots = per * 4
+            elif activity == "equipment_testing":
+                enabled_count = 0
+                for k in ["ert_count", "transformer_count", "acb_count", "dc_pm_count", "meter_cal_count"]:
+                    v = s.get(k, "0")
+                    try:
+                        if int(v) > 0:
+                            enabled_count += 1
+                    except ValueError:
+                        pass
+                total_slots = enabled_count
+            elif activity == "grasscutting":
+                total_slots = int(s.get("grass_cutting_frequency") or 1)
             else:
                 per = int(s.get("cycles_per_month") or 1)
                 total_slots = per * 12
@@ -548,6 +605,12 @@ def build_router(db, get_current_user):
                 "vendor_name": s.get("vendor_name"),
                 "cycles_per_month": int(s.get("cycles_per_month") or 1),
                 "pm_cycles_per_quarter": int(s.get("pm_cycles_per_quarter") or 1),
+                "ert_count": s.get("ert_count", "0"),
+                "transformer_count": s.get("transformer_count", "0"),
+                "acb_count": s.get("acb_count", "0"),
+                "dc_pm_count": s.get("dc_pm_count", "0"),
+                "meter_cal_count": s.get("meter_cal_count", "0"),
+                "grass_cutting_enabled": s.get("grass_cutting_enabled", "0"),
                 "activity": activity,
                 "total_slots": total_slots,
                 "schedule": {"draft": sch_draft, "submitted": sch_sub, "approved": sch_app},
@@ -573,7 +636,12 @@ def build_router(db, get_current_user):
 
         wb = Workbook()
         ws = wb.active
-        act_label = "PM" if activity == "pm" else "Cleaning"
+        act_label = (
+            "Equipment Testing" if activity == "equipment_testing"
+            else "PM" if activity == "pm"
+            else "Grasscutting" if activity == "grasscutting"
+            else "Cleaning"
+        )
         ws.title = f"{act_label} {year}" + (f"-{month:02d}" if month else "")
 
         header_fill = PatternFill("solid", fgColor="1F2937")

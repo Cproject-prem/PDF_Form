@@ -106,12 +106,16 @@ def build_manpower_router(main_db, get_current_user):
         company: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = Query(200, ge=1, le=1000),
-        _: Any = Depends(get_current_user),
+        user: Any = Depends(get_current_user),
     ):
         if not _enabled() or coll is None:
             return {"items": [], "total": 0, "enabled": False}
 
         q: Dict[str, Any] = {}
+        vid = getattr(user, "vendor_id", None)
+        if vid:
+            q["vendor_id"] = vid
+
         if state:    q["work_state"] = state
         if location: q["location"]   = location
         if company:  q["company_name"] = company
@@ -131,20 +135,26 @@ def build_manpower_router(main_db, get_current_user):
             "_id": 0,
             "id": 1, "manpower_id": 1, "full_name": 1, "status": 1,
             "company_name": 1, "work_state": 1, "location": 1, "city": 1,
-            "phone": 1, "blood_group": 1, "documents": 1,
+            "phone": 1, "blood_group": 1, "documents": 1, "vendor_id": 1,
         }).sort("manpower_id", 1).limit(limit)
 
         rows = [_row(d) async for d in cursor]
         return {"items": rows, "total": len(rows), "enabled": True}
 
     @router.get("/filters")
-    async def filters(_: Any = Depends(get_current_user)):
+    async def filters(user: Any = Depends(get_current_user)):
         """Distinct values for the state / location / company dropdowns."""
         if not _enabled() or coll is None:
             return {"states": [], "locations": [], "companies": []}
-        states    = [v for v in await coll.distinct("work_state")   if v]
-        locations = [v for v in await coll.distinct("location")     if v]
-        companies = [v for v in await coll.distinct("company_name") if v]
+            
+        q = {}
+        vid = getattr(user, "vendor_id", None)
+        if vid:
+            q["vendor_id"] = vid
+            
+        states    = [v for v in await coll.distinct("work_state", q)   if v]
+        locations = [v for v in await coll.distinct("location", q)     if v]
+        companies = [v for v in await coll.distinct("company_name", q) if v]
         return {
             "states": sorted(states),
             "locations": sorted(locations),
@@ -152,10 +162,16 @@ def build_manpower_router(main_db, get_current_user):
         }
 
     @router.get("/{manpower_id}")
-    async def get_one(manpower_id: str, _: Any = Depends(get_current_user)):
+    async def get_one(manpower_id: str, user: Any = Depends(get_current_user)):
         if not _enabled() or coll is None:
             raise HTTPException(503, "Manpower integration is disabled")
-        doc = await coll.find_one({"manpower_id": manpower_id}, {"_id": 0})
+            
+        q = {"manpower_id": manpower_id}
+        vid = getattr(user, "vendor_id", None)
+        if vid:
+            q["vendor_id"] = vid
+            
+        doc = await coll.find_one(q, {"_id": 0})
         if not doc:
             raise HTTPException(404, f"Manpower {manpower_id} not found")
         # Add convenient photo metadata alongside the raw record.
@@ -163,14 +179,19 @@ def build_manpower_router(main_db, get_current_user):
         return doc
 
     @router.get("/{manpower_id}/photo")
-    async def photo(manpower_id: str, _: Any = Depends(get_current_user)):
+    async def photo(manpower_id: str, user: Any = Depends(get_current_user)):
         """Streams the person's most recent `photo`-type document from the
         configured upload root.  Returns 404 if the photo record is missing
         OR if the file isn't found on disk (misconfigured photo root)."""
         if not _enabled() or coll is None:
             raise HTTPException(503, "Manpower integration is disabled")
-        doc = await coll.find_one({"manpower_id": manpower_id},
-                                  {"_id": 0, "documents": 1})
+            
+        q = {"manpower_id": manpower_id}
+        vid = getattr(user, "vendor_id", None)
+        if vid:
+            q["vendor_id"] = vid
+            
+        doc = await coll.find_one(q, {"_id": 0, "documents": 1})
         if not doc:
             raise HTTPException(404, "Manpower not found")
         p = _photo_doc(doc)

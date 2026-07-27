@@ -1042,6 +1042,7 @@ class UserUpdateIn(BaseModel):
     region: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
     access_override: Optional[bool] = None
+    email: Optional[str] = None
 
 @api.patch("/users/{user_id}", response_model=UserOut)
 async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_require_user_editor)):
@@ -1103,6 +1104,10 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_re
     updates = {}
     if body.name is not None:
         updates["name"] = body.name
+    if body.email and body.email.strip() != target.get("email"):
+        if await db.users.find_one({"email": body.email.strip()}):
+            raise HTTPException(409, "Email is already in use by another user")
+        updates["email"] = body.email.strip()
     if body.role is not None:
         if body.role not in ROLES:
             raise HTTPException(400, "Invalid role")
@@ -1397,6 +1402,31 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
                    "user_email": viewer.email, "ip": doc["ip"]})
     except Exception as _e:  # noqa: BLE001
         logger.warning(f"workflow trigger form_submitted failed: {_e}")
+        
+    # Auto-upload generated PDF to Plant Docs Vault if site mapped
+    try:
+        from filename_resolver import resolve_filename as _rf, _pick, _pick_by_label
+        site_identifier = _pick(body.values, ["site_code", "site_id", "asset_id", "plant_code", "plantId", "asset_code", "site"])
+        # Fallback: scan form fields by label (e.g. a field labeled "Site Code" or "Plant Code")
+        if not site_identifier:
+            site_identifier = _pick_by_label(form.get("fields", []), body.values)
+        if site_identifier:
+            site_doc = await db.sites.find_one({"$or": [
+                {"site_id": site_identifier},
+                {"site_code": site_identifier},
+                {"asset_id": site_identifier},
+                {"site_name": {"$regex": f"^{re.escape(site_identifier)}", "$options": "i"}},
+            ]}, {"_id": 0})
+            if site_doc:
+                pdf_bytes = _generate_filled_pdf_bytes(doc, form)
+                fname = _rf(form.get("filename_template"), form=form, submission=doc)
+                if not fname.lower().endswith(".pdf"):
+                    fname += ".pdf"
+                from plant_docs_routes import save_internal_plant_doc
+                save_internal_plant_doc(site_doc["site_id"], "Form", fname, pdf_bytes)
+    except Exception as _e:
+        logger.warning(f"failed to auto-sync Form PDF to vault: {_e}")
+
     # Short-lived token so the submitter can download their filled PDF
     download_token = make_download_token(sid, kind="form")
     return {**Submission(**doc).model_dump(), "download_token": download_token}
@@ -1566,7 +1596,7 @@ async def public_download_filled_pdf(submission_id: str, token: str):
     return _render_filled_pdf_response(sub, form)
 
 
-def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Response:
+def _generate_filled_pdf_bytes(sub: Dict[str, Any], form: Dict[str, Any]) -> bytes:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
@@ -1723,11 +1753,14 @@ def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Re
         except Exception:
             pass
     buf.seek(0)
+    return buf.getvalue()
+
+def _render_filled_pdf_response(sub: Dict[str, Any], form: Dict[str, Any]) -> Response:
+    pdf_bytes = _generate_filled_pdf_bytes(sub, form)
     from filename_resolver import resolve_filename as _rf
-    fname = _rf(form.get("filename_template"),
-                form=form, submission=sub)
+    fname = _rf(form.get("filename_template"), form=form, submission=sub)
     return Response(
-        content=buf.getvalue(),
+        content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )

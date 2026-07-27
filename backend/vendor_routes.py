@@ -57,6 +57,7 @@ class Vendor(BaseModel):
 
 
 class VendorIn(BaseModel):
+    vendor_id: Optional[str] = None
     name: str
     code: str = ""
     contact_person: str = ""
@@ -81,6 +82,7 @@ class VendorUserUpdate(BaseModel):
     role: Optional[str] = None
     is_active: Optional[bool] = None
     password: Optional[str] = None  # reset
+    email: Optional[str] = None
 
 
 class Assignment(BaseModel):
@@ -102,6 +104,14 @@ SITE_COLUMNS = [
     "cluster", "region", "site_status",
     "commission_date", "om_start_date", "warranty_end_date",
     "cycles_per_month", "pm_cycles_per_quarter",
+    # Equipment Testing — enabled flags (1 = yes, 0/blank = no)
+    "ert_count",
+    "transformer_count",
+    "acb_count",
+    "dc_pm_count",
+    "meter_cal_count",
+    # Grasscutting
+    "grass_cutting_enabled", "grass_cutting_frequency",
     "remarks",
 ]
 
@@ -121,6 +131,15 @@ SITE_COLUMN_LABELS = {
     "om_start_date": "O&M Start Date", "warranty_end_date": "Warranty End Date",
     "cycles_per_month": "Cleaning cycles / Month",
     "pm_cycles_per_quarter": "PM cycles / Quarter",
+    # Equipment Testing enabled flags
+    "ert_count": "ERT Count",
+    "transformer_count": "Transformer Count",
+    "acb_count": "ACB Count",
+    "dc_pm_count": "DC PM Count",
+    "meter_cal_count": "Meter Calibration Count",
+    # Grasscutting
+    "grass_cutting_enabled": "Grasscutting Enabled (1/0)",
+    "grass_cutting_frequency": "Grasscutting / Year",
     "remarks": "Remarks",
 }
 
@@ -367,13 +386,16 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
     @vendors.post("")
     async def create_vendor(body: VendorIn, user=Depends(get_current_user)):
         await _require_master_data_editor(user)
-        now = _now()
-        doc = {
-            "vendor_id": _gen("ven"),
-            **body.model_dump(),
-            "created_at": now, "updated_at": now, "created_by": user.user_id,
-        }
-        await db.vendors.insert_one(dict(doc))
+        doc = body.model_dump()
+        doc["vendor_id"] = doc.pop("vendor_id", None) or _gen("ven")
+        doc["created_at"] = _now()
+        doc["updated_at"] = doc["created_at"]
+        doc["created_by"] = user.user_id
+        
+        if await db.vendors.find_one({"vendor_id": doc["vendor_id"]}):
+            raise HTTPException(409, f"Vendor ID '{doc['vendor_id']}' is already in use.")
+            
+        await db.vendors.insert_one(doc)
         return _normalize_vendor(doc)
 
     @vendors.get("/{vid}")
@@ -397,7 +419,27 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         existing = _clean(await db.vendors.find_one({"vendor_id": vid}))
         if not existing:
             raise HTTPException(404, "Vendor not found")
-        upd = {**body.model_dump(), "updated_at": _now()}
+        
+        upd = body.model_dump(exclude_unset=True)
+        new_vid = upd.pop("vendor_id", None)
+        
+        if new_vid and new_vid != vid:
+            new_vid = new_vid.strip()
+            if await db.vendors.find_one({"vendor_id": new_vid}):
+                raise HTTPException(409, f"Vendor ID '{new_vid}' is already in use by another vendor.")
+            
+            upd["vendor_id"] = new_vid
+            upd["updated_at"] = _now()
+            await db.vendors.update_one({"vendor_id": vid}, {"$set": upd})
+            
+            # Cascade to users and sites
+            await db.users.update_many({"vendor_id": vid}, {"$set": {"vendor_id": new_vid}})
+            await db.sites.update_many({"vendor_id": vid}, {"$set": {"vendor_id": new_vid}})
+            
+            # Since we changed the ID, we need to return the object with the new ID
+            return _normalize_vendor({**existing, **upd})
+        
+        upd["updated_at"] = _now()
         await db.vendors.update_one({"vendor_id": vid}, {"$set": upd})
         return _normalize_vendor({**existing, **upd})
 
@@ -499,9 +541,15 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         if body.is_active is not None:
             upd["is_active"] = body.is_active
         if body.password:
-            upd["password_hash"] = hash_password_fn(body.password)
-        if upd:
-            await db.users.update_one({"user_id": user_id}, {"$set": upd})
+            upd["password_hash"] = _hash(body.password)
+            upd["force_password_change"] = True
+            
+        if body.email and body.email.strip() != target.get("email"):
+            if await db.users.find_one({"email": body.email.strip()}):
+                raise HTTPException(409, "Email is already in use by another user")
+            upd["email"] = body.email.strip()
+            
+        await db.users.update_one({"user_id": user_id}, {"$set": upd})
         target.update(upd)
         target.pop("password_hash", None)
         return target
@@ -512,11 +560,18 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         if not target or not target.get("vendor_id"):
             raise HTTPException(404, "Vendor user not found")
         await _require_vendor_user_editor(user, target["vendor_id"])
+        
+        old_sites = target.get("assignments", {}).get("sites", [])
+        new_sites = body.sites or []
+        affected_sites = list(set(old_sites + new_sites))
+        
         await db.users.update_one(
             {"user_id": user_id},
             {"$set": {"assignments": body.model_dump(),
                       "updated_at": _now()}},
         )
+        await _sync_vendor_emails(db, affected_sites)
+        
         target["assignments"] = body.model_dump()
         target.pop("password_hash", None)
         return target
@@ -527,7 +582,12 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         if not target:
             raise HTTPException(404, "Vendor user not found")
         await _require_vendor_user_editor(user, target["vendor_id"])
+        
+        affected_sites = target.get("assignments", {}).get("sites", [])
+        
         await db.users.delete_one({"user_id": user_id, "vendor_id": {"$exists": True}})
+        
+        await _sync_vendor_emails(db, affected_sites)
         return {"ok": True}
 
     # ---------- Sites (master) ----------
@@ -800,6 +860,167 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         })
         await _audit_master(db, user, "site.import", None, {"rows": upserted, "replace": replace})
         return {"ok": True, "rows": upserted}
+
+    # ---------- Roofs Excel import / export ----------
+
+    @sites.get("/roofs/template.xlsx")
+    async def roofs_template(user=Depends(get_current_user)):
+        """Download a blank Excel template for bulk roof upload."""
+        await _require_admin(user)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Roofs"
+        headers = ["Plant Name", "Roof Name", "Capacity (MW)", "Inverter Make", "Module Make", "Notes"]
+        ws.append(headers)
+        # example row
+        ws.append(["Solar Farm Alpha", "Roof 1", "2.5", "Huawei", "Jinko", "East facing"])
+        ws.append(["Solar Farm Alpha", "Roof 2", "2.5", "Huawei", "Jinko", "West facing"])
+        for cell in ws[1]:
+            cell.font = cell.font.copy(bold=True)
+        buf = io.BytesIO()
+        wb.save(buf); buf.seek(0)
+        return StreamingResponse(
+            buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="roofs-template.xlsx"'},
+        )
+
+    @sites.get("/roofs/export.xlsx")
+    async def roofs_export(user=Depends(get_current_user)):
+        """Export all current roofs across all sites."""
+        await _require_admin(user)
+        all_sites = await db.sites.find({}, {"_id": 0, "site_name": 1, "roofs": 1}).to_list(50000)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Roofs"
+        headers = ["Plant Name", "Roof Name", "Capacity (MW)", "Inverter Make", "Module Make", "Notes"]
+        ws.append(headers)
+        for site in all_sites:
+            roofs = site.get("roofs") or []
+            for r in roofs:
+                ws.append([
+                    site.get("site_name", ""),
+                    r.get("name", ""),
+                    r.get("capacity", ""),
+                    r.get("inverter_make", ""),
+                    r.get("module_make", ""),
+                    r.get("notes", ""),
+                ])
+        for cell in ws[1]:
+            cell.font = cell.font.copy(bold=True)
+        buf = io.BytesIO()
+        wb.save(buf); buf.seek(0)
+        return StreamingResponse(
+            buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="roofs-export.xlsx"'},
+        )
+
+    @sites.post("/roofs/import")
+    async def roofs_import(
+        file: UploadFile = File(...),
+        user=Depends(get_current_user),
+    ):
+        """
+        Import roofs from Excel/CSV.
+        Columns: Plant Name | Roof Name | Capacity (MW) | Inverter Make | Module Make | Notes
+        Matching is done by site_name (case-insensitive).
+        Roofs are MERGED: if a roof with the same name already exists on the
+        plant it is updated; new names are appended.
+        """
+        await _require_site_editor(user)
+        content = await file.read()
+        raw_rows: List[Dict[str, Any]] = []
+        name_lower = (file.filename or "").lower()
+
+        HEADER_MAP = {
+            "plant name": "site_name", "site name": "site_name",
+            "roof name": "name",
+            "capacity (mw)": "capacity", "capacity": "capacity",
+            "inverter make": "inverter_make",
+            "module make": "module_make",
+            "notes": "notes",
+        }
+
+        if name_lower.endswith(".csv"):
+            text = content.decode("utf-8-sig", errors="ignore")
+            reader = csv.reader(io.StringIO(text))
+            header = next(reader, [])
+            keys = [HEADER_MAP.get((h or "").strip().lower()) for h in header]
+            for r in reader:
+                raw_rows.append({keys[i]: r[i] for i in range(len(keys)) if keys[i] and i < len(r)})
+        else:
+            try:
+                wb = load_workbook(io.BytesIO(content), data_only=True)
+            except Exception as e:
+                raise HTTPException(400, f"Unable to read file: {e}")
+            ws = wb.active
+            it = ws.iter_rows(values_only=True)
+            header = next(it, [])
+            keys = [HEADER_MAP.get(str(h or "").strip().lower()) for h in header]
+            for r in it:
+                row: Dict[str, Any] = {}
+                for i, val in enumerate(r):
+                    if i < len(keys) and keys[i]:
+                        row[keys[i]] = val
+                if any(v not in (None, "") for v in row.values()):
+                    raw_rows.append(row)
+
+        # Group rows by site_name
+        by_plant: Dict[str, List[Dict]] = {}
+        for row in raw_rows:
+            sn = str(row.get("site_name") or "").strip()
+            if not sn:
+                continue
+            by_plant.setdefault(sn, []).append({
+                "name": str(row.get("name") or "").strip(),
+                "capacity": str(row.get("capacity") or "").strip(),
+                "inverter_make": str(row.get("inverter_make") or "").strip(),
+                "module_make": str(row.get("module_make") or "").strip(),
+                "notes": str(row.get("notes") or "").strip(),
+            })
+
+        updated_plants = 0
+        roofs_merged = 0
+        roofs_added = 0
+        not_found: List[str] = []
+
+        for site_name, new_roofs in by_plant.items():
+            site = await db.sites.find_one(
+                {"site_name": {"$regex": f"^{site_name}$", "$options": "i"}},
+                {"_id": 0, "site_id": 1, "roofs": 1},
+            )
+            if not site:
+                not_found.append(site_name)
+                continue
+            existing_roofs: List[Dict] = list(site.get("roofs") or [])
+            existing_by_name = {r.get("name", "").lower(): i for i, r in enumerate(existing_roofs)}
+
+            for nr in new_roofs:
+                if not nr.get("name"):
+                    continue
+                key = nr["name"].lower()
+                if key in existing_by_name:
+                    # Merge: update existing roof with non-empty fields
+                    idx = existing_by_name[key]
+                    for field in ("capacity", "inverter_make", "module_make", "notes"):
+                        if nr.get(field):
+                            existing_roofs[idx][field] = nr[field]
+                    roofs_merged += 1
+                else:
+                    existing_roofs.append(nr)
+                    existing_by_name[key] = len(existing_roofs) - 1
+                    roofs_added += 1
+
+            await db.sites.update_one(
+                {"site_id": site["site_id"]},
+                {"$set": {"roofs": existing_roofs, "updated_at": _now(), "updated_by": user.user_id}},
+            )
+            updated_plants += 1
+
+        msg = f"Updated {updated_plants} plant(s): {roofs_added} roof(s) added, {roofs_merged} merged."
+        if not_found:
+            msg += f" Plants not found: {', '.join(not_found[:10])}."
+        return {"ok": True, "updated_plants": updated_plants, "roofs_added": roofs_added,
+                "roofs_merged": roofs_merged, "not_found": not_found, "message": msg}
 
     @sites.get("/{site_id}/history")
     async def site_history(site_id: str, user=Depends(get_current_user)):
@@ -1497,6 +1718,47 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+async def _sync_vendor_emails(db, site_ids: List[str]):
+    """Recalculate and update the `vendor_email` field for the given sites,
+    combining the primary vendor email and any assigned vendor users' emails.
+    """
+    if not site_ids:
+        return
+        
+    for site_id in site_ids:
+        site = await db.sites.find_one({"site_id": site_id})
+        if not site or not site.get("vendor_id"):
+            continue
+            
+        vendor_id = site["vendor_id"]
+        vendor = await db.vendors.find_one({"vendor_id": vendor_id})
+        base_email = vendor.get("email", "").strip() if vendor else ""
+        
+        query = {
+            "vendor_id": vendor_id,
+            "role": "vendor_user",
+            "assignments.sites": site_id
+        }
+        users = await db.users.find(query, {"email": 1}).to_list(1000)
+        
+        emails = []
+        if base_email:
+            emails.append(base_email)
+        for u in users:
+            email = (u.get("email") or "").strip()
+            if email and email not in emails:
+                emails.append(email)
+                
+        if emails:
+            joined_emails = ", ".join(emails)
+            await db.sites.update_one(
+                {"site_id": site_id},
+                {"$set": {
+                    "vendor_email": joined_emails,
+                    "allowed_emails": emails
+                }}
+            )
+
 async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
     """Upsert a site by either `site_id` (existing row) or `site_code`.
     If the row carries `vendor_email` but no `vendor_id`, try to resolve and
@@ -1515,38 +1777,90 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
             row["allowed_emails"] = emails
     elif isinstance(row.get("allowed_emails"), str):
         row["allowed_emails"] = _split_emails(row["allowed_emails"])
-    # auto-link vendor when an email OR a vendor_name is provided.  We match
-    # against BOTH the users collection (legacy behaviour) and the vendors
-    # collection (new Vendor Management doc), preferring the exact vendor
-    # doc when present.  This ensures sites entered via Site Master with a
-    # freeform `vendor_name` still get a real `vendor_id` on the row.
-    if not row.get("vendor_id"):
-        vendor_doc = None
-        vname = (row.get("vendor_name") or "").strip()
-        vemail = (row.get("vendor_email") or "").strip().lower()
-        if vname:
-            vendor_doc = await db.vendors.find_one(
-                {"$or": [
-                    {"name":        {"$regex": f"^{re.escape(vname)}$", "$options": "i"}},
-                    {"vendor_name": {"$regex": f"^{re.escape(vname)}$", "$options": "i"}},
-                ]},
-                {"_id": 0, "vendor_id": 1},
-            )
-        if vendor_doc is None and vemail:
-            vendor_doc = await db.vendors.find_one(
-                {"$or": [{"email": vemail}, {"vendor_email": vemail}]},
-                {"_id": 0, "vendor_id": 1},
-            )
-        if vendor_doc and vendor_doc.get("vendor_id"):
+    # --- Auto-Sync Vendor and Approver Master Data ---
+    vemail = (row.get("vendor_email") or "").strip().lower()
+    vname = (row.get("vendor_name") or "").strip()
+    
+    # 1. Sync Vendor
+    if vname or vemail:
+        vendor_doc = await db.vendors.find_one({"vendor_id": row.get("vendor_id")}) if row.get("vendor_id") else None
+        
+        if not vendor_doc and vname:
+            # First priority: Match by explicit vendor name
+            vendor_doc = await db.vendors.find_one({"$or": [
+                {"name": {"$regex": f"^{re.escape(vname)}$", "$options": "i"}},
+                {"vendor_name": {"$regex": f"^{re.escape(vname)}$", "$options": "i"}}
+            ]})
+            
+        if not vendor_doc and vemail and not vname:
+            # Only match by email if vendor name is NOT provided (preventing merging of distinct companies with same email)
+            vendor_doc = await db.vendors.find_one({"$or": [{"email": vemail}, {"vendor_email": vemail}]})
+            
+        if vendor_doc:
+            # Update existing vendor if name or email changed
+            v_upd = {}
+            if vname and vendor_doc.get("name") != vname:
+                v_upd["name"] = vname
+            if vemail and vendor_doc.get("email") != vemail:
+                v_upd["email"] = vemail
+            if v_upd:
+                v_upd["updated_at"] = _now()
+                await db.vendors.update_one({"vendor_id": vendor_doc["vendor_id"]}, {"$set": v_upd})
             row["vendor_id"] = vendor_doc["vendor_id"]
-        elif vemail:
-            # Final fallback — legacy behaviour: link via a user email.
-            vendor_user = await db.users.find_one(
-                {"email": vemail, "vendor_id": {"$exists": True}},
-                {"_id": 0, "vendor_id": 1},
-            )
-            if vendor_user and vendor_user.get("vendor_id"):
-                row["vendor_id"] = vendor_user["vendor_id"]
+        elif vname and vemail:
+            # Create new vendor
+            new_vid = _gen("ven")
+            await db.vendors.insert_one({
+                "vendor_id": new_vid, "name": vname, "email": vemail,
+                "status": "active", "created_at": _now(), "updated_at": _now(), "created_by": user.user_id
+            })
+            row["vendor_id"] = new_vid
+            
+        # Ensure Vendor Admin user exists and is synced
+        if row.get("vendor_id") and vemail:
+            vuser = await db.users.find_one({"email": vemail, "vendor_id": row["vendor_id"]})
+            if vuser:
+                if vname and vuser.get("name") != vname:
+                    await db.users.update_one({"user_id": vuser["user_id"]}, {"$set": {"name": vname}})
+            else:
+                # Create Vendor Admin user
+                await db.users.insert_one({
+                    "user_id": _gen("usr"), "vendor_id": row["vendor_id"], "email": vemail,
+                    "name": vname or "Vendor Admin", "role": "vendor_admin", "is_active": True,
+                    "created_at": _now(), "created_by": user.user_id, "temp_password": _gen("pwd")[:8]
+                })
+
+    # 2. Sync Approver (Cluster Manager)
+    cname = (row.get("cluster_manager_name") or "").strip()
+    cemail = (row.get("approver_email") or "").strip().lower()
+    
+    if cname or cemail:
+        cuser = None
+        if cemail:
+            cuser = await db.users.find_one({"email": cemail, "role": {"$in": ["admin", "super_admin"]}})
+        if not cuser and cname:
+            cuser = await db.users.find_one({"name": {"$regex": f"^{re.escape(cname)}$", "$options": "i"}, "role": {"$in": ["admin", "super_admin"]}})
+            
+        if cuser:
+            # Update existing approver
+            u_upd = {}
+            if cname and cuser.get("name") != cname:
+                u_upd["name"] = cname
+            if cemail and cuser.get("email") != cemail:
+                u_upd["email"] = cemail
+            if u_upd:
+                await db.users.update_one({"user_id": cuser["user_id"]}, {"$set": u_upd})
+            # Reflect synced names back into row
+            row["cluster_manager_name"] = cuser.get("name", cname) or cname
+            row["approver_email"] = cuser.get("email", cemail) or cemail
+        elif cname and cemail:
+            # Create new Approver (Admin)
+            await db.users.insert_one({
+                "user_id": _gen("usr"), "email": cemail, "name": cname,
+                "role": "admin", "is_active": True, "created_at": _now(),
+                "created_by": user.user_id, "temp_password": _gen("pwd")[:8],
+                "cluster_manager_name": cname
+            })
     site_id = row.get("site_id")
     if site_id:
         existing = _clean(await db.sites.find_one({"site_id": site_id}))
@@ -1560,7 +1874,8 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
             })
             await db.sites.update_one({"site_id": site_id}, {"$set": upd})
             await _audit_master(db, user, "site.update", site_id, {"changes": list(row.keys())})
-            return {**existing, **upd}
+            await _sync_vendor_emails(db, [site_id])
+            return _clean(await db.sites.find_one({"site_id": site_id}))
     # by site_code
     if row.get("site_code"):
         existing = _clean(await db.sites.find_one({"site_code": row["site_code"]}))
@@ -1568,7 +1883,8 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
             upd = {**row, "updated_at": _now(), "updated_by": user.user_id,
                    "version": int(existing.get("version", 1)) + 1}
             await db.sites.update_one({"site_id": existing["site_id"]}, {"$set": upd})
-            return {**existing, **upd}
+            await _sync_vendor_emails(db, [existing["site_id"]])
+            return _clean(await db.sites.find_one({"site_id": existing["site_id"]}))
     # otherwise insert
     new = {
         "site_id": _gen("site"),
@@ -1578,6 +1894,7 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
     }
     await db.sites.insert_one(dict(new))
     await _audit_master(db, user, "site.create", new["site_id"], {"name": new.get("site_name")})
+    await _sync_vendor_emails(db, [new["site_id"]])
     # Auto-provision the plant's document vault folders on disk so admins
     # find a pre-organised structure the first time they open the tab.
     try:
@@ -1585,7 +1902,7 @@ async def _upsert_site(db, row: Dict[str, Any], user) -> Dict[str, Any]:
         await bootstrap_new_plant(db, new["site_id"])
     except Exception:
         pass
-    return new
+    return _clean(await db.sites.find_one({"site_id": new["site_id"]}))
 
 
 def _coerce_value(key: str, v: Any) -> Any:

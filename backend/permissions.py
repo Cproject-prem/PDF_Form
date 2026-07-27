@@ -523,7 +523,7 @@ def menu_for(user) -> List[Dict[str, str]]:
                       "plants", "schedule", "site-master", "vendors",
                       "master-data", "manpower", "users", "welcome-email", "reports"])
     if role == VENDOR_ADMIN:
-        return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "schedule", "team"])
+        return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "schedule", "vendors"])
     if role == VENDOR_USER:
         return _menu(["forms", "pdf-forms", "submissions", "plants", "schedule", "manpower"])
     return _menu(["forms"])

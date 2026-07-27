@@ -848,13 +848,39 @@ def build_pdf_router(db, get_current_user, get_optional_user,
                        "user_id": viewer.user_id,
                        "user_email": viewer.email,
                        "ip": doc.get("ip")})
-        except Exception:
-            pass
-        # Short-lived download token for anonymous submitter
-        token = make_download_token(sid, kind="pdf") if make_download_token else None
+        except Exception as _e:
+            logger.warning(f"workflow trigger pdf_submitted failed: {_e}")
+
+        # Auto-upload generated PDF to Plant Docs Vault if site mapped
+        try:
+            from filename_resolver import resolve_filename as _rf, _pick, _pick_by_label
+            site_identifier = _pick(body.values, ["site_code", "site_id", "asset_id", "plant_code", "plantId", "asset_code", "site"])
+            # Fallback: scan PDF template fields by label (e.g. field labeled "Site Code" or "Plant Code")
+            if not site_identifier:
+                site_identifier = _pick_by_label(tpl.get("fields", []), body.values)
+            if site_identifier:
+                site_doc = await db.sites.find_one({"$or": [
+                    {"site_id": site_identifier},
+                    {"site_code": site_identifier},
+                    {"asset_id": site_identifier},
+                    {"site_name": {"$regex": f"^{site_identifier}", "$options": "i"}},
+                ]}, {"_id": 0})
+                if site_doc:
+                    pdf_bytes = out_path.read_bytes()
+                    # rename form object keys to match what resolve_filename expects
+                    form_adapter = {"title": tpl.get("title", ""), "filename_template": tpl.get("filename_template", "")}
+                    fname = _rf(tpl.get("filename_template"), form=form_adapter, submission=doc)
+                    if not fname.lower().endswith(".pdf"):
+                        fname += ".pdf"
+                    from plant_docs_routes import save_internal_plant_doc
+                    save_internal_plant_doc(site_doc["site_id"], "PDF Form", fname, pdf_bytes)
+        except Exception as _e:
+            logger.warning(f"failed to auto-sync PDF Form to vault: {_e}")
+
+        download_token = make_download_token(sid, kind="pdf") if make_download_token else None
         payload = PDFSubmission(**doc).model_dump()
-        if token:
-            payload["download_token"] = token
+        if download_token:
+            payload["download_token"] = download_token
         return payload
 
     # --- Public download of the filled PDF (token-scoped, anonymous-safe) ---
