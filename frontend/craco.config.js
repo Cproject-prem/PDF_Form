@@ -44,6 +44,9 @@ function makeDevServerV5Compatible(devServerConfig) {
   compatibleConfig.headers = {
     ...compatibleConfig.headers,
     "Cross-Origin-Resource-Policy": "same-origin",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
   };
 
   if (onBeforeSetupMiddleware || setupMiddlewares) {
@@ -122,11 +125,20 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
-  // Suppress the "Uncaught runtime errors" red overlay.
-  // Must be set here (before makeDevServerV5Compatible rewrites the config)
-  // because the overlay is injected by the webpack-dev-server client bundle
-  // which loads before any React app code — so window.addEventListener
-  // patches in index.js cannot intercept it.
+  devServerConfig.allowedHosts = "all";
+  devServerConfig.proxy = [
+    {
+      context: ["/api", "/uploads"],
+      target: "http://localhost:8001",
+      changeOrigin: true,
+      secure: false,
+    },
+  ];
+  devServerConfig.headers = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+  };
   devServerConfig.client = {
     ...devServerConfig.client,
     overlay: {

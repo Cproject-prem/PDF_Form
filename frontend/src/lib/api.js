@@ -20,34 +20,34 @@ import axios from "axios";
  *       the app from another device by IP, the host is swapped to
  *       `window.location.hostname` (keeping port 8001) automatically.
  */
-function resolveBackendUrl() {
-  const envUrl = (process.env.REACT_APP_BACKEND_URL || "").trim();
-  if (typeof window === "undefined") return envUrl;
-  // Same-origin production — no env value → API on the current origin.
-  if (!envUrl) return window.location.origin;
-  try {
-    const u = new URL(envUrl);
-    const currentHost = window.location.hostname;
-    const isLocalEnv = ["localhost", "127.0.0.1", "0.0.0.0"].includes(u.hostname);
-    const isLocalBrowser = ["localhost", "127.0.0.1"].includes(currentHost);
-    if (isLocalEnv && !isLocalBrowser) {
-      // LAN case — the env still says localhost but the browser is on
-      // 192.168.x.x, so swap the hostname while keeping the port.
-      u.hostname = currentHost;
-      return u.toString().replace(/\/$/, "");
-    }
-    return envUrl.replace(/\/$/, "");
-  } catch {
-    return envUrl.replace(/\/$/, "");
+/**
+ * Returns the backend /api base URL, purely controlled by .env
+ * (REACT_APP_BACKEND_URL).
+ *
+ *   • Separate API subdomain:  REACT_APP_BACKEND_URL="https://api-pdfform.cmam.live"
+ *   • Local direct dev:       REACT_APP_BACKEND_URL="http://localhost:8001"
+ *   • Same-origin proxy:      REACT_APP_BACKEND_URL=""
+ */
+export function getBaseApiUrl() {
+  const envUrl = (
+    (typeof window !== "undefined" && window.__API_BASE__ && !window.__API_BASE__.startsWith("%"))
+      ? window.__API_BASE__
+      : (process.env.REACT_APP_BACKEND_URL || "")
+  ).trim();
+
+  if (envUrl) {
+    return `${envUrl.replace(/\/$/, "")}/api`;
   }
+  return "/api";
 }
 
-const BACKEND_URL = resolveBackendUrl();
-export const API = `${BACKEND_URL}/api`;
+export const API = getBaseApiUrl();
 
 export const api = axios.create({ baseURL: API });
 
 api.interceptors.request.use((config) => {
+  // Re-read __API_BASE__ on every request — always correct regardless of bundle state
+  config.baseURL = getBaseApiUrl();
   const token = localStorage.getItem("ff_token");
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;

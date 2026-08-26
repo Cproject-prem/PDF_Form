@@ -37,20 +37,6 @@ export default function WorkflowsPage() {
   const [loading, setLoading] = useState(true);
   const nav = useNavigate();
 
-  if (isVendorRole) {
-    return (
-      <AppLayout>
-        <div className="p-8 text-center max-w-md mx-auto my-12 bg-white rounded-2xl border border-slate-200 shadow-sm">
-          <div className="w-12 h-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-3">
-            <Workflow className="w-6 h-6" />
-          </div>
-          <h2 className="text-lg font-bold text-slate-800">Access Restricted</h2>
-          <p className="text-sm text-slate-500 mt-1">Workflow Automation is not required for Vendor users.</p>
-        </div>
-      </AppLayout>
-    );
-  }
-
   const load = async () => {
     setLoading(true);
     try {
@@ -66,7 +52,22 @@ export default function WorkflowsPage() {
       setLoading(false);
     }
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
+
+  if (isVendorRole) {
+    return (
+      <AppLayout>
+        <div className="p-8 text-center max-w-md mx-auto my-12 bg-white rounded-2xl border border-slate-200 shadow-sm">
+          <div className="w-12 h-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-3">
+            <Workflow className="w-6 h-6" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-800">Access Restricted</h2>
+          <p className="text-sm text-slate-500 mt-1">Workflow Automation is not required for Vendor users.</p>
+        </div>
+      </AppLayout>
+    );
+  }
 
   const filtered = workflows.filter((w) =>
     !q || (w.name || "").toLowerCase().includes(q.toLowerCase()),
