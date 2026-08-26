@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 import { useNavigate } from "react-router-dom";
+import { usePermissions } from "@/hooks/usePermissions";
 
 const STATUS_STYLES = {
   draft: "bg-amber-50 text-amber-700",
@@ -26,6 +27,7 @@ const STATUS_STYLES = {
 };
 
 export default function WorkflowsPage() {
+  const { canEditWorkflows, isVendorRole } = usePermissions();
   const [workflows, setWorkflows] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [q, setQ] = useState("");
@@ -34,6 +36,20 @@ export default function WorkflowsPage() {
   const [newName, setNewName] = useState("");
   const [loading, setLoading] = useState(true);
   const nav = useNavigate();
+
+  if (isVendorRole) {
+    return (
+      <AppLayout>
+        <div className="p-8 text-center max-w-md mx-auto my-12 bg-white rounded-2xl border border-slate-200 shadow-sm">
+          <div className="w-12 h-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-3">
+            <Workflow className="w-6 h-6" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-800">Access Restricted</h2>
+          <p className="text-sm text-slate-500 mt-1">Workflow Automation is not required for Vendor users.</p>
+        </div>
+      </AppLayout>
+    );
+  }
 
   const load = async () => {
     setLoading(true);
@@ -121,22 +137,24 @@ export default function WorkflowsPage() {
               Visual triggers, conditions, approvals and actions — one engine for every form.
             </p>
           </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              data-testid="wf-from-template-btn"
-              onClick={() => setTplOpen(true)}
-            >
-              <Sparkles className="w-4 h-4 mr-1.5" /> From template
-            </Button>
-            <Button
-              data-testid="wf-create-btn"
-              onClick={() => setCreateOpen(true)}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              <Plus className="w-4 h-4 mr-1.5" /> New workflow
-            </Button>
-          </div>
+          {canEditWorkflows && (
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                data-testid="wf-from-template-btn"
+                onClick={() => setTplOpen(true)}
+              >
+                <Sparkles className="w-4 h-4 mr-1.5" /> From template
+              </Button>
+              <Button
+                data-testid="wf-create-btn"
+                onClick={() => setCreateOpen(true)}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                <Plus className="w-4 h-4 mr-1.5" /> New workflow
+              </Button>
+            </div>
+          )}
         </div>
 
         <Card className="rounded-2xl border-slate-100 card-soft bg-white">
@@ -209,13 +227,15 @@ export default function WorkflowsPage() {
                     <TableCell className="text-sm text-slate-500">v{wf.version}</TableCell>
                     <TableCell className="text-sm text-slate-500">{formatDate(wf.updated_at)}</TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost" size="sm" title={wf.status === "published" ? "Disable" : "Enable"}
-                        onClick={() => toggleStatus(wf)}
-                        data-testid={`wf-toggle-${wf.workflow_id}`}
-                      >
-                        {wf.status === "published" ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                      </Button>
+                      {canEditWorkflows && (
+                        <Button
+                          variant="ghost" size="sm" title={wf.status === "published" ? "Disable" : "Enable"}
+                          onClick={() => toggleStatus(wf)}
+                          data-testid={`wf-toggle-${wf.workflow_id}`}
+                        >
+                          {wf.status === "published" ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                        </Button>
+                      )}
                       <Link
                         to={`/workflows/${wf.workflow_id}/build`}
                         className="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-500 hover:bg-slate-100"
@@ -223,21 +243,25 @@ export default function WorkflowsPage() {
                       >
                         <Edit3 className="w-4 h-4" />
                       </Link>
-                      <Button
-                        variant="ghost" size="sm" title="Duplicate"
-                        onClick={() => duplicate(wf)}
-                        data-testid={`wf-dup-${wf.workflow_id}`}
-                      >
-                        <Copy className="w-4 h-4" />
-                      </Button>
-                      <Button
-                        variant="ghost" size="sm" title="Delete"
-                        onClick={() => remove(wf)}
-                        className="text-red-600 hover:text-red-700"
-                        data-testid={`wf-del-${wf.workflow_id}`}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+                      {canEditWorkflows && (
+                        <>
+                          <Button
+                            variant="ghost" size="sm" title="Duplicate"
+                            onClick={() => duplicate(wf)}
+                            data-testid={`wf-dup-${wf.workflow_id}`}
+                          >
+                            <Copy className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            variant="ghost" size="sm" title="Delete"
+                            onClick={() => remove(wf)}
+                            className="text-red-600"
+                            data-testid={`wf-del-${wf.workflow_id}`}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

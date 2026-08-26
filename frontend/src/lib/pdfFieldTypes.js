@@ -89,6 +89,8 @@ export function makePdfField(type, page = 1, x = 0.1, y = 0.1) {
     validation: {},
     font_size: defaults.font_size || 12,
     font_family: "Helvetica",
+    is_bold: false,
+    is_italic: false,
     font_color: "#111827",
     border_color: "#2563EB",
     background_color: "#DBEAFE",

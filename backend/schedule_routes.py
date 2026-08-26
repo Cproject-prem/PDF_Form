@@ -69,6 +69,11 @@ class UnlockIn(BaseModel):
     note: str = ""
 
 
+class BulkApproveIn(BaseModel):
+    cycle_ids: List[str]
+    which: str = "both"                     # "schedule" | "actual" | "both"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -415,6 +420,34 @@ def build_router(db, get_current_user):
         if act.get("status") != "submitted":
             raise HTTPException(400, "Only submitted actuals can be approved")
         return await _set_block_status(cycle_id, "actual", "approved", user)
+
+    @router.post("/bulk-approve")
+    async def bulk_approve(body: BulkApproveIn, user=Depends(get_current_user)):
+        if not _role_can(user, "approve"):
+            raise HTTPException(403, "Only Admin or Super Admin can approve")
+        if not body.cycle_ids:
+            return {"ok": True, "approved_count": 0}
+
+        approved_count = 0
+        for cycle_id in body.cycle_ids:
+            try:
+                cyc = await _get_cycle(cycle_id, user)
+                if not cyc:
+                    continue
+                if body.which in ("schedule", "both"):
+                    sch = cyc.get("schedule") or {}
+                    if sch.get("status") == "submitted":
+                        await _set_block_status(cycle_id, "schedule", "approved", user)
+                        approved_count += 1
+                if body.which in ("actual", "both"):
+                    act = cyc.get("actual") or {}
+                    if act.get("status") == "submitted":
+                        await _set_block_status(cycle_id, "actual", "approved", user)
+                        approved_count += 1
+            except Exception as _e:
+                pass
+
+        return {"ok": True, "approved_count": approved_count}
 
     @router.post("/{cycle_id}/attachments")
     async def upload_attachment(cycle_id: str, which: str,

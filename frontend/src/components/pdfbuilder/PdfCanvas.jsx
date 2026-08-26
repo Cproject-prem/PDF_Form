@@ -24,7 +24,7 @@ import { getPdfFieldMeta, resolveOptionBoxes } from "@/lib/pdfFieldTypes";
  *   registerPageRef(page, ref)
  */
 export default function PdfCanvas({
-  fileUrl, fields, pages, zoom = 1, rotation = 0, selectedId,
+  fileUrl, fields, pages, zoom = 1, rotation = 0, selectedIds = [],
   showGrid = false, snapToGrid = false,
   onSelect, onFieldChange, onAddField, onDuplicate, onDelete,
   registerPageRef,
@@ -34,7 +34,7 @@ export default function PdfCanvas({
   const file = useMemo(() => authPdfFile(fileUrl), [fileUrl]);
 
   return (
-    <div ref={containerRef} className="w-full h-full overflow-auto bg-slate-100 nice-scroll"
+    <div ref={containerRef} className="w-full h-full min-h-[500px] max-h-[calc(100vh-160px)] overflow-y-auto bg-slate-100 nice-scroll"
          data-testid="pdf-canvas-scroll"
          onClick={() => onSelect && onSelect(null)}>
       <div className="py-8 flex flex-col items-center gap-8">
@@ -51,7 +51,7 @@ export default function PdfCanvas({
               zoom={zoom}
               rotation={rotation}
               fields={fields.filter((f) => Number(f.page) === pageNum)}
-              selectedId={selectedId}
+              selectedIds={selectedIds}
               showGrid={showGrid}
               snapToGrid={snapToGrid}
               onSelect={onSelect}
@@ -69,11 +69,13 @@ export default function PdfCanvas({
 }
 
 function PdfPageView({
-  pageNum, zoom, rotation, fields, selectedId, showGrid, snapToGrid,
+  pageNum, zoom, rotation, fields, selectedIds, showGrid, snapToGrid,
   onSelect, onFieldChange, onAddField, onDuplicate, onDelete, registerPageRef,
 }) {
   const wrapRef = useRef(null);
+  const marqueeRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const [marquee, setMarquee] = useState(null);
 
   useEffect(() => {
     if (registerPageRef && wrapRef.current) registerPageRef(pageNum, wrapRef.current);
@@ -92,14 +94,99 @@ function PdfPageView({
     onAddField && onAddField(type, pageNum, Math.max(0, Math.min(0.95, x)), Math.max(0, Math.min(0.95, y)));
   };
 
+  const onPointerDown = (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('.react-rnd-handle') || e.target.closest('button')) return;
+
+    if (!wrapRef.current) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const mData = { startX: x, startY: y, currX: x, currY: y, targetEl: e.target };
+    marqueeRef.current = mData;
+    setMarquee(mData);
+  };
+
+  useEffect(() => {
+    const handleMove = (e) => {
+      if (!marqueeRef.current || !wrapRef.current) return;
+      const rect = wrapRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      marqueeRef.current = { ...marqueeRef.current, currX: x, currY: y };
+      setMarquee({ ...marqueeRef.current });
+    };
+
+    const handleUp = (e) => {
+      const cur = marqueeRef.current;
+      marqueeRef.current = null;
+      setMarquee(null);
+
+      if (!cur || !wrapRef.current) return;
+
+      const rect = wrapRef.current.getBoundingClientRect();
+      const endX = e.clientX - rect.left;
+      const endY = e.clientY - rect.top;
+
+      const domW = rect.width || 1;
+      const domH = rect.height || 1;
+
+      const dist = Math.hypot(endX - cur.startX, endY - cur.startY);
+
+      if (dist > 4) {
+        const mMinX = Math.min(cur.startX, endX);
+        const mMaxX = Math.max(cur.startX, endX);
+        const mMinY = Math.min(cur.startY, endY);
+        const mMaxY = Math.max(cur.startY, endY);
+
+        const newlySelected = [];
+        for (const f of fields) {
+          if (f.visible === false) continue;
+          const fx1 = Number(f.x ?? 0) * domW;
+          const fw = Number(f.width ?? 0.15) * domW;
+          const fx2 = fx1 + fw;
+
+          const fy1 = Number(f.y ?? 0) * domH;
+          const fh = Number(f.height ?? 0.04) * domH;
+          const fy2 = fy1 + fh;
+
+          // AABB Bounding Box Overlap / Intersection in exact DOM pixels
+          if (fx1 <= mMaxX && fx2 >= mMinX && fy1 <= mMaxY && fy2 >= mMinY) {
+            newlySelected.push(f.id);
+          }
+        }
+
+        if (onSelect) {
+          const allSelected = e.shiftKey
+            ? Array.from(new Set([...(selectedIds || []), ...newlySelected]))
+            : newlySelected;
+          onSelect(allSelected);
+        }
+      } else {
+        const clickedField = cur.targetEl ? cur.targetEl.closest('.react-rnd') : null;
+        if (!clickedField && !e.shiftKey && onSelect) {
+          onSelect([]);
+        }
+      }
+    };
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+  }, [fields, selectedIds, onSelect]);
+
   return (
     <div
       ref={wrapRef}
       data-testid={`pdf-page-${pageNum}`}
       onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
       onDrop={onDropField}
-      onClick={(e) => { e.stopPropagation(); onSelect && onSelect(null); }}
-      className="relative shadow-xl bg-white"
+      onPointerDown={onPointerDown}
+      className="relative shadow-xl bg-white select-none"
       style={{ width: size.w || undefined, height: size.h || undefined }}
     >
       <Page
@@ -114,6 +201,18 @@ function PdfPageView({
       <div className="absolute top-2 left-2 px-2 py-0.5 rounded bg-slate-900/70 text-white text-[10px] font-semibold tracking-wider z-10 pointer-events-none">
         PAGE {pageNum}
       </div>
+      {/* marquee */}
+      {marquee && (
+        <div
+          className="absolute border border-blue-500 bg-blue-500/20 pointer-events-none z-50"
+          style={{
+            left: Math.min(marquee.startX, marquee.currX),
+            top: Math.min(marquee.startY, marquee.currY),
+            width: Math.abs(marquee.currX - marquee.startX),
+            height: Math.abs(marquee.currY - marquee.startY),
+          }}
+        />
+      )}
       {/* grid */}
       {showGrid && size.w > 0 && (
         <div className="absolute inset-0 pointer-events-none opacity-30"
@@ -130,7 +229,7 @@ function PdfPageView({
             f={f}
             containerW={size.w}
             containerH={size.h}
-            selected={selectedId === f.id}
+            selected={selectedIds.includes(f.id)}
             snapToGrid={snapToGrid}
             onSelect={onSelect}
             onFieldChange={onFieldChange}
@@ -143,7 +242,7 @@ function PdfPageView({
               containerW={size.w}
               containerH={size.h}
               snapToGrid={snapToGrid}
-              parentSelected={selectedId === f.id}
+              parentSelected={selectedIds.includes(f.id)}
               onSelect={onSelect}
               onFieldChange={onFieldChange}
             />
@@ -193,7 +292,7 @@ function FieldBox({ f, containerW, containerH, selected, snapToGrid,
       bounds="parent"
       disableDragging={!!f.locked}
       enableResizing={!f.locked}
-      onClick={(e) => { e.stopPropagation(); onSelect && onSelect(f.id); }}
+      onClick={(e) => { e.stopPropagation(); onSelect && onSelect(f.id, e.shiftKey); }}
       style={{
         zIndex: 50 + (f.z_index || 0),
         transform: `rotate(${f.rotation || 0}deg)`,

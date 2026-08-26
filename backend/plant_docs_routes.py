@@ -55,7 +55,7 @@ def _safe_name(name: str) -> str:
     name = (name or "").strip()
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         raise HTTPException(400, "Invalid name")
-    if not re.match(r"^[A-Za-z0-9 _.(-)&+]+$", name):
+    if not re.match(r"^[A-Za-z0-9 _.()&+-]+$", name):
         raise HTTPException(400, "Name may only contain letters, digits, spaces and _-.()&+")
     return name
 
@@ -116,37 +116,79 @@ def _plant_root(site_id: str) -> Path:
     return root / site_id
 
 
-def save_internal_plant_doc(site_id: str, folder_name: str, file_name: str, content: bytes) -> str:
+def save_internal_plant_doc(
+    site_id: str,
+    folder_name: str,
+    file_name: str,
+    content: bytes,
+    subfolder_name: str = "",
+) -> str:
     """Programmatically push a file to the plant's document vault.
     Returns the path where the file was saved.
+    Accepts an optional subfolder_name for one level of nesting.
     """
     if not site_id:
         return ""
-    
-    # 1. Ensure folder exists
+
     f_name = _safe_name(folder_name)
     target_dir = _plant_root(site_id) / f_name
+    if subfolder_name:
+        sf_name = _safe_name(subfolder_name)
+        target_dir = target_dir / sf_name
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Save file
     safe_file_name = _sanitize_filename(file_name)
     target_path = target_dir / safe_file_name
-    
-    # Add a timestamp or unique suffix if the file already exists?
-    # (For submissions, timestamps are usually in the filename, so direct write is ok)
     target_path.write_bytes(content)
     return str(target_path)
+
+
+def parse_vault_path(path: str):
+    """Split '/Folder/Subfolder' into (folder, subfolder). Returns (folder, '') for root paths."""
+    parts = (path or "").strip().lstrip("/").split("/", 1)
+    folder = parts[0].strip() if parts else ""
+    subfolder = parts[1].strip() if len(parts) > 1 else ""
+    return folder, subfolder
 
 
 def build_router(db, get_current_user):
     router = APIRouter(prefix="/plant-docs", tags=["plant-docs"])
     plants = APIRouter(prefix="/plants", tags=["plant-docs"])
 
-    async def _load_template() -> List[str]:
+    async def _get_template_data() -> Dict[str, Any]:
         row = await db.plant_doc_template.find_one({"_id": "default"}, {"_id": 0})
-        if not row or not row.get("folders"):
+        if not row:
+            return {"folders": list(DEFAULT_TEMPLATE_FOLDERS), "permissions": {}}
+        return {
+            "folders": list(row.get("folders") or []),
+            "permissions": row.get("permissions") or {}
+        }
+
+    async def _load_template() -> List[str]:
+        data = await _get_template_data()
+        if not data.get("folders"):
             return list(DEFAULT_TEMPLATE_FOLDERS)
-        return list(row["folders"])
+        return data["folders"]
+
+    async def _has_folder_access(user, folder_name: str, action: str = "view") -> bool:
+        """Check if user has access to a folder based on template permissions.
+        action can be "view" or "edit".
+        """
+        if user.role in ("super_admin", "admin") or getattr(user, "access_override", False):
+            return True
+
+        data = await _get_template_data()
+        perms = data.get("permissions", {}).get(folder_name, {})
+        
+        # If permissions are explicitly set for this action, check them.
+        if action in perms:
+            return user.role in perms[action]
+            
+        # Default fallback:
+        # Everyone can view, but only admin/super_admin can edit.
+        if action == "view":
+            return True
+        return False
 
     async def _assert_plant_visible(site_id: str, user) -> Dict[str, Any]:
         """Confirm the caller is allowed to see this plant at all."""
@@ -163,14 +205,18 @@ def build_router(db, get_current_user):
     @router.get("/template")
     async def get_template(user=Depends(get_current_user)) -> Dict[str, Any]:
         await _require_doc_editor(user)
-        return {"folders": await _load_template()}
+        return await _get_template_data()
 
     @router.put("/template")
     async def set_template(body: Dict[str, Any], user=Depends(get_current_user)) -> Dict[str, Any]:
         await _require_super_admin(user)
         folders_raw = body.get("folders") or []
+        permissions = body.get("permissions") or {}
         if not isinstance(folders_raw, list):
             raise HTTPException(400, "`folders` must be a list of strings")
+        if not isinstance(permissions, dict):
+            raise HTTPException(400, "`permissions` must be a dictionary")
+            
         folders = []
         seen: set = set()
         for f in folders_raw:
@@ -179,9 +225,24 @@ def build_router(db, get_current_user):
                 continue
             seen.add(n.lower())
             folders.append(n)
+            
+        # Clean up permissions to only include valid roles and valid folders
+        valid_roles = {"super_admin", "admin", "vendor_admin", "user", "vendor_user"}
+        cleaned_perms = {}
+        for f in folders:
+            if f in permissions:
+                p = permissions[f]
+                c = {}
+                if "view" in p and isinstance(p["view"], list):
+                    c["view"] = [r for r in p["view"] if r in valid_roles]
+                if "edit" in p and isinstance(p["edit"], list):
+                    c["edit"] = [r for r in p["edit"] if r in valid_roles]
+                if c:
+                    cleaned_perms[f] = c
+            
         await db.plant_doc_template.update_one(
             {"_id": "default"},
-            {"$set": {"folders": folders, "updated_at": _now(),
+            {"$set": {"folders": folders, "permissions": cleaned_perms, "updated_at": _now(),
                       "updated_by": user.user_id}},
             upsert=True,
         )
@@ -217,6 +278,66 @@ def build_router(db, get_current_user):
         await _assert_plant_visible(site_id, user)
         return {"folders": await _init_folders(site_id)}
 
+    # ---------- Vault path helpers (used by form settings) ----------
+    @plants.get("/check-vault-path")
+    async def check_vault_path(path: str = "", user=Depends(get_current_user)):
+        """Check if a vault path exists in the folder template.
+        Returns {exists: bool, folder, subfolder}.
+        """
+        await _require_doc_editor(user)
+        folder, subfolder = parse_vault_path(path)
+        if not folder:
+            raise HTTPException(400, "Path required (e.g. /Reports/TBT)")
+        template = await _load_template()
+        folder_exists = folder in template
+        return {"exists": folder_exists, "folder": folder, "subfolder": subfolder, "path": path}
+
+    @plants.post("/ensure-vault-path")
+    async def ensure_vault_path(body: Dict[str, Any], user=Depends(get_current_user)):
+        """Create a vault folder/subfolder path across ALL plants and add to template.
+        Body: { path: "/Reports/TBT" }
+        """
+        await _require_doc_editor(user)
+        path = (body.get("path") or "").strip()
+        folder, subfolder = parse_vault_path(path)
+        if not folder:
+            raise HTTPException(400, "Path required (e.g. /Reports/TBT)")
+        # Validate names
+        try:
+            f_safe = _safe_name(folder)
+            sf_safe = _safe_name(subfolder) if subfolder else ""
+        except HTTPException as exc:
+            raise HTTPException(400, f"Invalid path segment: {exc.detail}")
+
+        # Add folder to template if missing
+        template = await _load_template()
+        if f_safe not in template:
+            template.append(f_safe)
+            TEMPLATE_COLL = "plant_doc_folder_template"
+            await db[TEMPLATE_COLL].update_one(
+                {"_id": "default"},
+                {"$addToSet": {"folders": f_safe}},
+                upsert=True,
+            )
+
+        # Create across all plant vaults
+        sites = await db.sites.find({}, {"site_id": 1}).to_list(2000)
+        created = 0
+        for site in sites:
+            sid = site.get("site_id")
+            if not sid:
+                continue
+            folder_path = _plant_root(sid) / f_safe
+            folder_path.mkdir(parents=True, exist_ok=True)
+            if sf_safe:
+                (folder_path / sf_safe).mkdir(parents=True, exist_ok=True)
+            created += 1
+
+        return {"ok": True, "folder": f_safe, "subfolder": sf_safe,
+                "path": f"/{f_safe}/{sf_safe}" if sf_safe else f"/{f_safe}",
+                "plants_updated": created}
+
+
     # ---------- Folder CRUD ----------
     @plants.get("/{site_id}/folders")
     async def list_folders(site_id: str, user=Depends(get_current_user)):
@@ -249,7 +370,11 @@ def build_router(db, get_current_user):
         if root.exists():
             for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
                 if entry.is_dir():
-                    out.append(_folder_node(entry))
+                    if not await _has_folder_access(user, entry.name, "view"):
+                        continue
+                    node = _folder_node(entry)
+                    node["can_edit"] = await _has_folder_access(user, entry.name, "edit")
+                    out.append(node)
         return {"site_id": site_id, "folders": out,
                 "can_edit": user.role in ("super_admin", "admin")}
 
@@ -279,6 +404,8 @@ def build_router(db, get_current_user):
                 current = current / sanitized
                 if not current.exists():
                     raise HTTPException(404, f"Folder '{path}' not found")
+            if not await _has_folder_access(user, parts[0], "view"):
+                raise HTTPException(404, f"Folder '{path}' not found")
         
         result = []
         if not path and root.exists():
@@ -290,6 +417,10 @@ def build_router(db, get_current_user):
             # Process entries in sorted order
             for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
                 if entry.is_dir():
+                    # Check top-level folder access
+                    folder_name = entry.name if not path else parts[0]
+                    if not await _has_folder_access(user, folder_name, "view"):
+                        continue
                     try:
                         # Recursively get files in this folder
                         files = []
@@ -417,7 +548,8 @@ def build_router(db, get_current_user):
     async def create_subfolder(site_id: str, folder: str, body: Dict[str, Any],
                                user=Depends(get_current_user)):
         """Create a subfolder inside a root folder."""
-        await _require_doc_editor(user)
+        if not await _has_folder_access(user, folder, "edit"):
+            raise HTTPException(403, "Access denied")
         await _assert_plant_visible(site_id, user)
         parent = _safe_name(folder)
         name = _safe_name(body.get("name") or "")
@@ -431,7 +563,8 @@ def build_router(db, get_current_user):
     async def delete_subfolder(site_id: str, folder: str, subfolder: str,
                                user=Depends(get_current_user)):
         """Delete a subfolder and all its contents."""
-        await _require_doc_editor(user)
+        if not await _has_folder_access(user, folder, "edit"):
+            raise HTTPException(403, "Access denied")
         await _assert_plant_visible(site_id, user)
         target = _plant_root(site_id) / _safe_name(folder) / _safe_name(subfolder)
         if not target.exists():
@@ -466,6 +599,8 @@ def build_router(db, get_current_user):
         """Streams a `.zip` containing every file inside a folder.  Empty
         folders return a valid empty zip so the client always gets a file."""
         await _assert_plant_visible(site_id, user)
+        if not await _has_folder_access(user, folder, "view"):
+            raise HTTPException(403, "Access denied")
         folder = _safe_name(folder)
         target = _plant_root(site_id) / folder
         if not target.exists() or not target.is_dir():
@@ -490,9 +625,12 @@ def build_router(db, get_current_user):
                          user=Depends(get_current_user)):
         """List files (and sub-subfolders) inside a folder or subfolder."""
         await _assert_plant_visible(site_id, user)
+        if not await _has_folder_access(user, folder, "view"):
+            raise HTTPException(403, "Access denied")
         target = _resolve_dir(site_id, folder, subfolder)
+        can_edit = await _has_folder_access(user, folder, "edit")
         if not target.exists():
-            return {"files": [], "subfolders": [], "can_edit": user.role in ("super_admin", "admin")}
+            return {"files": [], "subfolders": [], "can_edit": can_edit}
         files = []
         subfolders_out = []
         for entry in sorted(target.iterdir(), key=lambda p: p.name.lower()):
@@ -513,14 +651,16 @@ def build_router(db, get_current_user):
         return {
             "files": files,
             "subfolders": subfolders_out,
-            "can_edit": user.role in ("super_admin", "admin"),
+            "can_edit": can_edit,
         }
 
     @plants.post("/{site_id}/folders/{folder}/upload")
     async def upload_file(site_id: str, folder: str,
+                          subfolder: Optional[str] = None,
                           file: UploadFile = File(...),
                           user=Depends(get_current_user)):
-        await _require_doc_editor(user)
+        if not await _has_folder_access(user, folder, "edit"):
+            raise HTTPException(403, "Access denied")
         await _assert_plant_visible(site_id, user)
         folder = _safe_name(folder)
 
@@ -573,6 +713,8 @@ def build_router(db, get_current_user):
                             subfolder: str = "",
                             user=Depends(get_current_user)):
         await _assert_plant_visible(site_id, user)
+        if not await _has_folder_access(user, folder, "view"):
+            raise HTTPException(403, "Access denied")
         filename = _sanitize_filename(filename)
         target = _resolve_dir(site_id, folder, subfolder) / filename
         if not target.exists() or not target.is_file():
@@ -583,7 +725,8 @@ def build_router(db, get_current_user):
     async def delete_file(site_id: str, folder: str, filename: str,
                           subfolder: str = "",
                           user=Depends(get_current_user)):
-        await _require_doc_editor(user)
+        if not await _has_folder_access(user, folder, "edit"):
+            raise HTTPException(403, "Access denied")
         await _assert_plant_visible(site_id, user)
         filename = _sanitize_filename(filename)
         target = _resolve_dir(site_id, folder, subfolder) / filename

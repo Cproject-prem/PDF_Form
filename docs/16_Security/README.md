@@ -1,156 +1,96 @@
-# Security Hardening
+# FormForge — Portal Security Architecture & Security Center
 
-FormForge holds confidential data (form submissions, personal info, PDF documents, RBAC scopes). This doc catalogues every hardening measure currently in place, plus how to configure them.
-
----
-
-## 1. Authentication
-
-- **Passwords** are hashed with **bcrypt** (cost 12) — plain-text passwords never touch the DB or the logs.
-- **JWTs** are HS256-signed with a secret from `JWT_SECRET`. Auth tokens TTL = 7 days (configurable), download tokens TTL = 24 h.
-- **Sessions** are stateless — invalidation is by changing `JWT_SECRET` (all tokens invalidated) or by disabling the user (`is_active=false`).
-
-### Startup safety check
-If `SECURITY_STRICT=true` (default), the backend **refuses to start** when:
-- `JWT_SECRET` is missing, is `dev-secret`, or shorter than 32 chars
-- `CORS_ORIGINS` is `*`
-- `SEED_ADMIN_PASSWORD` is a well-known demo value
-
-Generate a strong secret:
-```bash
-python -c "import secrets; print(secrets.token_hex(48))"
-```
+FormForge implements an enterprise-grade **Portal Security Center** and security control framework covering all 38 platform categories across frontend, backend, API, authentication, RBAC, row-level security, AI service isolation, backups, and network infrastructure.
 
 ---
 
-## 2. Brute-force protection
+## 1. Portal Security Center Overview
 
-Every failed login is tracked per IP **and** per email. After **8 failures in 15 minutes** the endpoint returns HTTP **429** with a `Retry-After` header. A successful login **resets** that email's counter so legit users aren't punished for their own typos.
+The **Security & Compliance Center** (`/security`) provides Super-Admin-restricted auditing, live vulnerability monitoring, automated security scanning, control verification, and compliance reporting.
 
-Tunable via env:
-```
-LOGIN_MAX_ATTEMPTS=8
-LOGIN_WINDOW_SECONDS=900
-```
+### Key API Endpoints
+All endpoints are strictly protected by `require_role("super_admin")`:
 
-## 3. Rate limits (other endpoints)
-
-| Endpoint | Default limit |
-|----------|---------------|
-| `POST /api/public/forms/{slug}/submit` | 20/min per IP |
-| `POST /api/upload` | 30/min per user |
-| `POST /api/public/upload` | 30/min per IP |
-
-Tunable via `SUBMIT_MAX_PER_MIN` and `UPLOAD_MAX_PER_MIN`.
-
-**Note (multi-worker)**: today's limiter is in-memory per-process. For >1 uvicorn worker use nginx `limit_req` in front, or migrate to Redis (roadmap).
-
-## 4. Password policy
-
-Server-side enforced when a user supplies their own password on account creation. Requires:
-
-- ≥ 10 characters (≤ 128)
-- ≥ 3 of the 4 classes: lowercase, uppercase, digit, symbol
-- Not one of a common-passwords deny-list
-
-Auto-generated temp passwords already meet the policy.
-
-## 5. File-upload validation
-
-- **Size cap**: `MAX_UPLOAD_MB` (default 25 MB).
-- **Extension allow-list**: png/jpg/gif/webp/pdf/txt/csv/xlsx/docx/doc/xls/zip.
-- **Magic-byte check**: bytes on disk must match the claimed extension. A `.png` that's actually PHP or a script is rejected with HTTP 400.
-- **Storage**: local disk under `uploads/local/`, organised per submission at submit time. No untrusted files leave the server.
-
-## 6. HTTP response headers
-
-Applied globally by `SecurityHeadersMiddleware`:
-
-| Header | Value |
-|--------|-------|
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `DENY` (blocks clickjacking) |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
-| `Permissions-Policy` | `geolocation=(), microphone=(), camera=()` |
-| `Cross-Origin-Opener-Policy` | `same-origin` |
-| `Content-Security-Policy` | see below |
-| `Strict-Transport-Security` | 1 year, `includeSubDomains` — only when `SECURITY_HTTPS=true` |
-
-Default CSP (safe for the current SPA):
-```
-default-src 'self';
-img-src 'self' data: blob:;
-media-src 'self' blob:;
-connect-src 'self' ws: wss:;
-style-src 'self' 'unsafe-inline';
-script-src 'self' 'unsafe-inline' 'unsafe-eval';
-font-src 'self' data:;
-frame-ancestors 'none';
-base-uri 'self';
-form-action 'self';
-```
-
-## 7. Row-Level Security (RLS)
-
-Enforced in `backend/permissions.py::submission_filter`. Every list/read that touches `db.submissions` must pass through it — direct `db.submissions.find({})` is forbidden by convention and caught by review.
-
-Filter logic:
-- `super_admin` → no filter
-- `admin` with `region` set → only records in that region
-- `vendor_admin` → only records for their `vendor_id`
-- `vendor_user` → only records they submitted
-
-## 8. Audit logging
-
-- Login successes AND failures are logged with structured payload (`email`, `ip`, `role`).
-- User CRUD, role changes, workflow enable/disable, SMTP changes, backup runs → `db.audit_logs`.
-- All timestamps in UTC ISO-8601.
-- `redact_for_log()` scrubs `password`, `token`, `secret`, `authorization`, `cookie` from any dict before printing.
-
-## 9. CORS
-
-Set `CORS_ORIGINS="https://app.company.com,https://admin.company.com"` in prod. Wildcards are rejected by the strict startup check.
-
-## 10. Download tokens
-
-Public filled-PDF download uses a JWT with:
-- `scope="download"`
-- `kind="form"` or `"pdf"`
-- `sid` = submission id
-- 24 h TTL
-
-`verify_download_token()` rejects if scope, kind, or sid don't match — so a token issued for submission A cannot fetch submission B.
-
-## 11. Local-disk storage
-
-- Files are outside the web root — served only via `/api/files/{file_id}` with DB-record auth checks.
-- Directory traversal is prevented by using `Path` joins and stripping leading `/`.
-
-## 12. Backup encryption (roadmap)
-
-Today `backup.py` produces a plain zip. Roadmap adds `--encrypt PASSWORD` producing an AES-256 zip via `pyzipper`. Track: `docs/14_Future_Features`.
+- `POST /api/security/scan`: Triggers an on-demand security scan (`mode`: `"quick"` | `"full"` | `"component"`).
+- `GET /api/security/status`: Returns overall Security Score (0-100%), status badge (`Secure`, `Attention Required`, `Critical Risk`), issue counts by severity, and category breakdown.
+- `GET /api/security/findings`: Returns filtered control findings by category, severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`), or status (`PASS`, `FAIL`, `PARTIAL`, `MANUAL REVIEW REQUIRED`).
+- `GET /api/security/report`: Downloads complete security audit report (`format`: `"json"` | `"markdown"`).
+- `GET /api/security/settings`: Displays safe operational status flags for core platform security mechanisms without exposing secrets.
 
 ---
 
-## Deployment checklist
+## 2. 38 Security Dashboard Categories
 
-Before flipping the app live:
-
-- [ ] `JWT_SECRET` = 48+ random hex bytes
-- [ ] `CORS_ORIGINS` = explicit list, no wildcards
-- [ ] `SECURITY_STRICT` unset (defaults to `true` → hard fail on weak config)
-- [ ] `SECURITY_HTTPS=true` (behind an HTTPS terminator)
-- [ ] `SEED_ADMIN_PASSWORD` changed OR the demo admin deleted after first login
-- [ ] All demo vendor users deleted or their passwords rotated
-- [ ] SMTP creds set — otherwise workflow emails silently fail
-- [ ] Backup cron enabled + first restore drill completed
-- [ ] Reverse proxy (nginx/caddy) enforces HTTPS + terminates TLS
-- [ ] Firewall exposes only 443 (nothing directly on 8001 or 27017)
-- [ ] MongoDB bound to `127.0.0.1` (never `0.0.0.0`) unless you have auth + TLS on it
-- [ ] Regular Mongo user account (not `root`) with least-privilege on the `formforge` DB
+1. **Authentication**: Bcrypt hashing (cost 12), min 10 chars, 3/4 character classes, common password deny-list, sliding-window brute-force lockout (8 attempts / 15 mins).
+2. **Session Management**: JWT token expiration (`exp`), instant invalidation for disabled users (`is_active=false`).
+3. **Authorization**: Server-side `require_role()` guards on all sensitive endpoints.
+4. **RBAC**: Centralized role capability matrix in `permissions.py` (Super Admin, Admin, Vendor Admin, Vendor User, User).
+5. **Row-Level Security (RLS)**: Mandatory `site_filter` and `submission_filter` restricting queries by region, cluster manager, or `vendor_id`.
+6. **API Security**: Route validation, HTTP method enforcement, rate limiting, and IDOR prevention.
+7. **Form Security**: Form builder definition validation, field type checking, and formula safety controls.
+8. **PDF Security**: PDF parser validation, stamping isolation, and submission-bound short-lived download tokens.
+9. **Submission Security**: Submission ownership scoping, IDOR protection, and export authorization.
+10. **Approval Security**: Token signature validation, 24h expiration, single-use approval magic links, and replay protection.
+11. **Workflow Security**: Trigger event scoping, isolated node execution, and configuration change auditing.
+12. **File Security**: Magic byte binary signature validation (`_MAGIC_BYTES`), extension allow-list, size caps (25 MB), and path traversal prevention.
+13. **Public Endpoint Security**: Sliding-window rate limiters on public submission (`/f/{slug}`, `/p/{slug}`) and rate-limited uploads.
+14. **WebSocket Security**: Authenticated connection lifecycle, scoped event channels (`/ws/notifications`), and disconnect cleanup.
+15. **Database Security**: MongoDB indexed collections (`created_at` on audit logs), least-privilege DB user, localhost binding.
+16. **Data Protection**: PII handling, structured data masking, and retention rules.
+17. **Encryption**: TLS 1.3 in transit, HSTS headers when `SECURITY_HTTPS=true`, sensitive field protection.
+18. **Configuration Security**: `SECURITY_STRICT=true` startup safety assertions blocking weak secrets or permissive CORS.
+19. **Secrets Security**: No secrets in frontend JS bundles, redacted keys (`password`, `token`, `secret`, `cookie`) in audit logs.
+20. **CORS**: Explicit origin restrictions in `CORS_ORIGINS` (rejecting `*` in strict mode).
+21. **HTTP Security Headers**: `SecurityHeadersMiddleware` injecting `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, and `Content-Security-Policy`.
+22. **HTTPS/TLS**: TLS enforcement, HSTS max-age 1 year, secure cookie flags.
+23. **Network Security**: Database, AI microservice, and Ollama listening exclusively on internal localhost/docker network.
+24. **Firewall / Reverse Proxy**: NGINX ingress TLS termination, client IP (`X-Forwarded-For`) validation, request size limits.
+25. **Dependency Security**: Dependency audit checks for Python requirements and Node package dependencies.
+26. **Logging & Auditing**: Immutable audit trail in `db.audit_logs` tracking user, action, timestamp, object, and result with sensitive data redaction.
+27. **Backup Security**: Snapshot directory permissions, archive integrity checks, and backup manifest tracking.
+28. **Disaster Recovery**: Documented RPO/RTO targets, restore verification scripts, and isolated snapshot extraction.
+29. **AI Service Isolation**: `formforge-ai` and Ollama executing in separate unprivileged processes with circuit-breaker timeouts (`AI_REQUEST_TIMEOUT=30`).
+30. **RAG Security**: Permission-aware vector retrieval ensuring semantic relevance never overrides user permission scopes.
+31. **Vector Database Security**: Qdrant/FAISS indexing with metadata filter enforcement (`vendor_id`, role scope).
+32. **AI Prompt Injection**: Untrusted document framing treating all RAG content as passive data; system instruction protection.
+33. **Resource Protection**: Max payload size limits, request timeout caps, and sliding-window rate limiters.
+34. **Monitoring & Alerts**: `/health` probe checking API, MongoDB, and AI service health.
+35. **Browser / Client Security**: Safe React DOM rendering preventing XSS, no raw secrets in `localStorage`, CSP frame ancestors `none`.
+36. **Privacy & Data Retention**: Automated cleanup guidelines for expired download tokens and temporary files.
+37. **Security Testing**: Automated security scan engine (`security_center.py`) and Playwright E2E security test suite.
+38. **Deployment Security**: Non-root container execution, environment integrity assertions, and production deployment checklists.
 
 ---
 
-## Reporting a vulnerability
+## 3. Core Availability Requirement
 
-Email `security@yourdomain.example` (please redact this in the docs before publishing).
+**Requirement 51**: Failure of optional services, including AI, RAG, embedding, vector database, or external integrations, **MUST NOT** cause failure of core FormForge functionality.
+
+Core functionality includes:
+- Authentication & Login
+- Forms & Form Builder
+- PDF Forms & Generation
+- Submissions & Submissions Hub
+- Approvals & Workflow Execution
+- Reports & Analytics
+- Users & Vendor Management
+- Master Data & Site Master
+- File Uploads & Downloads
+- Audit Logging
+
+---
+
+## 4. Security Score & Status Formula
+
+- **90–100%**: `Secure` (Green)
+- **75–89%**: `Attention Required` (Amber)
+- **50–74%**: `High Risk` (Orange)
+- **0–49%**: `Critical Risk` (Red)
+
+Any unresolved **CRITICAL** failure forces the status badge to `Critical Risk` regardless of total score percentage.
+
+---
+
+## 5. Reporting & Remediation
+
+Security findings report evidence, affected components, remediation steps, and documentation references. Reports can be exported directly from the Security Center as structured JSON or Markdown reports.

@@ -16,9 +16,10 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
-  Download, Eye, Search, FileText, FileType2, FileSpreadsheet, Inbox,
+  Download, Eye, Search, FileText, FileType2, FileSpreadsheet, Inbox, CalendarIcon
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
+import ApprovalTracker from "@/components/ApprovalTracker";
 
 /**
  * Consolidated Submissions page.
@@ -36,11 +37,19 @@ export default function SubmissionsHubPage() {
   const [kind, setKind] = useState("all"); // all | form | pdf
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null); // {group, sub}
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   const load = async () => {
     setLoading(true);
     try {
-      const r = await api.get("/submissions/overview");
+      let url = "/submissions/overview";
+      const params = new URLSearchParams();
+      if (startDate) params.append("start_date", startDate);
+      if (endDate) params.append("end_date", endDate);
+      if (params.toString()) url += `?${params.toString()}`;
+
+      const r = await api.get(url);
       setGroups(r.data || []);
     } catch (e) {
       toast.error("Failed to load submissions");
@@ -48,7 +57,7 @@ export default function SubmissionsHubPage() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [startDate, endDate]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -94,9 +103,13 @@ export default function SubmissionsHubPage() {
     );
   };
   const exportXlsx = (g) => {
-    const url = g.kind === "form"
+    let url = g.kind === "form"
       ? `${API}/forms/${g.id}/submissions/export.xlsx`
       : `${API}/pdf-forms/${g.id}/submissions/export.xlsx`;
+    const params = new URLSearchParams();
+    if (startDate) params.append("start_date", startDate);
+    if (endDate) params.append("end_date", endDate);
+    if (params.toString()) url += `?${params.toString()}`;
     authedDownload(url, `${g.slug || g.id}-submissions.xlsx`);
   };
   const downloadCompleted = (g, sub) => {
@@ -106,11 +119,26 @@ export default function SubmissionsHubPage() {
         `${g.slug || g.id}-${sub.submission_id}.pdf`,
       );
     } else {
-      // Standard form → generate a filled PDF on the fly
       authedDownload(
         `${API}/submissions/${sub.submission_id}/filled.pdf`,
         `${g.slug || g.id}-${sub.submission_id}.pdf`,
       );
+    }
+  };
+
+  const viewCompletedPdf = async (g, sub) => {
+    const token = localStorage.getItem("ff_token");
+    const endpoint = g.kind === "pdf"
+      ? `${API}/pdf-submissions/${sub.submission_id}/completed`
+      : `${API}/submissions/${sub.submission_id}/filled.pdf`;
+    try {
+      const r = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error("Failed to load PDF");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+    } catch {
+      toast.error("Failed to view updated PDF");
     }
   };
 
@@ -155,6 +183,23 @@ export default function SubmissionsHubPage() {
                   {k === "all" ? "All" : k === "form" ? "Standard Forms" : "PDF Forms"}
                 </button>
               ))}
+            </div>
+            <div className="flex items-center gap-2 ml-auto">
+              <Input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="h-9 w-36 text-sm"
+                title="Start Date"
+              />
+              <span className="text-slate-400 text-sm">to</span>
+              <Input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="h-9 w-36 text-sm"
+                title="End Date"
+              />
             </div>
           </div>
 
@@ -263,31 +308,29 @@ export default function SubmissionsHubPage() {
                                     size="sm"
                                     onClick={() => setDetail({ group: g, sub: s })}
                                     data-testid={`hub-view-${s.submission_id}`}
+                                    title="View Details"
                                   >
                                     <Eye className="w-4 h-4" />
                                   </Button>
-                                  {g.kind === "pdf" && (
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      title="Completed PDF"
-                                      onClick={() => downloadCompleted(g, s)}
-                                      data-testid={`hub-pdf-${s.submission_id}`}
-                                    >
-                                      <Download className="w-4 h-4" />
-                                    </Button>
-                                  )}
-                                  {g.kind === "form" && (
-                                    <Button
-                                      variant="ghost"
-                                      size="sm"
-                                      title="Filled PDF"
-                                      onClick={() => downloadCompleted(g, s)}
-                                      data-testid={`hub-filled-${s.submission_id}`}
-                                    >
-                                      <Download className="w-4 h-4" />
-                                    </Button>
-                                  )}
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    title="View Updated PDF"
+                                    onClick={() => viewCompletedPdf(g, s)}
+                                    className="text-blue-600 hover:text-blue-700"
+                                    data-testid={`hub-view-pdf-${s.submission_id}`}
+                                  >
+                                    <FileType2 className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    title="Download PDF"
+                                    onClick={() => downloadCompleted(g, s)}
+                                    data-testid={`hub-download-${s.submission_id}`}
+                                  >
+                                    <Download className="w-4 h-4" />
+                                  </Button>
                                 </TableCell>
                               </TableRow>
                             ))}
@@ -330,6 +373,15 @@ export default function SubmissionsHubPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+              <ApprovalTracker submissionId={detail.sub.submission_id} />
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                <Button variant="outline" size="sm" onClick={() => viewCompletedPdf(detail.group, detail.sub)} className="border-blue-200 text-blue-700 bg-blue-50/50 hover:bg-blue-100" data-testid="hub-detail-view-pdf">
+                  <FileType2 className="w-4 h-4 mr-1.5 text-blue-600" /> View Updated PDF
+                </Button>
+                <Button size="sm" onClick={() => downloadCompleted(detail.group, detail.sub)} className="bg-blue-600 hover:bg-blue-700" data-testid="hub-detail-download-pdf">
+                  <Download className="w-4 h-4 mr-1.5" /> Download PDF
+                </Button>
               </div>
             </div>
           )}

@@ -80,7 +80,23 @@ Manifests + Helm chart would provide:
 | `SMTP_PORT` |  | `587` | |
 | `SMTP_USER` / `SMTP_PASSWORD` |  | — | |
 | `SMTP_FROM` |  | `no-reply@formforge.local` | |
-| `EMERGENT_LLM_KEY` |  | — | optional; enables built-in AI helpers |
+| `SMTP_FROM` |  | `no-reply@formforge.local` | |
+| `AI_ENABLED` |  | `true` | enables/disables auxiliary AI proxy |
+| `AI_SERVICE_URL` |  | `http://localhost:9000` | container / local URL of `ai-service` |
+| `AI_REQUEST_TIMEOUT` |  | `30.0` | max seconds to wait for AI microservice response |
+| `AI_CONNECT_TIMEOUT` |  | `5.0` | max seconds to connect to AI microservice |
+
+### AI Microservice (`ai-service/.env` or Compose env)
+
+| Variable | Required | Default | Notes |
+|----------|:--:|---------|-------|
+| `AI_PORT` |  | `9000` | internal listening port |
+| `AI_PROVIDER` |  | `local` | Local Ollama/Gemma engine |
+| `OLLAMA_URL` |  | `http://localhost:11434` | internal Ollama endpoint |
+| `OLLAMA_MODEL` |  | `gemma` | local LLM model name |
+| `VECTOR_DB_PATH` |  | `./data/vector_db` | vector index persistent storage |
+
+
 
 ### Frontend (`frontend/.env`)
 

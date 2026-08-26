@@ -22,17 +22,38 @@ export const NODE_TYPES = [
     description: "Fires whenever a web form is submitted. Pick a specific form or leave empty to fire on any form.",
     fields: [
       { key: "filter.form_id", label: "Form", type: "form_picker", source: "forms" },
+      { key: "site_match_field_id", label: "Submission Field ID (to match)", type: "field_id_validator", placeholder: "e.g. site_code_field" },
+      { key: "site_match_column", label: "Site Master Column (to search)", type: "site_column_picker", placeholder: "Select column..." },
     ],
     defaults: { event: "form_submitted" } },
   { type: "trigger.pdf_submitted",    kind: "trigger", label: "When PDF form submitted", icon: "FileText",
     description: "Fires when a public PDF form is submitted. Pick a specific PDF template or fire on any.",
     fields: [
       { key: "filter.template_id", label: "PDF Form", type: "form_picker", source: "pdf-forms" },
+      { key: "site_match_field_id", label: "Submission Field ID (to match)", type: "field_id_validator", placeholder: "e.g. site_code_field" },
+      { key: "site_match_column", label: "Site Master Column (to search)", type: "site_column_picker", placeholder: "Select column..." },
     ],
     defaults: { event: "pdf_submitted" } },
   { type: "trigger.manual",           kind: "trigger", label: "Manual trigger", icon: "Hand",
     description: "Fires only when manually started from the Test panel or API.",
-    fields: [], defaults: { event: "manual" } },
+    fields: [
+      { key: "date", label: "Date", type: "string", placeholder: "YYYY-MM-DD (Optional)" },
+      { key: "time", label: "Time", type: "string", placeholder: "HH:MM (Optional)" },
+      { key: "day", label: "Day", type: "string", placeholder: "e.g. Monday (Optional)" }
+    ], defaults: { event: "manual" } },
+  { type: "trigger.schedule",         kind: "trigger", label: "Schedule", icon: "Clock",
+    description: "Fires automatically based on a defined time schedule.",
+    fields: [
+      { key: "frequency", label: "Frequency", type: "select", options: [
+        "once", "daily", "weekly", "monthly"
+      ] },
+      { key: "time", label: "Time (HH:MM)", type: "string", placeholder: "14:30" },
+      { key: "date", label: "Date (YYYY-MM-DD)", type: "string", placeholder: "2026-10-10" },
+      { key: "day_of_week", label: "Day of Week", type: "select", options: [
+        "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+      ] },
+      { key: "day_of_month", label: "Day of Month (1-31)", type: "string", placeholder: "1" }
+    ], defaults: { event: "schedule", frequency: "daily", time: "09:00" } },
   { type: "trigger.webhook",          kind: "trigger", label: "Webhook", icon: "Webhook",
     description: "Fires when an external system POSTs to this workflow's webhook URL.",
     fields: [], defaults: { event: "webhook" } },
@@ -56,10 +77,19 @@ export const NODE_TYPES = [
     description: "Sends an HTML email via the configured SMTP server. Supports dynamic attachments.",
     fields: [
       { key: "to",       label: "To",       type: "string", placeholder: "alex@x.com, {{values.email}}" },
+      { key: "use_site_to", label: "Send to Everyone (Site Lookup)", type: "boolean" },
+      { key: "site_to_column", label: "To from Site Master Column", type: "site_column_picker", placeholder: "Select column..." },
+      { key: "region_filter_column", label: "Only send if Site Column (e.g. Region)...", type: "site_column_picker", placeholder: "Select column..." },
+      { key: "region_filter_value", label: "...equals this value", type: "site_column_value_picker", depends_on: "region_filter_column", placeholder: "Select value(s)..." },
+      { key: "send_to_submitter", label: "Also send to submitter", type: "boolean" },
       { key: "cc",       label: "Cc",       type: "string" },
+      { key: "use_site_cc", label: "CC Everyone (Site Lookup)", type: "boolean" },
+      { key: "site_cc_column", label: "CC from Site Master Column", type: "site_column_picker", placeholder: "Select column..." },
       { key: "bcc",      label: "Bcc",      type: "string" },
-      { key: "subject",  label: "Subject",  type: "string", placeholder: "Your submission {{submission_id}}" },
-      { key: "body",     label: "HTML body", type: "long", placeholder: "<p>Hi {{values.name}}…</p>" },
+      { key: "subject",  label: "Subject",  type: "string", placeholder: "e.g. Alert for {{values.site_name}}" },
+      { key: "body_format", label: "Body Format", type: "select", options: ["Plain Text (Standard input)", "HTML body input"] },
+      { key: "body",     label: "Email Body", type: "long", placeholder: "Type here... Use {{values.FIELD_ID}} to grab form data (like {{values.site_name}})." },
+      { key: "attach_pdf", label: "Attach Completed PDF?", type: "boolean" },
       { key: "attachments", label: "Attachments", type: "multi_checkbox",
         options: [
           { value: "completed_pdf", label: "Completed PDF (filled)" },
@@ -68,7 +98,17 @@ export const NODE_TYPES = [
           { value: "csv_export",    label: "CSV export (.csv)" },
           { value: "zip_archive",   label: "Bundle all as ZIP archive" },
         ] },
-    ], defaults: { attachments: [] } },
+    ], defaults: { attachments: [], send_to_submitter: false, body_format: "HTML" } },
+  { type: "action.send_whatsapp", kind: "action", label: "Send WhatsApp", icon: "MessageSquare",
+    description: "Sends a WhatsApp Business API message to a phone number or group.",
+    fields: [
+      { key: "to",      label: "To (phone with country code)",  type: "string", placeholder: "e.g. 919876543210 or {{values.phone}}" },
+      { key: "group_name", label: "Group Name / ID (Static)", type: "string", placeholder: "e.g. My Operations Group" },
+      { key: "site_column", label: "Group Name from Site Master Column", type: "site_column_picker", placeholder: "Select column..." },
+      { key: "message", label: "Message",     type: "long",   placeholder: "Type your message... Use {{values.name}} to inject data." },
+      { key: "attach_pdf", label: "Attach Submission PDF", type: "boolean" },
+    ],
+    defaults: { attach_pdf: false } },
   { type: "action.update_submission", kind: "action", label: "Update submission", icon: "Pencil",
     description: "Patches arbitrary fields on the triggering submission.",
     fields: [
@@ -109,15 +149,18 @@ export const NODE_TYPES = [
 
   // ---------- Approval ----------
   { type: "approval.sequential", kind: "approval", label: "Sequential approval", icon: "ListChecks",
-    description: "Routes through approvers one by one. Approver is auto-resolved from the submission's Site Master row (approver_email). Add CC as needed.",
+    description: "Routes through approvers one by one. The chain is built from Site Master columns: L1 → L2 → Admin. Empty levels are skipped automatically. If both L1 and L2 are blank on a site, only the Admin email receives the request.",
     fields: [
       { key: "subject",    label: "Subject",       type: "string", placeholder: "Please review submission {{submission_id}}" },
       { key: "description", label: "Description",  type: "long" },
-      { key: "auto_from_site", label: "Auto-resolve approver from Site Master (approver_email)", type: "boolean" },
-      { key: "approvers",  label: "Approvers override (only if auto-resolve is off)", type: "string", placeholder: "manager@example.com" },
+      { key: "auto_from_site", label: "Auto-resolve approvers from Site Master", type: "boolean" },
+      { key: "l1_site_column",    label: "Level 1 Approver — Site column (optional)", type: "site_column_picker", placeholder: "e.g. vendor_approver_l1" },
+      { key: "l2_site_column",    label: "Level 2 Approver — Site column (optional)", type: "site_column_picker", placeholder: "e.g. vendor_approver_l2" },
+      { key: "admin_site_column", label: "Admin / Final Approver — Site column",      type: "site_column_picker", placeholder: "e.g. approver_email" },
+      { key: "approvers",  label: "Manual approvers override (comma-separated, only if auto-resolve is off)", type: "string", placeholder: "manager@example.com" },
       { key: "cc",         label: "CC (comma-separated)", type: "string", placeholder: "hr@example.com, ops@example.com" },
       { key: "due_days",   label: "Due in N days", type: "number" },
-    ], defaults: { mode: "sequential", auto_from_site: true, cc: "" } },
+    ], defaults: { mode: "sequential", auto_from_site: true, admin_site_column: "approver_email", l1_site_column: "vendor_approver_l1", l2_site_column: "vendor_approver_l2", cc: "" } },
   { type: "approval.parallel", kind: "approval", label: "Parallel approval", icon: "GitMerge",
     description: "Sends to all approvers at once; everyone must approve. Site-resolved approver acts as the primary.",
     fields: [

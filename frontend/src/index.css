@@ -4,13 +4,17 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Manrope:wght@300;400;500;600;700&display=swap');
 
+html, body, #root {
+  height: 100%;
+  max-height: 100vh;
+  overflow: hidden !important;
+}
+
 body {
   margin: 0;
   font-family: 'Manrope', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: #0F172A;
-  background: #F8FAFC;
 }
 
 h1, h2, h3, h4, h5, h6, .font-heading {
@@ -97,10 +101,15 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 .field-row:hover .drag-handle { opacity: 1; }
 .drag-handle:active { cursor: grabbing; }
 
-/* hide scrollbar for palette */
+/* nice scrollbar */
+.nice-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #f1f5f9;
+}
 .nice-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-.nice-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 999px; }
-.nice-scroll::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+.nice-scroll::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 999px; }
+.nice-scroll::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; }
+.nice-scroll::-webkit-scrollbar-thumb:hover { background: #64748b; }
 
 /* animated entrance */
 @keyframes slide-in {
@@ -110,3 +119,154 @@ h1, h2, h3, h4, h5, h6, .font-heading {
 .animate-slide-in { animation: slide-in 220ms ease-out both; }
 
 [data-debug-wrapper="true"] { display: contents !important; }
+
+/* Dedicated Menu & Page Overlay Scrollbar Styling */
+.menu-overlay-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+.menu-overlay-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+.menu-overlay-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.menu-overlay-scroll::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+.menu-overlay-scroll::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.page-overlay-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #f1f5f9;
+}
+.page-overlay-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.page-overlay-scroll::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 9999px;
+}
+.page-overlay-scroll::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 9999px;
+}
+.page-overlay-scroll::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Global Dark Mode High-Contrast Overrides & Glass Emerald Support */
+.dark {
+  color-scheme: dark;
+}
+
+.dark body {
+  color: #F8FAFC;
+  background-color: #0F172A;
+}
+
+.dark .bg-white {
+  background-color: #1E293B;
+}
+
+.dark .bg-slate-50 {
+  background-color: #0F172A;
+}
+
+.dark .bg-slate-100 {
+  background-color: #334155;
+}
+
+/* Green & Emerald Glass dark mode support */
+.dark .bg-emerald-50,
+.dark .bg-emerald-50\/90,
+.dark .bg-teal-50 {
+  background-color: rgba(6, 78, 59, 0.85) !important;
+  border-color: rgba(6, 95, 70, 0.6) !important;
+}
+
+.dark .bg-emerald-100 {
+  background-color: rgba(6, 95, 70, 0.9) !important;
+}
+
+/* Blue Badge dark mode support */
+.dark .bg-blue-50,
+.dark .bg-blue-100 {
+  background-color: rgba(30, 58, 138, 0.7) !important;
+  border-color: rgba(30, 64, 175, 0.6) !important;
+}
+
+.dark .text-blue-700,
+.dark .text-blue-800,
+.dark .text-blue-900 {
+  color: #93c5fd !important;
+}
+
+/* Amber Badge dark mode support */
+.dark .bg-amber-50,
+.dark .bg-amber-100 {
+  background-color: rgba(120, 53, 15, 0.7) !important;
+  border-color: rgba(180, 83, 9, 0.6) !important;
+}
+
+.dark .text-amber-700,
+.dark .text-amber-800,
+.dark .text-amber-900 {
+  color: #fcd34d !important;
+}
+
+/* Red Badge dark mode support */
+.dark .bg-red-50,
+.dark .bg-red-100 {
+  background-color: rgba(127, 29, 29, 0.7) !important;
+  border-color: rgba(185, 28, 28, 0.6) !important;
+}
+
+.dark .text-red-600,
+.dark .text-red-700,
+.dark .text-red-800 {
+  color: #fca5a5 !important;
+}
+
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-slate-700 {
+  color: #F8FAFC;
+}
+
+.dark .text-slate-600,
+.dark .text-slate-500 {
+  color: #CBD5E1;
+}
+
+.dark .text-slate-400 {
+  color: #94A3B8;
+}
+
+.dark .text-emerald-800,
+.dark .text-emerald-900,
+.dark .text-emerald-700,
+.dark .text-emerald-600,
+.dark .text-teal-800,
+.dark .text-teal-900,
+.dark .text-teal-700,
+.dark .text-teal-600 {
+  color: #a7f3d0 !important;
+}
+
+.dark .border-slate-200,
+.dark .border-slate-100 {
+  border-color: #334155;
+}
+
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: #1E293B;
+  color: #F8FAFC;
+  border-color: #334155;
+}
+

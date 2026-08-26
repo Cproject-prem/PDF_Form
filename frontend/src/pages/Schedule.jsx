@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -18,7 +19,7 @@ import {
   Calendar as CalendarIcon, CheckCircle2, Send, Save, Unlock, Lock,
   ListChecks, TrendingUp, Download, Grid3x3, Wrench, SprayCan,
   Paperclip, X as XIcon, FileText, Image as ImageIcon, Pencil,
-  Search,
+  Search, ChevronRight,
 } from "lucide-react";
 import { API } from "@/lib/api";
 
@@ -103,6 +104,63 @@ export default function SchedulePage() {
   const [gridData, setGridData] = useState({ sites: [], cycles: [] });
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
+  const [selectedClusters, setSelectedClusters] = useState([]);
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const [selectedCycleIds, setSelectedCycleIds] = useState(new Set());
+  const [bulkApproving, setBulkApproving] = useState(false);
+
+  const clusterManagers = useMemo(() => {
+    const set = new Set();
+    for (const s of [...(data.sites || []), ...(gridData.sites || []), ...(summary || [])]) {
+      const cm = s.cluster_manager_name || s.cluster_manager || s.cluster || s.cluster_name || s.region;
+      if (cm && String(cm).trim()) {
+        set.add(String(cm).trim());
+      } else {
+        set.add("Unassigned");
+      }
+    }
+    const list = Array.from(set).sort();
+    return list.length > 0 ? list : ["All Cluster Managers", "Unassigned"];
+  }, [data.sites, gridData.sites, summary]);
+
+  // Default to selecting all cluster managers when options are populated or updated
+  useEffect(() => {
+    if (clusterManagers.length > 0) {
+      setSelectedClusters(clusterManagers);
+    }
+  }, [clusterManagers]);
+
+  const isClusterSelected = useCallback((site) => {
+    if (selectedClusters.length === 0 || selectedClusters.length === clusterManagers.length) return true;
+    const cm = (site.cluster_manager_name || site.cluster_manager || site.cluster || site.cluster_name || site.region || "").trim() || "Unassigned";
+    return selectedClusters.includes(cm);
+  }, [selectedClusters, clusterManagers]);
+
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const toggleSelect = useCallback((cycle_id) => {
+    setSelectedCycleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(cycle_id)) next.delete(cycle_id);
+      else next.add(cycle_id);
+      return next;
+    });
+  }, []);
+
+  const selectAllSubmitted = useCallback(() => {
+    const ids = new Set();
+    for (const c of data.cycles || []) {
+      if (c.cycle_id && (c.schedule?.status === "submitted" || c.actual?.status === "submitted")) {
+        ids.add(c.cycle_id);
+      }
+    }
+    setSelectedCycleIds(ids);
+  }, [data.cycles]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedCycleIds(new Set());
+  }, []);
 
   const monthOptions = activity === "pm" ? PM_QUARTERS : MONTHS;
 
@@ -155,6 +213,9 @@ export default function SchedulePage() {
 
   const filteredData = useMemo(() => {
     let sites = data.sites.filter(s => isSiteActiveForActivity(s, activity));
+    if (selectedClusters.length > 0 && selectedClusters.length < clusterManagers.length) {
+      sites = sites.filter(isClusterSelected);
+    }
     if (q.trim()) {
       const needle = q.toLowerCase();
       sites = sites.filter(s => 
@@ -164,10 +225,13 @@ export default function SchedulePage() {
       );
     }
     return { sites, cycles: data.cycles };
-  }, [data, q, activity]);
+  }, [data, q, activity, selectedClusters, clusterManagers.length, isClusterSelected]);
 
   const filteredGridData = useMemo(() => {
     let sites = gridData.sites.filter(s => isSiteActiveForActivity(s, activity));
+    if (selectedClusters.length > 0 && selectedClusters.length < clusterManagers.length) {
+      sites = sites.filter(isClusterSelected);
+    }
     if (q.trim()) {
       const needle = q.toLowerCase();
       sites = sites.filter(s => 
@@ -177,10 +241,13 @@ export default function SchedulePage() {
       );
     }
     return { sites, cycles: gridData.cycles };
-  }, [gridData, q, activity]);
+  }, [gridData, q, activity, selectedClusters, clusterManagers.length, isClusterSelected]);
 
   const filteredSummary = useMemo(() => {
     let sites = summary.filter(s => isSiteActiveForActivity(s, activity));
+    if (selectedClusters.length > 0 && selectedClusters.length < clusterManagers.length) {
+      sites = sites.filter(isClusterSelected);
+    }
     if (q.trim()) {
       const needle = q.toLowerCase();
       sites = sites.filter(s => 
@@ -189,7 +256,7 @@ export default function SchedulePage() {
       );
     }
     return sites;
-  }, [summary, q, activity]);
+  }, [summary, q, activity, selectedClusters, clusterManagers.length, isClusterSelected]);
 
   return (
     <AppLayout>
@@ -237,7 +304,7 @@ export default function SchedulePage() {
             <div className="flex rounded-lg border border-slate-200 p-1 bg-white">
               <button
                 data-testid="view-toggle-month"
-                onClick={() => setView("month")}
+                onClick={() => { setQ(""); setView("month"); }}
                 className={`px-3 py-1.5 text-xs rounded-md transition ${
                   view === "month" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
                 }`}
@@ -247,7 +314,7 @@ export default function SchedulePage() {
               </button>
               <button
                 data-testid="view-toggle-grid"
-                onClick={() => setView("grid")}
+                onClick={() => { setQ(""); setView("grid"); }}
                 className={`px-3 py-1.5 text-xs rounded-md transition ${
                   view === "grid" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
                 }`}
@@ -257,7 +324,7 @@ export default function SchedulePage() {
               </button>
               <button
                 data-testid="view-toggle-year"
-                onClick={() => setView("year")}
+                onClick={() => { setQ(""); setView("year"); }}
                 className={`px-3 py-1.5 text-xs rounded-md transition ${
                   view === "year" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
                 }`}
@@ -279,55 +346,230 @@ export default function SchedulePage() {
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search by plant name or ID…"
-                className="pl-10 h-9"
+                className="pl-10 pr-16 h-9"
               />
+              {q && (
+                <button
+                  onClick={() => setQ("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-xs flex items-center gap-1 bg-slate-100 hover:bg-slate-200 px-2 py-0.5 rounded-full transition"
+                  title="Clear plant filter"
+                >
+                  <XIcon className="w-3 h-3" />
+                  <span className="text-[10px] font-medium">Clear</span>
+                </button>
+              )}
             </div>
             <div className="w-px h-6 bg-slate-200 mx-2 hidden sm:block" />
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500 uppercase tracking-wider">Activity</span>
-              <Select value={activity} onValueChange={setActivity}>
-                <SelectTrigger data-testid="activity-select" className="h-9 w-[220px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ACTIVITIES.map((a) => (
-                    <SelectItem key={a.v} value={a.v}>
-                      {a.v === "pm"
-                        ? <span className="inline-flex items-center gap-1.5"><Wrench className="w-3.5 h-3.5" /> {a.n}</span>
-                        : <span className="inline-flex items-center gap-1.5"><SprayCan className="w-3.5 h-3.5" /> {a.n}</span>}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="w-[220px]">
+                <SearchableDropdown
+                  options={ACTIVITIES.map(a => ({ label: a.n, value: a.v }))}
+                  value={activity}
+                  onChange={setActivity}
+                  placeholder="Select activity..."
+                  className="h-9 text-xs"
+                  testId="activity-select"
+                />
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500 uppercase tracking-wider">Year</span>
-              <Select value={String(year)} onValueChange={(v) => setYear(parseInt(v))}>
-                <SelectTrigger data-testid="year-select" className="h-9 w-[110px]"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {years.map((y) => (
-                    <SelectItem key={y} value={String(y)}>{y}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="w-[110px]">
+                <SearchableDropdown
+                  options={years.map(y => ({ label: String(y), value: String(y) }))}
+                  value={String(year)}
+                  onChange={v => setYear(parseInt(v))}
+                  placeholder="Year"
+                  className="h-9 text-xs"
+                  testId="year-select"
+                />
+              </div>
             </div>
+            {isAdminOrMore && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 uppercase tracking-wider">Cluster Mgr</span>
+                <MultiSelectClusterDropdown
+                  options={clusterManagers}
+                  selected={selectedClusters}
+                  onChange={setSelectedClusters}
+                />
+              </div>
+            )}
             {view === "month" && !["equipment_testing", "grasscutting"].includes(activity) && (
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-500 uppercase tracking-wider">
                   {activity === "pm" ? "Quarter" : "Month"}
                 </span>
-                <Select value={String(month)} onValueChange={(v) => setMonth(parseInt(v))}>
-                  <SelectTrigger data-testid="month-select" className="h-9 w-[170px]"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {monthOptions.map((m) => (
-                      <SelectItem key={m.v} value={String(m.v)}>{m.n}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="w-[170px]">
+                  <SearchableDropdown
+                    options={monthOptions.map(m => ({ label: m.n, value: String(m.v) }))}
+                    value={String(month)}
+                    onChange={v => setMonth(parseInt(v))}
+                    placeholder="Select..."
+                    className="h-9 text-xs"
+                    testId="month-select"
+                  />
+                </div>
               </div>
             )}
+
+            {/* Quick Status Filter Pills */}
+            <div className="w-full pt-3 mt-2 border-t border-slate-100 flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-slate-700 uppercase tracking-wider mr-1">Filter By Status:</span>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("all")}
+                className={`px-3 py-1 text-xs rounded-full border transition cursor-pointer ${
+                  statusFilter === "all"
+                    ? "bg-slate-900 text-white border-slate-900 font-semibold shadow-xs"
+                    : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                }`}
+              >
+                All Records
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("unscheduled")}
+                className={`px-3 py-1 text-xs rounded-full border transition cursor-pointer ${
+                  statusFilter === "unscheduled"
+                    ? "bg-amber-600 text-white border-amber-600 font-semibold shadow-xs"
+                    : "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100"
+                }`}
+                title="Filter items where Schedule Date is not mentioned"
+              >
+                ⚠️ Unscheduled (No Date)
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("pending_actual")}
+                className={`px-3 py-1 text-xs rounded-full border transition cursor-pointer ${
+                  statusFilter === "pending_actual"
+                    ? "bg-blue-600 text-white border-blue-600 font-semibold shadow-xs"
+                    : "bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100"
+                }`}
+                title="Filter items where Actual Date is not updated"
+              >
+                ⏳ Actual Not Updated
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("overdue")}
+                className={`px-3 py-1 text-xs rounded-full border transition cursor-pointer ${
+                  statusFilter === "overdue"
+                    ? "bg-red-600 text-white border-red-600 font-semibold shadow-xs"
+                    : "bg-red-50 text-red-800 border-red-200 hover:bg-red-100"
+                }`}
+                title="Filter items where Actual Date is crossed / Overdue / Missed"
+              >
+                🔴 Overdue / Date Crossed
+              </button>
+
+              {statusFilter !== "all" && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter("all")}
+                  className="text-xs text-slate-400 hover:text-slate-600 ml-2 underline cursor-pointer"
+                >
+                  Reset Status Filter
+                </button>
+              )}
+            </div>
           </div>
         </Card>
+
+        {/* Bulk Approval Bar for Admins */}
+        {isAdminOrMore && (
+          <Card className="mb-4 rounded-2xl border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/90 dark:bg-emerald-950/80 backdrop-blur-md p-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 dark:bg-emerald-900/80 text-emerald-800 dark:text-emerald-200 border border-emerald-200/50 dark:border-emerald-700/50 flex items-center justify-center font-bold text-xs">
+                  {selectedCycleIds.size}
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 dark:text-emerald-100">Bulk Approval Manager</h4>
+                  <p className="text-xs text-slate-500 dark:text-emerald-300/80">Select pending cycles to approve multiple items at once.</p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={selectAllSubmitted}
+                  className="ml-2 text-xs h-8 bg-white dark:bg-emerald-900/60 border-emerald-300 dark:border-emerald-700/80 text-emerald-900 dark:text-emerald-100 hover:bg-emerald-100 dark:hover:bg-emerald-800"
+                >
+                  <ListChecks className="w-3.5 h-3.5 mr-1" />
+                  Select All Submitted
+                </Button>
+              </div>
+
+              {selectedCycleIds.size > 0 && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      setBulkApproving(true);
+                      try {
+                        const res = await api.post("/site-cycles/bulk-approve", { cycle_ids: Array.from(selectedCycleIds), which: "schedule" });
+                        toast.success(`Approved ${res.data.approved_count || 0} schedule(s)!`);
+                        clearSelection();
+                        load();
+                      } catch (e) { toast.error(getErrorMessage(e, "Bulk approve failed")); }
+                      finally { setBulkApproving(false); }
+                    }}
+                    disabled={bulkApproving}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs h-8"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+                    Approve Schedules ({selectedCycleIds.size})
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      setBulkApproving(true);
+                      try {
+                        const res = await api.post("/site-cycles/bulk-approve", { cycle_ids: Array.from(selectedCycleIds), which: "actual" });
+                        toast.success(`Approved ${res.data.approved_count || 0} actual(s)!`);
+                        clearSelection();
+                        load();
+                      } catch (e) { toast.error(getErrorMessage(e, "Bulk approve failed")); }
+                      finally { setBulkApproving(false); }
+                    }}
+                    disabled={bulkApproving}
+                    className="bg-teal-600 hover:bg-teal-700 text-white text-xs h-8"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+                    Approve Actuals ({selectedCycleIds.size})
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      setBulkApproving(true);
+                      try {
+                        const res = await api.post("/site-cycles/bulk-approve", { cycle_ids: Array.from(selectedCycleIds), which: "both" });
+                        toast.success(`Approved ${res.data.approved_count || 0} cycle item(s)!`);
+                        clearSelection();
+                        load();
+                      } catch (e) { toast.error(getErrorMessage(e, "Bulk approve failed")); }
+                      finally { setBulkApproving(false); }
+                    }}
+                    disabled={bulkApproving}
+                    className="bg-slate-900 hover:bg-black text-white text-xs h-8"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5 mr-1 text-emerald-400" />
+                    Approve All Selected ({selectedCycleIds.size})
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearSelection}
+                    className="text-xs text-slate-500 hover:text-slate-700 h-8"
+                  >
+                    Clear
+                  </Button>
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
 
         {loading ? (
           <div className="p-12 text-center text-slate-400">Loading…</div>
@@ -350,6 +592,10 @@ export default function SchedulePage() {
               reload={load}
               isAdminOrMore={isAdminOrMore}
               role={user?.role}
+              selectedCycleIds={selectedCycleIds}
+              toggleSelect={toggleSelect}
+              statusFilter={statusFilter}
+              todayStr={todayStr}
             />
           ) : (
             <MonthlyTable
@@ -360,6 +606,10 @@ export default function SchedulePage() {
               reload={load}
               isAdminOrMore={isAdminOrMore}
               role={user?.role}
+              selectedCycleIds={selectedCycleIds}
+              toggleSelect={toggleSelect}
+              statusFilter={statusFilter}
+              todayStr={todayStr}
             />
           )
         ) : view === "grid" ? (
@@ -367,7 +617,11 @@ export default function SchedulePage() {
             data={filteredGridData}
             year={year}
             activity={activity}
-            onCellClick={(m) => { setMonth(m); setView("month"); }}
+            onCellClick={(m, site) => {
+              if (m) setMonth(m);
+              if (site) setQ(site.site_name || site.site_code || "");
+              setView("month");
+            }}
           />
         ) : (
           <YearlySummary summary={filteredSummary} year={year} activity={activity} />
@@ -378,7 +632,7 @@ export default function SchedulePage() {
 }
 
 /* ------------------------- Grasscutting Table ---------------------------- */
-function GrasscuttingTable({ data, year, activity, reload, isAdminOrMore, role }) {
+function GrasscuttingTable({ data, year, activity, reload, isAdminOrMore, role, selectedCycleIds, toggleSelect, statusFilter, todayStr }) {
   const { sites, cycles } = data;
 
   // Only show sites where grass_cutting_enabled is truthy
@@ -410,6 +664,7 @@ function GrasscuttingTable({ data, year, activity, reload, isAdminOrMore, role }
         <table className="w-full text-sm border-collapse" data-testid="grasscutting-table">
           <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700">
             <tr className="text-left">
+              {isAdminOrMore && <th className="p-3 font-semibold w-[40px] border-r border-slate-200 text-center">Select</th>}
               <th className="p-3 font-semibold w-[220px] border-r border-slate-200">Site</th>
               <th className="p-3 font-semibold w-[180px] border-r border-slate-200">Occurrence</th>
               <th className="p-3 font-semibold w-[150px] border-r border-slate-200">Schedule</th>
@@ -439,6 +694,10 @@ function GrasscuttingTable({ data, year, activity, reload, isAdminOrMore, role }
                     isAdminOrMore={isAdminOrMore}
                     role={role}
                     showPlant={i === 0}
+                    selectedCycleIds={selectedCycleIds}
+                    toggleSelect={toggleSelect}
+                    statusFilter={statusFilter}
+                    todayStr={todayStr}
                   />
                 );
               });
@@ -451,7 +710,7 @@ function GrasscuttingTable({ data, year, activity, reload, isAdminOrMore, role }
 }
 
 /* --------------------------- Monthly Table ------------------------------- */
-function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role }) {
+function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role, selectedCycleIds, toggleSelect, statusFilter, todayStr }) {
   const { sites, cycles } = data;
 
   const byKey = useMemo(() => {
@@ -484,6 +743,7 @@ function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role
         <table className="w-full text-sm border-collapse">
           <thead className="bg-slate-50 border-b-2 border-slate-200 text-slate-700">
             <tr className="text-left">
+              {isAdminOrMore && <th className="p-3 font-semibold w-[40px] border-r border-slate-200 text-center">Select</th>}
               <th className="p-3 font-semibold w-[220px] border-r border-slate-200">Site</th>
               <th className="p-3 font-semibold w-[180px] border-r border-slate-200">
                 {activity === "equipment_testing" ? "Equipment Test" : "Cycle"}
@@ -515,6 +775,10 @@ function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role
                     isAdminOrMore={isAdminOrMore}
                     role={role}
                     showPlant={i === 0}
+                    selectedCycleIds={selectedCycleIds}
+                    toggleSelect={toggleSelect}
+                    statusFilter={statusFilter}
+                    todayStr={todayStr}
                   />
                 );
               });
@@ -527,12 +791,13 @@ function MonthlyTable({ data, year, month, activity, reload, isAdminOrMore, role
 }
 
 /* --------------------------- Row -------------------------------------- */
-function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOrMore, role, showPlant }) {
+function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOrMore, role, showPlant, selectedCycleIds, toggleSelect, statusFilter, todayStr }) {
+  // ── ALL hooks MUST come first (React Rules of Hooks) ──
   const [saving, setSaving] = useState(false);
+  const [unlockDlg, setUnlockDlg] = useState(null);
+
   const sch = cyc?.schedule || {};
   const act = cyc?.actual || {};
-
-  const eqItem = activity === "equipment_testing" ? EQUIPMENT_TESTING_ITEMS[cn - 1] : null;
 
   const [form, setForm] = useState({
     planned_date: sch.planned_date || "",
@@ -552,6 +817,26 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
   }, [cyc?.cycle_id, year, month, sch.planned_date, sch.notes,
       act.actual_date, act.result, act.notes]);
 
+  // ── Status filter (after all hooks) ──
+  const schDate = sch.planned_date;
+  const actDate = act.actual_date;
+  const result  = act.result;
+
+  let matchesFilter = true;
+  if (statusFilter && statusFilter !== "all") {
+    if (statusFilter === "unscheduled") matchesFilter = !schDate;
+    else if (statusFilter === "pending_actual") matchesFilter = !actDate;
+    else if (statusFilter === "overdue") {
+      matchesFilter = Boolean(
+        (schDate && schDate < (todayStr || "") && !actDate) ||
+        result === "Missed" || act.status === "missed" || act.status === "delayed"
+      );
+    }
+  }
+
+  if (!matchesFilter) return null;
+
+  const eqItem = activity === "equipment_testing" ? EQUIPMENT_TESTING_ITEMS[cn - 1] : null;
   const canEditSch = sch.status !== "approved" && (sch.status !== "submitted" || isAdminOrMore);
   const canEditAct = act.status !== "approved" && (act.status !== "submitted" || isAdminOrMore);
   const isVendor   = ["vendor_admin", "vendor_user"].includes(role);
@@ -601,8 +886,6 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
     } finally { setSaving(false); }
   };
 
-  const [unlockDlg, setUnlockDlg] = useState(null);
-
   const schHasAttachments = ((sch.evidence_files || []).length > 0);
   const actHasAttachments = ((act.evidence_files || []).length > 0);
   void schHasAttachments;
@@ -614,7 +897,19 @@ function CycleRow({ site, cn, cap, cyc, year, month, activity, reload, isAdminOr
   return (
     <>
       <tr className="border-b border-slate-200 align-middle hover:bg-slate-50/40">
-          {showPlant && (
+        {isAdminOrMore && (
+          <td className="p-3 border-r border-slate-200 text-center w-[40px]">
+            {cyc?.cycle_id && (sch.status === "submitted" || act.status === "submitted") ? (
+              <input
+                type="checkbox"
+                checked={selectedCycleIds?.has(cyc.cycle_id)}
+                onChange={() => toggleSelect && toggleSelect(cyc.cycle_id)}
+                className="w-4 h-4 rounded text-emerald-600 border-slate-300 focus:ring-emerald-500 cursor-pointer"
+              />
+            ) : null}
+          </td>
+        )}
+        {showPlant && (
           <td rowSpan={cap} className="p-3 border-r border-slate-200 align-middle bg-slate-50/40">
             <div className="font-semibold text-slate-900">{site.site_name}</div>
             <div className="text-[11px] text-slate-500 font-mono mt-0.5">{site.site_code}</div>
@@ -934,14 +1229,48 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
     );
   }
 
+  // ── Dot colour map ──
   const dot = (status) => {
     const map = {
-      approved:  "bg-emerald-500",
-      submitted: "bg-amber-500",
-      draft:     "bg-slate-300",
-      empty:     "bg-slate-100",
+      approved:         "bg-emerald-500",
+      submitted:        "bg-amber-500",
+      draft:            "bg-slate-300",
+      empty:            "bg-slate-100 border border-slate-200",
+      missed:           "bg-red-500",
+      delayed:          "bg-yellow-400",
+      delay_completed:  "bg-teal-400",
     };
     return map[status] || map.empty;
+  };
+
+  // ── Derive actual execution state from schedule vs actual comparison ──
+  const cellActState = (cy) => {
+    const schDate  = cy?.schedule?.planned_date;
+    const actDate  = cy?.actual?.actual_date;
+    const result   = cy?.actual?.result;
+    const actStatus = cy?.actual?.status || (actDate ? "draft" : "empty");
+
+    if (!schDate) return actStatus; // no schedule → just show plain status
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const sDate = new Date(schDate + "T00:00:00");
+
+    if (actDate) {
+      // Activity was done — check if marked Missed explicitly
+      if (result === "Missed") return "missed";
+      // Check how many days after scheduled date it was done
+      const aDate = new Date(actDate + "T00:00:00");
+      const diffDays = (aDate - sDate) / (1000 * 60 * 60 * 24);
+      if (diffDays > 3) return "delay_completed"; // done but late
+      return actStatus; // done on time — approved/submitted/draft
+    }
+
+    // Not done yet — check overdue
+    const diffDays = (today - sDate) / (1000 * 60 * 60 * 24);
+    if (diffDays > 7) return "missed";   // 7+ days overdue → missed
+    if (diffDays > 2) return "delayed";  // 2–7 days overdue → delayed
+    return actStatus; // upcoming / within window
   };
 
   return (
@@ -971,9 +1300,11 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
                     {i === 0 && (
                       <td
                         rowSpan={cap}
-                        className="p-3 border-r border-slate-200 align-middle bg-slate-50/40"
+                        className="p-3 border-r border-slate-200 align-middle bg-slate-50/40 cursor-pointer hover:bg-slate-100/60"
+                        title={`Filter ${s.site_name} in Monthly View`}
+                        onClick={() => onCellClick(null, s)}
                       >
-                        <div className="font-semibold text-slate-900">{s.site_name}</div>
+                        <div className="font-semibold text-slate-900 hover:text-blue-600 transition">{s.site_name}</div>
                         <div className="text-[10px] text-slate-500 font-mono mt-0.5">
                           {s.site_code}
                         </div>
@@ -985,18 +1316,34 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
                     {cols.map((c) => {
                       const cy  = byKey[`${s.site_id}::${c.v}::${cn}`] || null;
                       const sch = cy?.schedule?.status || (cy?.schedule?.planned_date ? "draft" : "empty");
-                      const act = cy?.actual?.status   || (cy?.actual?.actual_date   ? "draft" : "empty");
+                      const act = cellActState(cy);
+
+                      // Glassy cell tint for execution states
+                      const cellGlass = {
+                        missed:          "bg-red-50/80 backdrop-blur-sm border-l-2 border-red-400 shadow-[inset_0_0_0_1px_rgba(239,68,68,0.15)]",
+                        delayed:         "bg-yellow-50/80 backdrop-blur-sm border-l-2 border-yellow-400 shadow-[inset_0_0_0_1px_rgba(234,179,8,0.15)]",
+                        delay_completed: "bg-teal-50/80 backdrop-blur-sm border-l-2 border-teal-400 shadow-[inset_0_0_0_1px_rgba(20,184,166,0.15)]",
+                      }[act] || "";
+
+                      // For the Act dot: delay_completed → green (done), missed/delayed → neutral
+                      const actDotState = act === "delay_completed" ? "approved"
+                        : (act === "missed" || act === "delayed") ? "empty"
+                        : act;
+
                       const tooltip = [
                         cy?.schedule?.planned_date ? `Sch: ${cy.schedule.planned_date} (${cy.schedule.status || "draft"})` : null,
                         cy?.actual?.actual_date   ? `Act: ${cy.actual.actual_date} (${cy.actual.status || "draft"})${cy.actual.result ? " · " + cy.actual.result : ""}` : null,
+                        (act === "missed" || act === "delayed" || act === "delay_completed")
+                          ? `⚠ ${act === "delay_completed" ? "Delay Completed" : act.charAt(0).toUpperCase() + act.slice(1)}` : null,
                       ].filter(Boolean).join(" · ") || "No data";
+
                       return (
                         <td
                           key={c.v}
-                          className="p-1.5 border-r border-slate-100 text-center hover:bg-slate-50 cursor-pointer transition"
+                          className={`p-1.5 border-r border-slate-100 text-center cursor-pointer transition-all hover:brightness-95 ${cellGlass || "hover:bg-slate-50"}`}
                           title={tooltip}
                           data-testid={`grid-cell-${s.site_id}-${cn}-${c.v}`}
-                          onClick={() => onCellClick(c.v)}
+                          onClick={() => onCellClick(c.v, s)}
                         >
                           <div className="inline-flex flex-col items-center gap-0.5">
                             <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">
@@ -1004,7 +1351,7 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
                               <span className="w-6 text-left">Sch</span>
                             </span>
                             <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">
-                              <span className={`w-2 h-2 rounded-full ${dot(act)}`} />
+                              <span className={`w-2 h-2 rounded-full ${dot(actDotState)}`} />
                               <span className="w-6 text-left">Act</span>
                             </span>
                           </div>
@@ -1018,22 +1365,58 @@ function YearlyGrid({ data, year, activity, onCellClick }) {
           </tbody>
         </table>
       </div>
-      {/* Legend */}
-      <div className="flex items-center gap-4 px-4 py-3 text-[11px] text-slate-500 border-t border-slate-100 bg-slate-50/40">
-        <span className="font-medium text-slate-700">Legend:</span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Approved
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Submitted
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-slate-300" /> Draft
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-slate-100 border border-slate-200" /> No data
-        </span>
-        <span className="ml-auto text-slate-400">Click any cell to open that {activity === "pm" ? "quarter" : "month"} for editing.</span>
+      {/* ─── Legend ─── */}
+      <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/40">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px] text-slate-500">
+          <span className="font-semibold text-slate-700 text-xs">Legend:</span>
+
+          {/* Schedule / Submission states */}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
+            <span>Approved</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" />
+            <span>Submitted</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-slate-300 shrink-0" />
+            <span>Draft</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-slate-100 border border-slate-300 shrink-0" />
+            <span>No data</span>
+          </span>
+
+          {/* Divider */}
+          <span className="w-px h-4 bg-slate-200 shrink-0" />
+
+          {/* Execution states — show mini glassy pill to match actual cell look */}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center justify-center w-7 h-5 rounded border-l-2 border-yellow-400 bg-yellow-50/80 shadow-[inset_0_0_0_1px_rgba(234,179,8,0.2)] text-[8px] text-yellow-600 font-bold shrink-0">
+              SCH
+            </span>
+            <span className="font-medium text-yellow-700">Delayed</span>
+            <span className="text-slate-400">(2–7 days overdue, not done)</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center justify-center w-7 h-5 rounded border-l-2 border-red-400 bg-red-50/80 shadow-[inset_0_0_0_1px_rgba(239,68,68,0.2)] text-[8px] text-red-600 font-bold shrink-0">
+              SCH
+            </span>
+            <span className="font-medium text-red-700">Missed</span>
+            <span className="text-slate-400">(7+ days overdue / marked missed)</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-flex items-center justify-center w-7 h-5 rounded border-l-2 border-teal-400 bg-teal-50/80 shadow-[inset_0_0_0_1px_rgba(20,184,166,0.2)] text-[8px] text-teal-600 font-bold shrink-0">
+              SCH
+            </span>
+            <span className="font-medium text-teal-700">Delay Completed</span>
+            <span className="text-slate-400">(done 3+ days after schedule)</span>
+          </span>
+        </div>
+        <div className="mt-1.5 text-[10px] text-slate-400">
+          Sch = Scheduled entry status &nbsp;·&nbsp; Act = Actual execution status &nbsp;·&nbsp; Click any cell to open that {activity === "pm" ? "quarter" : "month"} for editing.
+        </div>
       </div>
     </Card>
   );
@@ -1312,15 +1695,40 @@ function EquipmentCycleCell({ site, cn, eqItem, cyc, year, month, activity, relo
     return map[st] || map.pending;
   };
 
+  const getExecutionStatus = () => {
+    if (!schDate) return null;
+    const sDate = new Date(schDate + "T00:00:00");
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (actDate) {
+      if (result === 'Missed') return { label: "Missed", color: "bg-red-100 text-red-800 border-red-200" };
+      
+      const aDate = new Date(actDate + "T00:00:00");
+      const diffDays = (aDate - sDate) / (1000 * 60 * 60 * 24);
+      if (diffDays > 3) return { label: "Delayed Completed", color: "bg-green-100 text-green-800 border-green-200" };
+      return null;
+    }
+
+    const diffDays = (today - sDate) / (1000 * 60 * 60 * 24);
+    if (diffDays > 7) return { label: "Missed", color: "bg-red-100 text-red-800 border-red-200" };
+    if (diffDays > 2) return { label: "Delayed", color: "bg-yellow-100 text-yellow-800 border-yellow-200" };
+    return null;
+  };
+  const execStatus = getExecutionStatus();
+
   return (
     <>
       <div 
         className="group relative flex flex-col gap-1.5 p-2 rounded-lg border border-transparent hover:border-blue-200 hover:bg-blue-50/50 cursor-pointer transition-colors h-full min-h-[60px]"
         onClick={() => setOpen(true)}
       >
-         <div className="flex items-center justify-between">
-           <Badge className={`text-[9px] px-1 py-0 capitalize ${statusPillLocal(status)}`}>{status}</Badge>
-           <div className="text-[9px] text-slate-400 font-mono">Count: {site[eqItem.countKey] || 0}</div>
+         <div className="flex items-center justify-between flex-wrap gap-1">
+           <div className="flex gap-1 flex-wrap">
+             <Badge className={`text-[9px] px-1 py-0 capitalize ${statusPillLocal(status)}`}>{status}</Badge>
+             {execStatus && <Badge className={`text-[9px] px-1 py-0 capitalize ${execStatus.color}`}>{execStatus.label}</Badge>}
+           </div>
+           <div className="text-[9px] text-slate-400 font-mono whitespace-nowrap">Count: {site[eqItem.countKey] || 0}</div>
          </div>
          {schDate || actDate ? (
             <div className="text-xs space-y-1 mt-1">
@@ -1540,3 +1948,95 @@ function EquipmentCycleEditForm({ site, cn, cyc, year, month, activity, reload, 
     </div>
   );
 }
+
+/* ------------------- Multi-Select Cluster Manager Dropdown ------------------- */
+function MultiSelectClusterDropdown({ options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const dropdownRef = React.useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const isAllSelected = options.length > 0 && selected.length === options.length;
+
+  const toggleAll = () => {
+    if (isAllSelected) {
+      onChange([]);
+    } else {
+      onChange([...options]);
+    }
+  };
+
+  const toggleOption = (opt) => {
+    if (selected.includes(opt)) {
+      onChange(selected.filter((o) => o !== opt));
+    } else {
+      onChange([...selected, opt]);
+    }
+  };
+
+  return (
+    <div className="relative inline-block text-left w-[220px]" ref={dropdownRef}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full h-9 px-3 text-xs bg-white border border-slate-200 rounded-lg flex items-center justify-between shadow-xs hover:bg-slate-50 transition cursor-pointer"
+      >
+        <span className="truncate text-slate-700 font-medium">
+          {selected.length === 0
+            ? "No Cluster Manager"
+            : isAllSelected
+            ? "All Cluster Managers"
+            : `${selected.length} Selected`}
+        </span>
+        <ChevronRight className={`w-3.5 h-3.5 text-slate-400 transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-50 mt-1 w-64 rounded-xl bg-white border border-slate-200 shadow-xl p-2 space-y-1 text-xs left-0 sm:left-auto">
+          <div
+            onClick={toggleAll}
+            className="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 cursor-pointer font-semibold border-b border-slate-100 text-slate-800"
+          >
+            <input
+              type="checkbox"
+              checked={isAllSelected}
+              onChange={() => {}}
+              className="w-3.5 h-3.5 rounded text-emerald-600 cursor-pointer"
+            />
+            <span>Select All ({options.length})</span>
+          </div>
+
+          <div className="max-h-48 overflow-y-auto space-y-0.5 pt-1">
+            {options.map((opt) => {
+              const checked = selected.includes(opt);
+              return (
+                <div
+                  key={opt}
+                  onClick={() => toggleOption(opt)}
+                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-md hover:bg-slate-50 cursor-pointer text-slate-700"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => {}}
+                    className="w-3.5 h-3.5 rounded text-emerald-600 cursor-pointer"
+                  />
+                  <span className="truncate">{opt}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

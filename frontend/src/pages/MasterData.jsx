@@ -13,8 +13,9 @@ import {
 import { toast } from "sonner";
 import {
   Database, Plus, Trash2, Edit3, Search, ArrowLeft, Layers,
-  Download, Upload, FileSpreadsheet,
+  Download, Upload, FileSpreadsheet, Lock,
 } from "lucide-react";
+import { usePermissions } from "@/hooks/usePermissions";
 
 export default function MasterDataPage() {
   const [tables, setTables] = useState([]);
@@ -64,6 +65,7 @@ export default function MasterDataPage() {
 }
 
 function MasterTable({ table, onBack }) {
+  const { canEditMasterData } = usePermissions();
   const [rows, setRows] = useState([]);
   const [q, setQ] = useState("");
   const [editOpen, setEditOpen] = useState(false);
@@ -139,10 +141,12 @@ function MasterTable({ table, onBack }) {
               size="sm"
               data-testid="master-export"
             ><Download className="w-4 h-4 mr-1.5" /> Export</Button>
-            <ImportButton table={table} onDone={load} />
-            <Button onClick={startNew} className="bg-blue-600 hover:bg-blue-700" data-testid="master-new-row">
-              <Plus className="w-4 h-4 mr-1.5" /> Add row
-            </Button>
+            {canEditMasterData && <ImportButton table={table} onDone={load} />}
+            {canEditMasterData && (
+              <Button onClick={startNew} className="bg-blue-600 hover:bg-blue-700" data-testid="master-new-row">
+                <Plus className="w-4 h-4 mr-1.5" /> Add row
+              </Button>
+            )}
           </div>
         </div>
 
@@ -165,7 +169,7 @@ function MasterTable({ table, onBack }) {
                 <TableHeader>
                   <TableRow>
                     {columns.map((c) => <TableHead key={c} className="whitespace-nowrap">{c}</TableHead>)}
-                    <TableHead className="text-right">Actions</TableHead>
+                    {canEditMasterData && <TableHead className="text-right">Actions</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -176,10 +180,12 @@ function MasterTable({ table, onBack }) {
                           {String(r.data?.[c] ?? "—")}
                         </TableCell>
                       ))}
-                      <TableCell className="text-right">
-                        <Button variant="ghost" size="sm" onClick={() => startEdit(r)}><Edit3 className="w-4 h-4" /></Button>
-                        <Button variant="ghost" size="sm" onClick={() => remove(r)} className="text-red-600"><Trash2 className="w-4 h-4" /></Button>
-                      </TableCell>
+                      {canEditMasterData && (
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="sm" onClick={() => startEdit(r)}><Edit3 className="w-4 h-4" /></Button>
+                          <Button variant="ghost" size="sm" onClick={() => remove(r)} className="text-red-600"><Trash2 className="w-4 h-4" /></Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>

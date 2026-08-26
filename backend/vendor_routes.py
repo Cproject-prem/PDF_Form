@@ -208,21 +208,30 @@ def _manpower_coll(db):
 # Columns exposed to the form/PDF designers when the Data Source is Manpower.
 # Order matters — this is the order they appear in the dropdown.
 MANPOWER_COLUMNS = [
-    {"key": "manpower_id",  "label": "Manpower ID", "core": True},
-    {"key": "full_name",    "label": "Full Name",   "core": True},
-    {"key": "status",       "label": "Status",      "core": False},
-    {"key": "company_name", "label": "Company",     "core": False},
-    {"key": "work_state",   "label": "Work State",  "core": False},
-    {"key": "location",     "label": "Location",    "core": False},
-    {"key": "city",         "label": "City",        "core": False},
-    {"key": "state",        "label": "Home State",  "core": False},
-    {"key": "phone",        "label": "Phone",       "core": False},
-    {"key": "blood_group",  "label": "Blood Group", "core": False},
-    {"key": "subvendor",    "label": "Subvendor",   "core": False},
+    {"key": "manpower_id",       "label": "Manpower ID",       "core": True},
+    {"key": "full_name",         "label": "Full Name",         "core": True},
+    {"key": "designation",       "label": "Designation",       "core": False},
+    {"key": "eligibility",       "label": "Eligibility",       "core": True},
+    {"key": "eligibility_status","label": "Eligibility Status","core": True},
+    {"key": "eligibility_remark","label": "Eligibility Remark","core": True},
+    {"key": "eligibility_remarks","label": "Eligibility Remarks","core": False},
+    {"key": "eligibility_reason","label": "Eligibility Reason","core": False},
+    {"key": "status",            "label": "Status",            "core": False},
+    {"key": "company_name",      "label": "Company",           "core": False},
+    {"key": "work_state",        "label": "Work State",        "core": False},
+    {"key": "location",          "label": "Location",          "core": False},
+    {"key": "city",              "label": "City",              "core": False},
+    {"key": "state",             "label": "Home State",        "core": False},
+    {"key": "phone",             "label": "Phone",             "core": False},
+    {"key": "blood_group",       "label": "Blood Group",       "core": False},
+    {"key": "subvendor",         "label": "Subvendor",         "core": False},
     {"key": "reporting_cluster_manager", "label": "Reporting Manager", "core": False},
     {"key": "reporting_manager_email",   "label": "Manager Email",     "core": False},
-    {"key": "postal_code",  "label": "Postal Code", "core": False},
-    {"key": "reference",    "label": "Reference",   "core": False},
+    {"key": "medical_expiry_date",     "label": "Medical Expiry Date", "core": False},
+    {"key": "height_work_expiry_date", "label": "Height Work Expiry Date", "core": False},
+    {"key": "safety_belt_expiry_date", "label": "Safety Belt Expiry Date", "core": False},
+    {"key": "postal_code",       "label": "Postal Code",       "core": False},
+    {"key": "reference",         "label": "Reference",         "core": False},
 ]
 
 
@@ -267,8 +276,9 @@ def _site_filter_for_user(user, show_all: bool = False) -> Dict[str, Any]:
         from permissions import site_filter, is_super_admin
     except Exception:
         site_filter = None  # type: ignore
-        is_super_admin = None  # type: ignore
-    if is_super_admin and is_super_admin(user) and show_all:
+    user_role = getattr(user, "role", "") if not isinstance(user, dict) else user.get("role", "")
+    has_override = getattr(user, "access_override", False) if not isinstance(user, dict) else user.get("access_override", False)
+    if show_all and (user_role == "super_admin" or has_override):
         return {}
     if site_filter:
         return site_filter(user)
@@ -674,6 +684,100 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         await db.sites.update_one({"site_id": site_id}, {"$set": upd})
         await _audit_master(db, user, "site.update", site_id, {"changes": list(upd.keys())})
         return {**existing, **upd}
+
+    @sites.post("/{site_id}/transfer")
+    async def transfer_site(site_id: str, body: Dict[str, Any], user=Depends(get_current_user)):
+        """Record a formal vendor or cluster-manager handover for a site."""
+        await _require_site_editor(user)
+        existing = _clean(await db.sites.find_one({"site_id": site_id}))
+        if not existing:
+            await seed_demo_sites(db)
+            existing = _clean(await db.sites.find_one({"site_id": site_id}))
+            if not existing:
+                raise HTTPException(404, "Site not found")
+
+        transfer_type = body.get("type")
+        if transfer_type not in ("vendor", "cluster_manager"):
+            raise HTTPException(400, "type must be 'vendor' or 'cluster_manager'")
+
+        upd: Dict[str, Any] = {}
+        from_snap: Dict[str, Any] = {}
+        to_snap: Dict[str, Any] = {}
+
+        if transfer_type == "vendor":
+            vendor_fields = ["vendor_name", "vendor_email", "cc_email",
+                             "approver_email", "vendor_approver_l1", "vendor_approver_l2"]
+            for f in vendor_fields:
+                if f in body:
+                    from_snap[f] = existing.get(f)
+                    upd[f] = body[f]
+                    to_snap[f] = body[f]
+            raw_email = upd.get("vendor_email")
+            if isinstance(raw_email, str) and raw_email.strip():
+                emails = _split_emails(raw_email)
+                if emails:
+                    upd["vendor_email"] = emails[0]
+                    upd["allowed_emails"] = emails
+                    to_snap["vendor_email"] = emails[0]
+                    to_snap["allowed_emails"] = emails
+        else:  # cluster_manager
+            cm_fields = ["cluster_manager_name", "cluster", "region", "approver_email"]
+            for f in cm_fields:
+                if f in body:
+                    from_snap[f] = existing.get(f)
+                    upd[f] = body[f]
+                    to_snap[f] = body[f]
+
+        upd["updated_at"] = _now()
+        upd["updated_by"] = user.user_id
+        upd["version"] = int(existing.get("version", 1)) + 1
+
+        await db.site_versions.insert_one({
+            "snapshot_id": _gen("siv"),
+            "site_id": site_id,
+            "version": existing.get("version", 1),
+            "row": existing,
+            "saved_at": _now(),
+            "saved_by": user.user_id,
+        })
+
+        await db.sites.update_one({"site_id": site_id}, {"$set": upd})
+
+        transfer_doc = {
+            "transfer_id": _gen("xfr"),
+            "site_id": site_id,
+            "site_name": existing.get("site_name") or existing.get("site_code", site_id),
+            "site_code": existing.get("site_code"),
+            "type": transfer_type,
+            "effective_date": body.get("effective_date", _now()[:10]),
+            "reason": body.get("reason", ""),
+            "from": from_snap,
+            "to": to_snap,
+            "changed_by_id": user.user_id,
+            "changed_by_email": user.email,
+            "changed_by_name": user.name or user.email,
+            "changed_at": _now(),
+        }
+        await db.site_transfers.insert_one(transfer_doc)
+
+        await _audit_master(db, user, f"site.transfer.{transfer_type}", site_id, {
+            "name": existing.get("site_name", site_id),
+            "from": from_snap,
+            "to": to_snap,
+            "reason": body.get("reason", ""),
+        })
+
+        result = _clean(transfer_doc)
+        return {"ok": True, "transfer": result}
+
+    @sites.get("/{site_id}/transfers")
+    async def get_site_transfers(site_id: str, user=Depends(get_current_user)):
+        """Return the full transfer history for a site, newest first."""
+        await _require_site_editor(user)
+        docs = await db.site_transfers.find(
+            {"site_id": site_id}, {"_id": 0}
+        ).sort("changed_at", -1).to_list(200)
+        return {"transfers": docs}
 
     @sites.post("/relink-vendors")
     async def relink_vendors(user=Depends(get_current_user)):
@@ -1422,6 +1526,47 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
 
     # ---------- Lookup engine ----------
 
+    def _compute_manpower_eligibility(row: Dict[str, Any]) -> Dict[str, Any]:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date()
+        
+        expired = []
+        def check_exp(val, label):
+            if not val:
+                expired.append(label)
+                return
+            try:
+                s = str(val)[:10]
+                d = datetime.strptime(s, "%Y-%m-%d").date()
+                if d < today:
+                    expired.append(label)
+            except Exception:
+                expired.append(label)
+
+        check_exp(row.get("medical_expiry_date"), "Medical")
+        check_exp(row.get("safety_belt_expiry_date"), "Safety Belt")
+        check_exp(row.get("height_work_expiry_date"), "Height Work")
+
+        is_disabled = bool(row.get("disabled"))
+        st = str(row.get("status") or "").strip()
+
+        if is_disabled or st.lower() in ("disabled", "inactive", "suspended", "expired", "rejected") or expired:
+            status_label = "Ineligible"
+        else:
+            status_label = "Eligible"
+
+        remark = (", ".join(expired) + " Expired") if expired else ("Disabled" if is_disabled else "")
+
+        if not row.get("eligibility"):
+            row["eligibility"] = status_label
+        if not row.get("eligibility_status"):
+            row["eligibility_status"] = "Disabled" if is_disabled else (st.capitalize() if st else ("Eligible" if status_label == "Eligible" else "Ineligible"))
+        if not row.get("eligibility_remark"):
+            row["eligibility_remark"] = remark
+        row["eligibility_remarks"] = row.get("eligibility_remarks") or remark
+        row["eligibility_reason"] = row.get("eligibility_reason") or remark
+        return row
+
     @lookup.post("/resolve")
     async def lookup_resolve(body: Dict[str, Any], user=Depends(get_current_user)):
         """Resolve a lookup configured by the form/PDF designer.
@@ -1480,14 +1625,13 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
                 "row": data,
             }
         if source == "manpower":
-            # Manpower Portal integration — resolves against the external
-            # cmes_mp_db.manpower collection (see manpower_routes.py).
             coll = _manpower_coll(db)
             if coll is None:
                 return {"value": None, "fill": {}, "matched": False}
             row = _clean(await coll.find_one({display: chosen}, {"_id": 0}))
             if not row:
                 return {"value": None, "fill": {}, "matched": False}
+            row = _compute_manpower_eligibility(row)
             return {
                 "value": row.get(return_col, chosen),
                 "fill": {c: row.get(c) for c in fill_cols},
@@ -1602,6 +1746,14 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             if q:
                 flt[f"data.{column}"] = {"$regex": re.escape(q), "$options": "i"}
             vals = await db.master_data.distinct(f"data.{column}", flt)
+        elif source == "manpower":
+            coll = _manpower_coll(db)
+            if coll is None:
+                return []
+            flt = {}
+            if q:
+                flt[column] = {"$regex": re.escape(q), "$options": "i"}
+            vals = await coll.distinct(column, flt)
         else:
             raise HTTPException(400, "Unknown source")
         return sorted([str(v) for v in vals if v not in (None, "")])[:limit]
@@ -1614,9 +1766,6 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         chosen = body.get("value")
         fill_cols: List[str] = list(body.get("fill") or [])
         if source == "sites":
-            # When the caller is a logged-in vendor, force the lookup to
-            # match only sites they can access — prevents cross-vendor leak
-            # when a shared /p/:slug link is opened from a vendor session.
             base_flt = _site_filter_for_user(user, show_all=False) if user else {}
             base_flt[display] = chosen
             row = _clean(await db.sites.find_one(base_flt))
@@ -1624,14 +1773,22 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             table = source.split(":", 1)[1]
             md = _clean(await db.master_data.find_one({"table": table, f"data.{display}": chosen}))
             row = (md or {}).get("data") if md else None
+        elif source == "manpower":
+            coll = _manpower_coll(db)
+            if coll is None:
+                return {"value": None, "fill": {}, "matched": False}
+            row = _clean(await coll.find_one({display: chosen}, {"_id": 0}))
         else:
             raise HTTPException(400, "Unknown source")
         if not row:
             return {"value": None, "fill": {}, "matched": False}
+        if source == "manpower":
+            row = _compute_manpower_eligibility(row)
         return {
             "value": row.get(return_col, chosen),
             "fill": {c: row.get(c) for c in fill_cols},
             "matched": True,
+            "row": row,
         }
 
     # ---------- Pending Approvals (admin approval workflow) ----------

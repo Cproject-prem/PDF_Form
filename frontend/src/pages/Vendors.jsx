@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
+import { usePermissions } from "@/hooks/usePermissions";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
 import { Card } from "@/components/ui/card";
@@ -18,6 +19,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
@@ -31,7 +33,7 @@ import { formatDate } from "@/lib/utils2";
 
 export default function VendorsPage() {
   const { user: authUser } = useAuth();
-  const isVendorAdmin = authUser?.role === "vendor_admin";
+  const { canCreateVendors, canEditVendors, canDeleteVendors, isVendorAdmin } = usePermissions();
 
   const [vendors, setVendors] = useState([]);
   const [q, setQ] = useState("");
@@ -110,9 +112,11 @@ export default function VendorsPage() {
             <h1 className="text-3xl sm:text-4xl font-heading font-bold tracking-tight text-slate-900 mt-1">Vendor Management</h1>
             <p className="text-slate-500 mt-1">Vendors, their portal users and per-vendor data access scopes.</p>
           </div>
-          <Button onClick={startNew} className="bg-blue-600 hover:bg-blue-700" data-testid="vendor-new-btn">
-            <Plus className="w-4 h-4 mr-1.5" /> New vendor
-          </Button>
+          {canCreateVendors && (
+            <Button onClick={startNew} className="bg-blue-600 hover:bg-blue-700" data-testid="vendor-new-btn">
+              <Plus className="w-4 h-4 mr-1.5" /> New vendor
+            </Button>
+          )}
         </div>
 
         <Card className="rounded-2xl border-slate-100 card-soft bg-white">
@@ -166,12 +170,16 @@ export default function VendorsPage() {
                       <Button variant="ghost" size="sm" title="Open" onClick={() => setDetailVendor(v)} data-testid={`vendor-open-${v.vendor_id}`}>
                         <UsersIcon className="w-4 h-4" />
                       </Button>
-                      <Button variant="ghost" size="sm" title="Edit" onClick={() => startEdit(v)} data-testid={`vendor-edit-${v.vendor_id}`}>
-                        <Edit3 className="w-4 h-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm" title="Delete" onClick={() => remove(v)} className="text-red-600 hover:text-red-700" data-testid={`vendor-del-${v.vendor_id}`}>
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
+                      {canEditVendors && (
+                        <Button variant="ghost" size="sm" title="Edit" onClick={() => startEdit(v)} data-testid={`vendor-edit-${v.vendor_id}`}>
+                          <Edit3 className="w-4 h-4" />
+                        </Button>
+                      )}
+                      {canDeleteVendors && (
+                        <Button variant="ghost" size="sm" title="Delete" onClick={() => remove(v)} className="text-red-600 hover:text-red-700" data-testid={`vendor-del-${v.vendor_id}`}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -198,14 +206,17 @@ export default function VendorsPage() {
               <Field label="Email"><Input data-testid="vendor-email" value={editing.email} onChange={(e) => setEditing({ ...editing, email: e.target.value })} /></Field>
               <Field label="Phone"><Input value={editing.phone} onChange={(e) => setEditing({ ...editing, phone: e.target.value })} /></Field>
               <Field label="Status">
-                <Select value={editing.status || "active"} onValueChange={(v) => setEditing({ ...editing, status: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
-                    <SelectItem value="inactive">Inactive</SelectItem>
-                    <SelectItem value="suspended">Suspended</SelectItem>
-                  </SelectContent>
-                </Select>
+                <SearchableDropdown
+                  options={[
+                    { label: "Active", value: "active" },
+                    { label: "Inactive", value: "inactive" },
+                    { label: "Suspended", value: "suspended" },
+                  ]}
+                  value={editing.status || "active"}
+                  onChange={(v) => setEditing({ ...editing, status: v })}
+                  placeholder="Select status..."
+                  className="h-10 text-sm"
+                />
               </Field>
               <Field label="Address" className="col-span-2"><Textarea rows={2} value={editing.address} onChange={(e) => setEditing({ ...editing, address: e.target.value })} /></Field>
               <Field label="Logo URL (optional)" className="col-span-2"><Input value={editing.logo_url || ""} onChange={(e) => setEditing({ ...editing, logo_url: e.target.value })} placeholder="https://…/logo.png" /></Field>

@@ -7,12 +7,31 @@ import {
   Activity, CheckCircle2, XCircle, Clock, Mail, TrendingUp, Workflow,
 } from "lucide-react";
 
+import { usePermissions } from "@/hooks/usePermissions";
+
 export default function WorkflowAnalyticsPage() {
+  const { isVendorRole } = usePermissions();
   const [stats, setStats] = useState(null);
 
   useEffect(() => {
-    api.get("/workflow-analytics").then((r) => setStats(r.data)).catch(() => setStats({}));
-  }, []);
+    if (!isVendorRole) {
+      api.get("/workflow-analytics").then((r) => setStats(r.data)).catch(() => setStats({}));
+    }
+  }, [isVendorRole]);
+
+  if (isVendorRole) {
+    return (
+      <AppLayout>
+        <div className="p-8 text-center max-w-md mx-auto my-12 bg-white rounded-2xl border border-slate-200 shadow-sm">
+          <div className="w-12 h-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-3">
+            <Workflow className="w-6 h-6" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-800">Access Restricted</h2>
+          <p className="text-sm text-slate-500 mt-1">Workflow Analytics is not required for Vendor users.</p>
+        </div>
+      </AppLayout>
+    );
+  }
 
   if (!stats) return <AppLayout><div className="text-slate-400">Loading…</div></AppLayout>;
 

@@ -4,7 +4,17 @@ Chronological history of shipped work. Newer entries at the top.
 
 ---
 
+## v0.8 — AI Service Isolation & Auxiliary Microservice Architecture (2026-08-12)
+- **Isolated AI Microservice (`ai-service/`)**: Refactored AI functionality into a standalone auxiliary microservice running on port 9000. Core FormForge operates 100% independently without AI dependency.
+- **Circuit Breaker & Timeout Protection**: Added `CircuitBreaker` (`CLOSED` -> `OPEN` -> `HALF_OPEN`) and strict HTTP timeouts (`AI_CONNECT_TIMEOUT=5`, `AI_REQUEST_TIMEOUT=30`) in `backend/circuit_breaker.py` and `backend/ai_routes.py`.
+- **RAG & Vector Store Isolation**: Decoupled RAG vector store and chunking pipeline into `ai-service/rag/`. Failures in vector database or embedding model return empty context without crashing core FormForge.
+- **Detailed AI Health Probes**: Added `/health` and `/ready` status endpoints on AI Service and `/ai/status` on Core Backend with real-time UI indicator badges (🟢 AI Available / 🟠 AI Temporarily Unavailable).
+- **Private Network Non-Exposure**: AI microservice (port 9000) and Ollama (port 11434) run as private internal containers without public host port exposure.
+- **Redacted AI Audit Logs**: Recorded non-sensitive AI usage events (`ai_request`) in `db.audit_logs` with strict credential redaction.
+- **Comprehensive Documentation Expansion**: Created topic folders 17 (`Network_Architecture`), 18 (`Threat_Model`), 19 (`AI_Architecture`), 20 (`AI_RAG`), 21 (`AI_Governance`), 22 (`Disaster_Recovery`), 23 (`Security_Test_Plan`), and 24 (`Deployment_Runbook`).
+
 ## v0.7 — Local-First & Backup (2026-07-08)
+
 - **Local disk storage**: replaced Emergent Object Storage with local disk under `backend/uploads/local/`. Files are organised per submission (`local/submissions/{sid}/{original_filename}`) automatically at submit time.
 - **Legacy path fallback** in `get_object()` — old records with `formforge/uploads/...` paths still resolve by basename search.
 - **`backup.py` & `restore.py`**: single-zip export (all Mongo collections + all uploaded files); restore with dry-run + `--wipe` modes; Windows Task Scheduler-ready.

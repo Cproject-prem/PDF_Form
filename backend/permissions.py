@@ -136,16 +136,25 @@ def can_approve(actor, approval_row: Dict[str, Any]) -> bool:
 
     Rule:
       1) Super Admin (or `access_override`) can approve anything.
-      2) Otherwise the actor must be strictly higher on the approval ladder
-         than the requester,
-      3) AND the actor's scope must contain the target user's scope:
-           • Region-Admin's `region` must match `approval.target_region`
-           • Cluster-Admin's `cluster_manager_name` must match
-             `approval.target_cluster_manager_name`
-      4) Vendor Admins cannot approve — only queue.
+      2) Members / Admins of the SAME REGION or SAME CLUSTER can approve / override
+         submission approvals for other members in that region.
+      3) Otherwise the actor must be strictly higher on the approval ladder
+         than the requester, AND scope must match.
     """
     if has_access_override(actor) or normalize_role(getattr(actor, "role", "")) == SUPER_ADMIN:
         return True
+    
+    actor_region = user_region(actor)
+    actor_cluster = user_cluster_manager_name(actor)
+    target_region = approval_row.get("target_region") or approval_row.get("region")
+    target_cluster = approval_row.get("target_cluster_manager_name") or approval_row.get("cluster")
+
+    # Same Region Member / Cluster Member Override Rule
+    if target_region and actor_region and str(target_region).strip().lower() == str(actor_region).strip().lower():
+        return True
+    if target_cluster and actor_cluster and str(target_cluster).strip().lower() == str(actor_cluster).strip().lower():
+        return True
+
     actor_level = approval_level(actor)
     requester = approval_row.get("requested_by") or {}
     requester_level = APPROVAL_LEVELS.get(normalize_role(requester.get("role", "")), 0)
@@ -153,19 +162,12 @@ def can_approve(actor, approval_row: Dict[str, Any]) -> bool:
         return False
     actor_role = normalize_role(getattr(actor, "role", ""))
     if actor_role != ADMIN:
-        # only admins (region / cluster) reach this branch
         return False
-    # Scope match
-    target_region = approval_row.get("target_region")
-    target_cluster = approval_row.get("target_cluster_manager_name")
-    actor_region = user_region(actor)
-    actor_cluster = user_cluster_manager_name(actor)
+
     if is_cluster_manager(actor):
-        # Cluster manager: cluster name must match; region also must match if provided
         if target_cluster and actor_cluster and target_cluster == actor_cluster:
             return True
         return False
-    # Plain region admin: region must match
     if target_region and actor_region and target_region == actor_region:
         return True
     return False
@@ -180,32 +182,45 @@ def site_filter(user) -> Dict[str, Any]:
     """Return a Mongo `find` filter that restricts the sites collection to
     only the rows the given user is allowed to see.
 
-    Super Admin   → {}                                  (everything)
-    Admin         → {region: <user.region>} OR
-                    {cluster_manager_name: <user.cluster_manager_name>} OR
-                    {assigned_admin_ids: user.user_id}
-    Vendor Admin  → {vendor_id: user.vendor_id}
-    Vendor User   → {vendor_id: user.vendor_id, ...assigned site list}
-    Anonymous     → an impossible filter (no rows)
+    Super Admin / Access Override → {} (everything)
+    Cluster Manager               → {cluster_manager_name} OR {cluster} (only their own cluster plants)
+    Regional Admin                → {region} (all plants in their region by default)
+    General Admin (no region/cm)  → {} (all plants by default)
+    Vendor Admin                  → {vendor_id: user.vendor_id}
+    Vendor User                   → {assigned_sites}
     """
     role = normalize_role(getattr(user, "role", ""))
-    uid = getattr(user, "user_id", None)
     if role == SUPER_ADMIN or has_access_override(user):
         return {}
 
     if role == ADMIN:
-        clauses: List[Dict[str, Any]] = []
-        if uid:
-            clauses.append({"assigned_admin_ids": uid})
+        import re
         cm = user_cluster_manager_name(user)
-        if cm:
-            clauses.append({"cluster_manager_name": cm})
+        cluster = getattr(user, "cluster", None) if not isinstance(user, dict) else user.get("cluster")
         region = user_region(user)
-        if region:
-            clauses.append({"region": region})
-        if not clauses:
-            return {"site_id": "__none__"}  # admin with no assignment -> nothing
-        return clauses[0] if len(clauses) == 1 else {"$or": clauses}
+        
+        assignments = getattr(user, "assignments", {}) if not isinstance(user, dict) else user.get("assignments", {})
+        assigned_sites = (assignments or {}).get("sites", []) if isinstance(assignments, dict) else []
+
+        # 1. Cluster Manager: restrict strictly to their own cluster manager name, cluster, or assigned sites
+        if cm or (cluster and str(cluster).strip()):
+            cm_clauses: List[Dict[str, Any]] = []
+            if assigned_sites:
+                cm_clauses.append({"site_id": {"$in": assigned_sites}})
+            if cm:
+                cm_clean = cm.split("(")[0].strip()
+                if cm_clean:
+                    cm_clauses.append({"cluster_manager_name": {"$regex": f"^{re.escape(cm_clean)}", "$options": "i"}})
+            if cluster and str(cluster).strip():
+                cm_clauses.append({"cluster": {"$regex": f"^{re.escape(str(cluster).strip())}", "$options": "i"}})
+            return cm_clauses[0] if len(cm_clauses) == 1 else {"$or": cm_clauses}
+
+        # 2. Regional Admin: sees ALL plants in their region by default
+        if region and str(region).strip():
+            return {"region": {"$regex": f"^{re.escape(str(region).strip())}", "$options": "i"}}
+
+        # 3. Plain Admin (no region, no cluster): sees all plants by default
+        return {}
 
     if role in (VENDOR_ADMIN, VENDOR_USER):
         vid = user_vendor_id(user)
@@ -515,13 +530,13 @@ def menu_for(user) -> List[Dict[str, str]]:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "workflow-analytics", "approvals",
                       "plants", "schedule", "site-master", "vendors",
-                      "master-data", "manpower", "reports", "audit-logs",
+                      "master-data", "manpower", "inventory", "reports", "audit-logs",
                       "users", "smtp", "welcome-email", "settings"])
     if role == ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "approvals",
                       "plants", "schedule", "site-master", "vendors",
-                      "master-data", "manpower", "users", "welcome-email", "reports"])
+                      "master-data", "manpower", "inventory", "users", "welcome-email", "reports"])
     if role == VENDOR_ADMIN:
         return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "schedule", "vendors"])
     if role == VENDOR_USER:
@@ -545,6 +560,7 @@ _MENU_DEFS = {
     "master-data":        {"label": "Master Data",         "path": "/master-data",         "group": "data"},
     "reports":            {"label": "Reports",             "path": "/reports",             "group": "data"},
     "manpower":           {"label": "Manpower",            "path": "/manpower",            "group": "data"},
+    "inventory":          {"label": "Inventory Management","path": "/inventory",           "group": "data"},
     "team":               {"label": "Team",                "path": "/team",                "group": "team"},
     "users":              {"label": "Users",               "path": "/users",               "group": "admin"},
     "audit-logs":         {"label": "Audit Logs",          "path": "/audit-logs",          "group": "admin"},

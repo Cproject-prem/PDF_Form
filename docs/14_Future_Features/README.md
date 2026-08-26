@@ -52,10 +52,13 @@ Prioritised roadmap. P0 = critical, P1 = high-value, P2 = nice-to-have.
 - **P2 · Incremental backups** — since-timestamp deltas rather than full re-dump.
 - **P2 · Automated restore drill** — CI job that spins up a fresh Mongo, restores the newest backup, runs the manual test checklist headlessly.
 
-## AI
+## AI (Auxiliary Microservice)
+
+- **P1 · Multi-Model Selection UI** — admin toggle between local Gemma and Llama-3 models.
 
 - **P2 · Form-from-prompt** — "Create a PTW form with 8 questions covering PPE, hazards, ..." → LLM emits full field JSON.
 - **P2 · Smart approval suggestions** — flag suspicious submissions (missing signature, out-of-hours, etc.).
+
 
 ## Enterprise integrations
 

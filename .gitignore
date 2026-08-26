@@ -126,3 +126,12 @@ frontend/node_modules/.cache/default-development/22.pack
 frontend/node_modules/.cache/default-development/34.pack
 frontend/node_modules/.cache/default-development/26.pack
 frontend/node_modules/.cache/default-development/0.pack
+
+# Debug logs and temporary text outputs
+*_debug.txt
+eslint_out*.txt
+extracted_plants.txt
+plants_step_*.txt
+docs.rar
+frontend/npm
+

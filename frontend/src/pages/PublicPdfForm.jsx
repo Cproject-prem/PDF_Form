@@ -9,6 +9,7 @@ import { authPdfFile } from "@/lib/pdfWorker";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { CheckCircle2, Sparkles, Download, FileType2, Eye, Lock } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 /**
  * Public PDF form runner — submitters see a plain standard form view only.
@@ -25,6 +26,7 @@ export default function PublicPdfFormPage() {
   const [error, setError] = useState(null);
   const [values, setValues] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [done, setDone] = useState(null);
   const lookupCache = useRef({});
 
@@ -36,6 +38,33 @@ export default function PublicPdfFormPage() {
       .then((r) => setTpl(r.data))
       .catch((e) => setError(e?.response?.data?.detail || "Form not found"));
   }, [slug, me]);
+
+  // --- Parse site_name query param plant override ---------------------------
+  useEffect(() => {
+    if (!tpl) return;
+    const params = new URLSearchParams(loc.search);
+    const siteParam = params.get("site_name") || params.get("plant") || params.get("site_id");
+    if (siteParam) {
+      const SITE_KEYS = ["site_name", "plant_name", "site_code", "asset_id", "site", "plant"];
+      const siteField = (tpl.fields || []).find((f) => {
+        const lbl = (f.label || "").toLowerCase().trim();
+        const name = (f.name || f.id || "").toLowerCase().trim();
+        return SITE_KEYS.includes(lbl) || SITE_KEYS.includes(name) || f.is_site_name === true;
+      });
+      setValues((prev) => {
+        if (siteField && prev[siteField.id] === siteParam) return prev;
+        if (!siteField && prev._overridden_site_name === siteParam) return prev;
+        const patch = { ...prev };
+        if (siteField) {
+          patch[siteField.id] = siteParam;
+        } else {
+          patch["_overridden_site_name"] = siteParam;
+          patch["site_name"] = siteParam;
+        }
+        return patch;
+      });
+    }
+  }, [tpl, loc.search]);
 
   // --- Lookup engine --------------------------------------------------------
   useEffect(() => {
@@ -214,7 +243,7 @@ export default function PublicPdfFormPage() {
   const containerMax = isPdfView ? "max-w-5xl" : "max-w-2xl";
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="h-screen max-h-screen w-screen overflow-y-auto page-overlay-scroll nice-scroll bg-slate-50 relative scroll-smooth" id="public-pdf-scroll-container">
       <div className={`${containerMax} mx-auto py-10 px-4`}>
         <div className="flex items-center gap-2 mb-4 text-slate-500 text-sm">
           <Sparkles className="w-4 h-4 text-blue-600" />
@@ -264,14 +293,46 @@ export default function PublicPdfFormPage() {
               ))}
             </div>
           )}
-          <Button
-            data-testid="public-pdf-submit"
-            type="submit"
-            disabled={submitting}
-            className="mt-6 bg-blue-600 hover:bg-blue-700 w-full h-11 rounded-lg"
-          >
-            {submitting ? "Submitting…" : "Submit"}
-          </Button>
+          <div className="mt-6 flex flex-col sm:flex-row gap-3">
+            <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+              <DialogTrigger asChild>
+                <Button
+                  data-testid="public-pdf-preview"
+                  type="button"
+                  variant="outline"
+                  className="w-full sm:w-auto h-11 rounded-lg"
+                >
+                  <Eye className="w-4 h-4 mr-2" />
+                  Preview
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-4xl h-[90vh] flex flex-col p-0 overflow-hidden">
+                <DialogHeader className="p-4 border-b border-slate-100 shrink-0 bg-white z-10 shadow-sm">
+                  <DialogTitle className="flex items-center gap-2">
+                    <Eye className="w-5 h-5 text-slate-400" />
+                    Preview: {tpl.title}
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="flex-1 overflow-auto bg-slate-100 p-4 relative nice-scroll">
+                  <PdfOverlayFill
+                    fileUrl={`${API}/public/pdf-forms/${slug}/file`}
+                    fields={tpl.fields || []}
+                    values={values}
+                    onChange={() => {}}
+                    disabled={true}
+                  />
+                </div>
+              </DialogContent>
+            </Dialog>
+            <Button
+              data-testid="public-pdf-submit"
+              type="submit"
+              disabled={submitting}
+              className="bg-blue-600 hover:bg-blue-700 flex-1 h-11 rounded-lg"
+            >
+              {submitting ? "Submitting…" : "Submit"}
+            </Button>
+          </div>
           <p className="text-xs text-slate-400 mt-3 text-center">
             On submission you&apos;ll get a filled PDF with your responses.
           </p>

@@ -70,6 +70,7 @@ def _row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "id": doc.get("id"),
         "manpower_id": doc.get("manpower_id"),
         "full_name": doc.get("full_name") or "",
+        "designation": doc.get("designation") or "",
         "status": doc.get("status") or "",
         "company_name": doc.get("company_name") or "",
         "work_state": doc.get("work_state") or "",
@@ -79,6 +80,9 @@ def _row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "blood_group": doc.get("blood_group") or "",
         "has_photo": bool(p),
         "photo_filename": p.get("file_name") if p else None,
+        "medical_expiry_date": doc.get("medical_expiry_date"),
+        "safety_belt_expiry_date": doc.get("safety_belt_expiry_date"),
+        "height_work_expiry_date": doc.get("height_work_expiry_date"),
     }
 
 
@@ -100,7 +104,7 @@ def build_manpower_router(main_db, get_current_user):
 
     @router.get("")
     async def list_manpower(
-        search: Optional[str] = Query(None, description="Match on ID, name, company, state, or location"),
+        search: Optional[str] = Query(None, description="Match on ID, name, designation, company, state, or location"),
         state: Optional[str] = None,
         location: Optional[str] = None,
         company: Optional[str] = None,
@@ -125,6 +129,7 @@ def build_manpower_router(main_db, get_current_user):
             q["$or"] = [
                 {"manpower_id":  {"$regex": rx, "$options": "i"}},
                 {"full_name":    {"$regex": rx, "$options": "i"}},
+                {"designation":  {"$regex": rx, "$options": "i"}},
                 {"company_name": {"$regex": rx, "$options": "i"}},
                 {"work_state":   {"$regex": rx, "$options": "i"}},
                 {"location":     {"$regex": rx, "$options": "i"}},
@@ -133,7 +138,7 @@ def build_manpower_router(main_db, get_current_user):
 
         cursor = coll.find(q, {
             "_id": 0,
-            "id": 1, "manpower_id": 1, "full_name": 1, "status": 1,
+            "id": 1, "manpower_id": 1, "full_name": 1, "designation": 1, "status": 1,
             "company_name": 1, "work_state": 1, "location": 1, "city": 1,
             "phone": 1, "blood_group": 1, "documents": 1, "vendor_id": 1,
         }).sort("manpower_id", 1).limit(limit)

@@ -90,9 +90,13 @@ class PDFField(BaseModel):
     # option is rendered at its own {x,y,w,h} on the page (independent of
     # the parent field's bounding box). Coords are page-normalized (0..1).
     option_positions: Optional[List[Dict[str, float]]] = None
+    no_border: bool = False
     validation: Dict[str, Any] = Field(default_factory=dict)
     font_size: int = 12
+    font_auto_fit: bool = True
     font_family: str = "Helvetica"
+    is_bold: bool = False
+    is_italic: bool = False
     font_color: str = "#111827"
     border_color: str = "#2563EB"
     background_color: str = "#DBEAFE"
@@ -195,6 +199,133 @@ def _read_pdf_pages(path: Path) -> List[PDFPage]:
     return pages
 
 
+def _auto_detect_fields(path: Path) -> List[Dict[str, Any]]:
+    """Parse PDF text and auto-generate form fields based on {{ ... }} markers."""
+    from pypdf import PdfReader
+    import uuid
+    import re
+    
+    reader = PdfReader(str(path))
+    fields = []
+    
+    pattern = re.compile(r'([-_—–]*)\s*\{\{\s*([a-zA-Z0-9_\s]+?)\s*\}\}\s*([-_—–]*)')
+
+    for i, p in enumerate(reader.pages):
+        page_num = i + 1
+        page_height = float(p.mediabox.height)
+        
+        raw_frags = []
+        
+        def visitor_text(text, cm, tm, fontDict, fontSize):
+            if not text.strip():
+                return
+            abs_x = tm[4] * cm[0] + tm[5] * cm[2] + cm[4]
+            abs_y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
+            raw_frags.append({"text": text.replace("\n", ""), "x": abs_x, "y": abs_y, "fs": fontSize})
+            
+        try:
+            p.extract_text(visitor_text=visitor_text)
+        except Exception:
+            pass
+            
+        raw_frags.sort(key=lambda f: (-f["y"], f["x"]))
+        
+        lines_list = []
+        current_line = []
+        current_y = None
+        for f in raw_frags:
+            if current_y is None or abs(f["y"] - current_y) < 3.0:
+                current_line.append(f)
+                if current_y is None:
+                    current_y = f["y"]
+            else:
+                lines_list.append(current_line)
+                current_line = [f]
+                current_y = f["y"]
+        if current_line:
+            lines_list.append(current_line)
+            
+        for frags in lines_list:
+            frags.sort(key=lambda f: f["x"])
+            full_text = "".join(f["text"] for f in frags)
+            
+            with open("auto_detect_debug.txt", "a", encoding="utf-8") as dbg:
+                dbg.write(f"LINE Y={current_y}: {repr(full_text)}\n")
+            
+            for m in pattern.finditer(full_text):
+                with open("auto_detect_debug.txt", "a", encoding="utf-8") as dbg:
+                    dbg.write(f"MATCH FOUND: {m.group(0)}\n")
+                if not frags: continue
+                base_f = frags[0]
+                
+                match_start_idx = m.start()
+                match_end_idx = m.end() - 1
+                
+                start_x = None
+                end_x = None
+                curr_len = 0
+                
+                # Iterate through fragments to map the string indices to physical X coordinates
+                for f in frags:
+                    f_len = len(f["text"])
+                    # Use a standard 0.55 multiplier just for interpolation inside a single fragment
+                    frag_char_w = f["fs"] * 0.55 if f["fs"] > 0 else 6.0
+                    
+                    if start_x is None and curr_len <= match_start_idx < curr_len + f_len:
+                        char_offset = match_start_idx - curr_len
+                        start_x = f["x"] + (char_offset * frag_char_w)
+                        
+                    if curr_len <= match_end_idx < curr_len + f_len:
+                        char_offset = match_end_idx - curr_len
+                        end_x = f["x"] + ((char_offset + 1) * frag_char_w)
+                        
+                    curr_len += f_len
+
+                if start_x is None: start_x = base_f["x"]
+                if end_x is None: end_x = start_x + (len(m.group(0)) * (base_f["fs"] * 0.55 if base_f["fs"] > 0 else 6.0))
+                
+                match_x = start_x
+                width = max(end_x - start_x, 40.0)
+                
+                # Slightly adjust Y so it perfectly centers over the text baseline
+                match_y = page_height - base_f["y"] - base_f["fs"] * 1.05
+                height = max(base_f["fs"] * 1.5, 20.0)
+                
+                # Convert to percentages for the frontend
+                x_pct = match_x / float(p.mediabox.width) if float(p.mediabox.width) else 0
+                y_pct = match_y / page_height if page_height else 0
+                w_pct = width / float(p.mediabox.width) if float(p.mediabox.width) else 0.1
+                h_pct = height / page_height if page_height else 0.04
+                
+                field_type_raw = m.group(2).lower().strip()
+                
+                type_map = {
+                    "text": "short_text", "str": "short_text", "txt": "short_text", "short text": "short_text", "long text": "long_text",
+                    "dropdown": "dropdown", "select": "dropdown", "drop": "dropdown",
+                    "checkbox": "checkbox", "chk": "checkbox", "check": "checkbox",
+                    "signature": "signature", "sign": "signature", "sig": "signature",
+                    "date": "date", "dt": "date",
+                    "number": "number", "num": "number",
+                    "radio": "radio", "rad": "radio"
+                }
+                
+                mapped_type = type_map.get(field_type_raw, "short_text")
+                
+                fields.append({
+                    "id": f"f_{uuid.uuid4().hex[:8]}",
+                    "type": mapped_type,
+                    "label": field_type_raw.title(),
+                    "page": page_num,
+                    "x": x_pct,
+                    "y": y_pct,
+                    "width": w_pct,
+                    "height": h_pct,
+                    "required": False,
+                })
+            
+    return fields
+
+
 def _safe_filename(orig: str) -> str:
     name = re.sub(r"[^\w.\-]+", "_", orig)
     return name[:120] or "file"
@@ -211,17 +342,44 @@ def _hex_to_rgb(hex_color: str) -> tuple:
         return (0, 0, 0)
 
 
+def _resolve_font(family: str, bold: bool, italic: bool) -> str:
+    family = family or "Helvetica"
+    if family == "Times-Roman":
+        if bold and italic: return "Times-BoldItalic"
+        if bold: return "Times-Bold"
+        if italic: return "Times-Italic"
+        return "Times-Roman"
+    if family == "Courier":
+        if bold and italic: return "Courier-BoldOblique"
+        if bold: return "Courier-Bold"
+        if italic: return "Courier-Oblique"
+        return "Courier"
+    # Default to Helvetica
+    if bold and italic: return "Helvetica-BoldOblique"
+    if bold: return "Helvetica-Bold"
+    if italic: return "Helvetica-Oblique"
+    return "Helvetica"
+
+
 def _draw_text(c: rl_canvas.Canvas, text: str, x: float, y: float, w: float, h: float,
-               font: str, size: int, color_hex: str, alignment: str = "left") -> None:
+               font: str, size: int, color_hex: str, alignment: str = "left",
+               is_bold: bool = False, is_italic: bool = False, auto_fit: bool = True) -> None:
     if not text:
         return
+    resolved_font = _resolve_font(font, is_bold, is_italic)
     try:
-        c.setFont(font, size)
+        c.setFont(resolved_font, size)
     except Exception:
         c.setFont("Helvetica", size)
     r, g, b = _hex_to_rgb(color_hex)
     c.setFillColorRGB(r, g, b)
     text = str(text)
+    
+    if auto_fit:
+        while c.stringWidth(text, c._fontname, size) > (w - 4) and size > 4:
+            size -= 1
+            c.setFont(c._fontname, size)
+
     text_w = c.stringWidth(text, c._fontname, size)
     if alignment == "center":
         tx = x + (w - text_w) / 2
@@ -235,32 +393,49 @@ def _draw_text(c: rl_canvas.Canvas, text: str, x: float, y: float, w: float, h: 
 
 
 def _draw_multiline(c: rl_canvas.Canvas, text: str, x: float, y: float, w: float, h: float,
-                    font: str, size: int, color_hex: str) -> None:
+                    font: str, size: int, color_hex: str,
+                    is_bold: bool = False, is_italic: bool = False, auto_fit: bool = True) -> None:
     if not text:
         return
+    resolved_font = _resolve_font(font, is_bold, is_italic)
     try:
-        c.setFont(font, size)
+        c.setFont(resolved_font, size)
     except Exception:
         c.setFont("Helvetica", size)
     r, g, b = _hex_to_rgb(color_hex)
     c.setFillColorRGB(r, g, b)
-    line_h = size * 1.2
-    # naive wrap
+    
     lines: List[str] = []
-    for paragraph in str(text).split("\n"):
-        words = paragraph.split(" ")
-        cur = ""
-        for word in words:
-            test = (cur + " " + word).strip()
-            if c.stringWidth(test, c._fontname, size) <= w - 4:
-                cur = test
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = word
-        if cur:
-            lines.append(cur)
+    while size > 4:
+        line_h = size * 1.2
+        lines = []
+        fits = True
+        for paragraph in str(text).split("\n"):
+            words = paragraph.split(" ")
+            cur = ""
+            for word in words:
+                test = (cur + " " + word).strip()
+                if c.stringWidth(test, c._fontname, size) <= w - 4:
+                    cur = test
+                else:
+                    if cur:
+                        lines.append(cur)
+                    cur = word
+                    # if a single word is wider than the box, we definitely need to shrink
+                    if c.stringWidth(word, c._fontname, size) > w - 4:
+                        fits = False
+            if cur:
+                lines.append(cur)
+        
+        # Check if the total height of lines fits in the box
+        if not auto_fit or (fits and len(lines) * line_h <= h - 4):
+            break
+        
+        size -= 1
+        c.setFont(c._fontname, size)
+
     top = y - 2
+    line_h = size * 1.2
     for i, line in enumerate(lines):
         ly = top - (i + 1) * line_h
         if ly < y - h:
@@ -268,12 +443,24 @@ def _draw_multiline(c: rl_canvas.Canvas, text: str, x: float, y: float, w: float
         c.drawString(x + 2, ly, line)
 
 
-def _draw_signature(c: rl_canvas.Canvas, data_url: str, x: float, y: float, w: float, h: float) -> None:
-    if not data_url or "," not in data_url:
+def _draw_signature(c: rl_canvas.Canvas, val: Any, x: float, y: float, w: float, h: float) -> None:
+    if not val:
         return
+    data_url = ""
+    if isinstance(val, dict):
+        data_url = val.get("data_url") or val.get("url") or ""
+    elif isinstance(val, str):
+        data_url = val
+
+    if not data_url:
+        return
+
     try:
-        b64 = data_url.split(",", 1)[1]
-        raw = base64.b64decode(b64)
+        if "," in data_url:
+            b64 = data_url.split(",", 1)[1]
+            raw = base64.b64decode(b64)
+        else:
+            raw = base64.b64decode(data_url)
         from reportlab.lib.utils import ImageReader
         img = ImageReader(io.BytesIO(raw))
         c.drawImage(img, x, y - h, width=w, height=h, mask="auto", preserveAspectRatio=True, anchor="sw")
@@ -314,14 +501,17 @@ def _draw_barcode(c: rl_canvas.Canvas, text: str, x: float, y: float, w: float, 
 
 
 def _draw_checkbox(c: rl_canvas.Canvas, checked: bool, x: float, y: float, size: float,
-                   color_hex: str = "#111827") -> None:
+                   color_hex: str = "#111827", no_border: bool = False) -> None:
     r, g, b = _hex_to_rgb(color_hex)
     c.setStrokeColorRGB(r, g, b)
     c.setLineWidth(1)
     box = min(size, 14)
     bx = x + 2
     by = y - box - 2
-    c.rect(bx, by, box, box, stroke=1, fill=0)
+    
+    if not no_border:
+        c.rect(bx, by, box, box, stroke=1, fill=0)
+        
     if checked:
         c.setLineWidth(1.5)
         c.line(bx + 2, by + box / 2, bx + box / 2 - 1, by + 2)
@@ -442,18 +632,18 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                              "url", "dropdown", "initial", "auto_number",
                              "calculation"):
                     _draw_text(c, val, x, top_y, w, h, f.font_family, f.font_size,
-                               f.font_color, f.alignment)
+                               f.font_color, f.alignment, getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                 elif ftype in ("long_text", "paragraph", "static_text", "heading"):
                     _draw_multiline(c, val, x, top_y, w, h,
                                     f.font_family if ftype != "heading" else f.font_family,
                                     f.font_size if ftype != "heading" else max(f.font_size, 14),
-                                    f.font_color)
+                                    f.font_color, getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                 elif ftype == "signature":
-                    if isinstance(val, str) and val.startswith("data:image"):
+                    if (isinstance(val, str) and (val.startswith("data:image") or len(val) > 50)) or (isinstance(val, dict) and (val.get("data_url") or val.get("url"))):
                         _draw_signature(c, val, x, top_y, w, h)
-                    else:
-                        _draw_text(c, val, x, top_y, w, h, f.font_family, f.font_size,
-                                   f.font_color, f.alignment)
+                    elif val:
+                        _draw_text(c, str(val), x, top_y, w, h, f.font_family, f.font_size,
+                                   f.font_color, f.alignment, getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                 elif ftype == "checkbox":
                     # val may be bool or list of selected options.
                     # NEW: when `option_positions` is set, each option has its
@@ -471,20 +661,20 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                             oy = ph - (float(p.get("y", f.y)) * ph)
                             ow = float(p.get("w", f.width)) * pw
                             oh = float(p.get("h", f.height)) * ph
-                            _draw_checkbox(c, opt in selected, ox, oy, oh, f.font_color)
+                            _draw_checkbox(c, opt in selected, ox, oy, oh, f.font_color, no_border=getattr(f, "no_border", False))
                             # Label to the right of the box, vertically centered
                             box_side = min(oh, 14)
                             _draw_text(c, opt, ox + box_side + 6, oy,
                                        ow - box_side - 8, oh,
-                                       f.font_family, f.font_size, f.font_color, "left")
+                                       f.font_family, f.font_size, f.font_color, "left", getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                     elif f.options and len(f.options) > 1:
                         selected = set(val if isinstance(val, list) else [])
                         line_h = max(f.font_size * 1.4, 14)
                         for i, opt in enumerate(f.options):
                             oy = top_y - i * line_h
-                            _draw_checkbox(c, opt in selected, x, oy, line_h, f.font_color)
+                            _draw_checkbox(c, opt in selected, x, oy, line_h, f.font_color, no_border=getattr(f, "no_border", False))
                             _draw_text(c, opt, x + line_h + 4, oy, w - line_h - 8,
-                                       line_h, f.font_family, f.font_size, f.font_color, "left")
+                                       line_h, f.font_family, f.font_size, f.font_color, "left", getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                     else:
                         # Single-option (or Yes/No boolean) checkbox: the source
                         # PDF usually already prints its own square in the same
@@ -520,11 +710,11 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                             box_side = min(oh, 14)
                             _draw_text(c, opt, ox + box_side + 6, oy,
                                        ow - box_side - 8, oh,
-                                       f.font_family, f.font_size, f.font_color, "left")
+                                       f.font_family, f.font_size, f.font_color, "left", getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                     else:
                         # Legacy behavior: single label drawn as text
                         _draw_text(c, val, x, top_y, w, h, f.font_family, f.font_size,
-                                   f.font_color, f.alignment)
+                                   f.font_color, f.alignment, getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                 elif ftype == "tick":
                     # Single yes/no — same treatment as single checkbox: stamp
                     # only the tick, no box (so we don't overlap the PDF's
@@ -537,7 +727,7 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                     lbl = getattr(f, "tick_label", None) or ""
                     if lbl and w > h * 2:
                         _draw_text(c, lbl, x + h + 4, top_y, w - h - 8, h,
-                                   f.font_family, f.font_size, f.font_color, "left")
+                                   f.font_family, f.font_size, f.font_color, "left", getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                 elif ftype == "qr_code":
                     _draw_qr(c, val, x, top_y, w, h)
                 elif ftype == "barcode":
@@ -565,12 +755,12 @@ def generate_completed_pdf(template_path: Path, fields: List[PDFField], values: 
                     else:
                         fname = val.get("filename") if isinstance(val, dict) else (val or "")
                         _draw_text(c, f"[file] {fname}" if fname else "", x, top_y, w, h,
-                                   f.font_family, f.font_size, f.font_color, f.alignment)
+                                   f.font_family, f.font_size, f.font_color, f.alignment, getattr(f, "is_bold", False), getattr(f, "is_italic", False))
                 elif ftype == "hidden":
                     continue
                 else:
                     _draw_text(c, str(val) if val is not None else "", x, top_y, w, h,
-                               f.font_family, f.font_size, f.font_color, f.alignment)
+                               f.font_family, f.font_size, f.font_color, f.alignment, getattr(f, "is_bold", False), getattr(f, "is_italic", False))
             c.showPage()
             c.save()
             overlay_buf.seek(0)
@@ -634,6 +824,7 @@ def build_pdf_router(db, get_current_user, get_optional_user,
     @router.post("/upload", response_model=PDFTemplate)
     async def upload_pdf(file: UploadFile = File(...),
                          title: Optional[str] = Form(None),
+                         auto_detect: bool = Form(True),
                          user=Depends(get_current_user)):
         from permissions import require_can_create_form
         require_can_create_form(user)
@@ -652,6 +843,7 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         target.write_bytes(data)
         try:
             pages = _read_pdf_pages(target)
+            auto_fields = _auto_detect_fields(target) if auto_detect else []
         except Exception as e:
             target.unlink(missing_ok=True)
             raise HTTPException(400, f"Could not read PDF: {e}")
@@ -664,7 +856,7 @@ def build_pdf_router(db, get_current_user, get_optional_user,
             "owner_id": user.user_id,
             "title": t,
             "description": "",
-            "fields": [],
+            "fields": auto_fields,
             "pages": [p.model_dump() for p in pages],
             "settings": {},
             "status": "draft",
@@ -708,6 +900,67 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         # bump version if fields changed
         if updates.get("fields") != existing.get("fields"):
             updates["version"] = int(existing.get("version", 1)) + 1
+        await db.pdf_templates.update_one({"template_id": template_id}, {"$set": updates})
+        existing.update(updates)
+        return PDFTemplate(**existing)
+    @router.post("/{template_id}/auto-detect", response_model=PDFTemplate)
+    async def auto_detect_template_fields(template_id: str, user=Depends(get_current_user)):
+        existing = await _get_template_for_user(template_id, user, write=True)
+        storage = existing.get("storage_filename")
+        if not storage:
+            raise HTTPException(400, "No original PDF attached to this template")
+            
+        target = PDF_DIR / storage
+        if not target.exists():
+            raise HTTPException(404, "Original PDF file not found on server")
+            
+        try:
+            detected = _auto_detect_fields(target)
+        except Exception as e:
+            raise HTTPException(500, f"Auto-detect failed: {e}")
+            
+        if not detected:
+            return PDFTemplate(**existing)
+            
+        # Append new fields
+        old_fields = existing.get("fields") or []
+        new_fields = old_fields + detected
+        updates = {
+            "fields": new_fields,
+            "version": int(existing.get("version", 1)) + 1,
+            "updated_at": _now()
+        }
+        await db.pdf_templates.update_one({"template_id": template_id}, {"$set": updates})
+        existing.update(updates)
+        return PDFTemplate(**existing)
+
+    @router.post("/{template_id}/replace-pdf", response_model=PDFTemplate)
+    async def replace_template_pdf(template_id: str,
+                                   file: UploadFile = File(...),
+                                   auto_detect: bool = Form(False),
+                                   user=Depends(get_current_user)):
+        existing = await _get_template_for_user(template_id, user, write=True)
+        data = await file.read()
+        if not data or not data[:4] == b"%PDF":
+            raise HTTPException(400, "Invalid PDF file")
+        storage_name = f"{uuid.uuid4().hex}.pdf"
+        target = PDF_DIR / storage_name
+        target.write_bytes(data)
+        pages = _read_pdf_pages(target)
+        auto_fields = _auto_detect_fields(target) if auto_detect else existing.get("fields", [])
+
+        now = _now()
+        new_version = int(existing.get("version", 1)) + 1
+        updates = {
+            "storage_filename": storage_name,
+            "original_filename": _safe_filename(file.filename),
+            "file_size": len(data),
+            "pages": [p.model_dump() for p in pages],
+            "version": new_version,
+            "updated_at": now,
+        }
+        if auto_detect:
+            updates["fields"] = auto_fields
         await db.pdf_templates.update_one({"template_id": template_id}, {"$set": updates})
         existing.update(updates)
         return PDFTemplate(**existing)
@@ -816,11 +1069,25 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         except Exception as e:
             logger.exception("PDF generation failed")
             raise HTTPException(500, f"PDF generation failed: {e}")
+        # Resolve site_name from submitted values or plant override
+        _site_name_val = body.values.get("_overridden_site_name") or body.values.get("site_name") or body.values.get("plant")
+        if not _site_name_val:
+            _SITE_LABELS = {"site name", "plant name", "site code", "asset id", "site_name", "plant_name", "site_code", "asset_id"}
+            for _f in tpl.get("fields", []):
+                _label = (_f.get("label") or "").strip().lower()
+                _fid   = (_f.get("id") or "")
+                if _label in _SITE_LABELS or _fid in {"site_name", "site_code", "plant_name", "asset_id"}:
+                    _v = body.values.get(_fid)
+                    if _v:
+                        _site_name_val = str(_v)
+                        break
+
         doc = {
             "submission_id": sid,
             "template_id": tpl["template_id"],
             "template_version": int(tpl.get("version", 1)),
             "values": body.values,
+            "site_name": _site_name_val,
             "submitted_by": viewer.user_id,
             "submitted_by_email": getattr(viewer, "email", None),
             "submitted_by_name": getattr(viewer, "name", None),
@@ -841,12 +1108,25 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         # fire workflow trigger
         try:
             from workflow_routes import fire_trigger as _ft
+            # Resolve site_name from submitted values by scanning field labels
+            _site_name_val = None
+            _SITE_LABELS = {"site name", "plant name", "site code", "asset id", "site_name",
+                            "plant_name", "site_code", "asset_id"}
+            for _f in tpl.get("fields", []):
+                _label = (_f.get("label") or "").strip().lower()
+                _fid   = (_f.get("id") or "")
+                if _label in _SITE_LABELS or _fid in {"site_name", "site_code", "plant_name", "asset_id"}:
+                    _v = body.values.get(_fid)
+                    if _v:
+                        _site_name_val = str(_v)
+                        break
             await _ft(db, "pdf_submitted",
                       {"submission_id": sid, "template_id": tpl["template_id"],
                        "form_name": tpl.get("title"), "values": body.values,
                        "submission_kind": "pdf",
                        "user_id": viewer.user_id,
                        "user_email": viewer.email,
+                       "site_name": _site_name_val,
                        "ip": doc.get("ip")})
         except Exception as _e:
             logger.warning(f"workflow trigger pdf_submitted failed: {_e}")
@@ -872,8 +1152,12 @@ def build_pdf_router(db, get_current_user, get_optional_user,
                     fname = _rf(tpl.get("filename_template"), form=form_adapter, submission=doc)
                     if not fname.lower().endswith(".pdf"):
                         fname += ".pdf"
-                    from plant_docs_routes import save_internal_plant_doc
-                    save_internal_plant_doc(site_doc["site_id"], "PDF Form", fname, pdf_bytes)
+                    from plant_docs_routes import save_internal_plant_doc, parse_vault_path
+                    vault_path = tpl.get("doc_vault_path") or "/PDF Form"
+                    folder, subfolder = parse_vault_path(vault_path)
+                    if not folder:
+                        folder = "PDF Form"
+                    save_internal_plant_doc(site_doc["site_id"], folder, fname, pdf_bytes, subfolder_name=subfolder)
         except Exception as _e:
             logger.warning(f"failed to auto-sync PDF Form to vault: {_e}")
 
@@ -884,11 +1168,36 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         return payload
 
     # --- Public download of the filled PDF (token-scoped, anonymous-safe) ---
-    def _resolve_pdf_name(tpl: Dict[str, Any], sub: Dict[str, Any]) -> str:
-        """Resolve the download filename for a filled PDF submission using
-        the parent template's `filename_template` (or the global default)."""
-        from filename_resolver import resolve_filename as _rf
-        return _rf(tpl.get("filename_template"), form=tpl, submission=sub)
+    def _render_completed_pdf_bytes(tpl: Dict[str, Any], sub: Dict[str, Any]) -> bytes:
+        """Dynamically render the completed PDF bytes on-the-fly using the LATEST
+        template PDF background file and the submission's stored values.
+
+        This ensures:
+          1. Downloads ALWAYS use the updated PDF template version.
+          2. Disks do not accumulate static files for every submission (saves storage).
+          3. Fallback to existing on-disk file if template file missing.
+        """
+        src = PDF_DIR / tpl.get("storage_filename", "")
+        if src.exists():
+            out_temp = COMPLETED_DIR / f"_temp_{uuid.uuid4().hex}.pdf"
+            try:
+                field_models = [PDFField(**f) for f in tpl.get("fields", [])]
+                generate_completed_pdf(src, field_models, sub.get("values") or {},
+                                       out_temp, uploads_root=uploads_root,
+                                       submission_id=sub.get("submission_id"))
+                if out_temp.exists():
+                    data = out_temp.read_bytes()
+                    return data
+            except Exception as _e:
+                logger.warning(f"on-the-fly PDF render failed, falling back to static file: {_e}")
+            finally:
+                out_temp.unlink(missing_ok=True)
+
+        # Fallback to pre-rendered file if original template missing
+        path = COMPLETED_DIR / (sub.get("completed_filename") or "")
+        if path.exists():
+            return path.read_bytes()
+        raise HTTPException(404, "Completed PDF missing or template unavailable")
 
     @pub_subs.get("/{submission_id}/completed")
     async def public_download_completed(submission_id: str, token: str):
@@ -903,19 +1212,24 @@ def build_pdf_router(db, get_current_user, get_optional_user,
         )
         if not tpl:
             raise HTTPException(404, "Parent template missing")
-        path = COMPLETED_DIR / (sub.get("completed_filename") or "")
-        if not path.exists():
-            raise HTTPException(404, "Completed PDF missing")
-        return Response(content=path.read_bytes(), media_type="application/pdf",
+        pdf_bytes = _render_completed_pdf_bytes(tpl, sub)
+        return Response(content=pdf_bytes, media_type="application/pdf",
                         headers={"Content-Disposition":
                                  f'attachment; filename="{_resolve_pdf_name(tpl, sub)}"'})
 
     # --- Submissions (owner) ---------------------------------------------
     @router.get("/{template_id}/submissions", response_model=List[PDFSubmission])
-    async def list_subs(template_id: str, user=Depends(get_current_user)):
+    async def list_subs(template_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None, user=Depends(get_current_user)):
         await _get_template_for_user(template_id, user)
         scope = await _pdf_submission_scope_query(user)
-        q = {"$and": [{"template_id": template_id}, scope]} if scope else {"template_id": template_id}
+        q = {"$and": [{"template_id": template_id}]}
+        if scope:
+            q["$and"].append(scope)
+        if start_date or end_date:
+            date_flt = {}
+            if start_date: date_flt["$gte"] = start_date
+            if end_date: date_flt["$lte"] = end_date
+            q["$and"].append({"created_at": date_flt})
         rows = await db.pdf_submissions.find(q, {"_id": 0}) \
             .sort("created_at", -1).to_list(2000)
         return [PDFSubmission(**r) for r in rows]
@@ -1019,10 +1333,8 @@ def build_pdf_router(db, get_current_user, get_optional_user,
             )
         if not tpl:
             tpl = await _get_template_for_user(sub["template_id"], user)
-        path = COMPLETED_DIR / (sub.get("completed_filename") or "")
-        if not path.exists():
-            raise HTTPException(404, "Completed PDF missing")
-        return Response(content=path.read_bytes(), media_type="application/pdf",
+        pdf_bytes = _render_completed_pdf_bytes(tpl, sub)
+        return Response(content=pdf_bytes, media_type="application/pdf",
                         headers={"Content-Disposition":
                                  f'attachment; filename="{_resolve_pdf_name(tpl, sub)}"'})
 
@@ -1041,12 +1353,19 @@ def build_pdf_router(db, get_current_user, get_optional_user,
 
     # --- Excel export (per PDF template) ---------------------------------
     @router.get("/{template_id}/submissions/export.xlsx")
-    async def export_pdf_subs_xlsx(template_id: str, user=Depends(get_current_user)):
+    async def export_pdf_subs_xlsx(template_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None, user=Depends(get_current_user)):
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill
         tpl = await _get_template_for_user(template_id, user)
         scope = await _pdf_submission_scope_query(user)
-        xls_q = {"$and": [{"template_id": template_id}, scope]} if scope else {"template_id": template_id}
+        xls_q = {"$and": [{"template_id": template_id}]}
+        if scope:
+            xls_q["$and"].append(scope)
+        if start_date or end_date:
+            date_flt = {}
+            if start_date: date_flt["$gte"] = start_date
+            if end_date: date_flt["$lte"] = end_date
+            xls_q["$and"].append({"created_at": date_flt})
         rows = await db.pdf_submissions.find(xls_q, {"_id": 0}) \
             .sort("created_at", 1).to_list(5000)
         skip_types = ("heading", "paragraph", "static_text", "divider", "hidden")
@@ -1123,5 +1442,151 @@ def build_pdf_router(db, get_current_user, get_optional_user,
             raise HTTPException(404, "Asset not found")
         ct = "image/png" if fid.lower().endswith(".png") else "image/jpeg"
         return Response(content=path.read_bytes(), media_type=ct)
+
+    # --- Edit an existing PDF submission -----------------------------------
+    class PDFSubmissionEditIn(BaseModel):
+        values: Dict[str, Any]
+        edit_reason: str = ""
+
+    @subs.put("/{submission_id}")
+    async def edit_submission(submission_id: str, body: PDFSubmissionEditIn,
+                              request: Request, user=Depends(get_current_user)):
+        """Allow editing a submitted PDF. Permission rules:
+        - super_admin / admin: always allowed
+        - vendor_admin / vendor_user / submitter: only when the submission's
+          workflow approval has been rejected (approval_status == 'rejected' OR
+          status == 'rejected').
+        Regenerates the completed PDF and writes an audit-log entry.
+        After edit, re-fires the pdf_submitted workflow trigger so approval
+        restarts from the beginning.
+        """
+        from permissions import normalize_role, is_super_admin
+        sub = await db.pdf_submissions.find_one({"submission_id": submission_id}, {"_id": 0})
+        if not sub:
+            raise HTTPException(404, "Submission not found")
+
+        role = normalize_role(getattr(user, "role", ""))
+        is_admin = is_super_admin(user) or role == "admin"
+
+        if not is_admin:
+            # vendor / submitter may only edit after rejection
+            sub_status = (sub.get("status") or "").lower()
+            approval_status = (sub.get("approval_status") or "").lower()
+            is_rejected = sub_status == "rejected" or approval_status == "rejected"
+
+            # Check if user is the original submitter or a vendor_admin of same vendor
+            is_submitter = sub.get("submitted_by") == getattr(user, "user_id", None)
+            is_vendor_admin_of_submitter = False
+            if role == "vendor_admin" and getattr(user, "vendor_id", None):
+                submitter_user = await db.users.find_one(
+                    {"user_id": sub.get("submitted_by")}, {"_id": 0, "vendor_id": 1}
+                )
+                if submitter_user and submitter_user.get("vendor_id") == user.vendor_id:
+                    is_vendor_admin_of_submitter = True
+
+            if not (is_submitter or is_vendor_admin_of_submitter):
+                raise HTTPException(403, "You do not have permission to edit this submission")
+            if not is_rejected:
+                raise HTTPException(403, "Editing is only allowed after a rejection")
+
+        # Fetch the template
+        tpl = await db.pdf_templates.find_one(
+            {"template_id": sub["template_id"], "is_deleted": False}, {"_id": 0}
+        )
+        if not tpl:
+            raise HTTPException(404, "Form template not found")
+
+        # Regenerate completed PDF with new values
+        src = PDF_DIR / tpl["storage_filename"]
+        out_path = COMPLETED_DIR / (sub.get("completed_filename") or f"{submission_id}.pdf")
+        try:
+            field_models = [PDFField(**f) for f in tpl.get("fields", [])]
+            generate_completed_pdf(src, field_models, body.values, out_path,
+                                   uploads_root=uploads_root, submission_id=submission_id)
+        except Exception as e:
+            logger.exception("PDF regeneration failed for edit")
+            raise HTTPException(500, f"PDF generation failed: {e}")
+
+        # Track changed fields
+        old_values = sub.get("values") or {}
+        changed_fields = [
+            k for k in set(list(old_values.keys()) + list(body.values.keys()))
+            if old_values.get(k) != body.values.get(k)
+        ]
+
+        now = _now()
+        edit_history_entry = {
+            "edited_by": getattr(user, "user_id", None),
+            "edited_by_email": getattr(user, "email", None),
+            "edited_by_name": getattr(user, "name", None),
+            "edit_reason": body.edit_reason,
+            "changed_fields": changed_fields,
+            "edited_at": now,
+        }
+
+        # Update submission document
+        await db.pdf_submissions.update_one(
+            {"submission_id": submission_id},
+            {"$set": {
+                "values": body.values,
+                "updated_at": now,
+                "status": "submitted",          # reset status so workflow can re-evaluate
+                "approval_status": None,
+            }, "$inc": {"edit_count": 1},
+             "$push": {"edit_history": edit_history_entry}},
+        )
+
+        # Write audit log
+        await db.audit_logs.insert_one({
+            "audit_id": _gen("aud"),
+            "actor_id": getattr(user, "user_id", None),
+            "actor_email": getattr(user, "email", None),
+            "action": "submission.edit",
+            "target_type": "pdf_submission",
+            "target_id": submission_id,
+            "details": {
+                "edit_reason": body.edit_reason,
+                "changed_fields": changed_fields,
+                "form_name": tpl.get("title"),
+                "submission_id": submission_id,
+            },
+            "ip": request.client.host if request.client else None,
+            "created_at": now,
+        })
+
+        # Re-fire workflow trigger so approval restarts from beginning
+        try:
+            from workflow_routes import fire_trigger as _ft
+            _site_name_val = None
+            _SITE_LABELS = {"site name", "plant name", "site code", "asset id", "site_name",
+                            "plant_name", "site_code", "asset_id"}
+            for _f in tpl.get("fields", []):
+                _label = (_f.get("label") or "").strip().lower()
+                _fid = (_f.get("id") or "")
+                if _label in _SITE_LABELS or _fid in {"site_name", "site_code", "plant_name", "asset_id"}:
+                    _v = body.values.get(_fid)
+                    if _v:
+                        _site_name_val = str(_v)
+                        break
+            base_url = os.environ.get("PUBLIC_BASE_URL") or ""
+            edit_url = f"{base_url}/p/{tpl.get('slug')}/edit/{submission_id}" if base_url else f"/p/{tpl.get('slug')}/edit/{submission_id}"
+            await _ft(db, "pdf_submitted",
+                      {"submission_id": submission_id,
+                       "template_id": tpl["template_id"],
+                       "form_name": tpl.get("title"),
+                       "values": body.values,
+                       "submission_kind": "pdf",
+                       "user_id": getattr(user, "user_id", None),
+                       "user_email": getattr(user, "email", None),
+                       "site_name": _site_name_val,
+                       "edit_submission": edit_url,
+                       "is_resubmission": True,
+                       "edit_reason": body.edit_reason,
+                       "ip": request.client.host if request.client else None})
+        except Exception as _e:
+            logger.warning(f"workflow re-trigger after edit failed: {_e}")
+
+        updated = await db.pdf_submissions.find_one({"submission_id": submission_id}, {"_id": 0})
+        return updated
 
     return router, public, subs, pub_subs

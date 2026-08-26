@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import AppLayout from "@/components/layout/AppLayout";
 import { api, API } from "@/lib/api";
 import { Card } from "@/components/ui/card";
@@ -13,24 +14,35 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import {
-  ArrowLeft, Download, Eye, Search, Trash2, FileText, Printer, Mail, FileType2,
+  ArrowLeft, Download, Eye, Search, Trash2, FileText, Printer, Mail, FileType2, CalendarIcon, Pencil
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
+import ApprovalTracker from "@/components/ApprovalTracker";
 
 export default function PdfSubmissionsPage() {
   const { id } = useParams();
+  const { user: me } = useAuth();
+  const nav = useNavigate();
   const [tpl, setTpl] = useState(null);
   const [subs, setSubs] = useState([]);
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   const load = async () => {
     setLoading(true);
     try {
+      let subUrl = `/pdf-forms/${id}/submissions`;
+      const params = new URLSearchParams();
+      if (startDate) params.append("start_date", startDate);
+      if (endDate) params.append("end_date", endDate);
+      if (params.toString()) subUrl += `?${params.toString()}`;
+
       const [t, s] = await Promise.all([
         api.get(`/pdf-forms/${id}`),
-        api.get(`/pdf-forms/${id}/submissions`),
+        api.get(subUrl),
       ]);
       setTpl(t.data);
       setSubs(s.data);
@@ -40,7 +52,7 @@ export default function PdfSubmissionsPage() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [id, startDate, endDate]);
 
   const filtered = subs.filter((s) => {
     if (!q) return true;
@@ -77,17 +89,35 @@ export default function PdfSubmissionsPage() {
       `${(tpl?.title || "form").replace(/\W+/g, "_")}-${sub.submission_id}.pdf`,
     );
 
+  const viewCompletedPdf = async (sub) => {
+    const token = localStorage.getItem("ff_token");
+    try {
+      const r = await fetch(`${API}/pdf-submissions/${sub.submission_id}/completed`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error("Failed to load PDF");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+    } catch {
+      toast.error("Failed to view updated PDF");
+    }
+  };
+
   const downloadOriginal = () =>
     authedDownload(
       `${API}/pdf-forms/${tpl.template_id}/file`,
       tpl?.original_filename || "original.pdf",
     );
 
-  const exportXlsx = () =>
-    authedDownload(
-      `${API}/pdf-forms/${id}/submissions/export.xlsx`,
-      `${(tpl?.slug || id)}-submissions.xlsx`,
-    );
+  const exportXlsx = () => {
+    let url = `${API}/pdf-forms/${id}/submissions/export.xlsx`;
+    const params = new URLSearchParams();
+    if (startDate) params.append("start_date", startDate);
+    if (endDate) params.append("end_date", endDate);
+    if (params.toString()) url += `?${params.toString()}`;
+    authedDownload(url, `${(tpl?.slug || id)}-submissions.xlsx`);
+  };
 
   const printPdf = async (sub) => {
     const token = localStorage.getItem("ff_token");
@@ -165,6 +195,23 @@ export default function PdfSubmissionsPage() {
                 className="pl-10 h-9"
               />
             </div>
+            <div className="flex items-center gap-2">
+              <Input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="h-9 w-36 text-sm"
+                title="Start Date"
+              />
+              <span className="text-slate-400 text-sm">to</span>
+              <Input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="h-9 w-36 text-sm"
+                title="End Date"
+              />
+            </div>
           </div>
 
           {loading ? (
@@ -212,6 +259,39 @@ export default function PdfSubmissionsPage() {
                         data-testid={`pdf-view-${s.submission_id}`}
                       >
                         <Eye className="w-4 h-4" />
+                      </Button>
+                      {/* Edit button — admin/super_admin always; vendor only after rejection */
+                      (() => {
+                        const role = me?.role || "";
+                        const isAdmin = role === "super_admin" || role === "admin";
+                        const subStatus = (s.status || "").toLowerCase();
+                        const approvalStatus = (s.approval_status || "").toLowerCase();
+                        const isRejected = subStatus === "rejected" || approvalStatus === "rejected";
+                        const isVendor = role === "vendor_admin" || role === "vendor_user";
+                        const isSubmitter = s.submitted_by === me?.user_id;
+                        const canEdit = isAdmin || ((isVendor || isSubmitter) && isRejected);
+                        return canEdit ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title="Edit submission"
+                            onClick={() => nav(`/p/${tpl?.slug}/edit/${s.submission_id}`)}
+                            className="text-amber-600 hover:text-amber-700"
+                            data-testid={`pdf-edit-${s.submission_id}`}
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </Button>
+                        ) : null;
+                      })()}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="View Updated PDF"
+                        onClick={() => viewCompletedPdf(s)}
+                        className="text-blue-600 hover:text-blue-700"
+                        data-testid={`pdf-view-pdf-${s.submission_id}`}
+                      >
+                        <FileType2 className="w-4 h-4" />
                       </Button>
                       <Button
                         variant="ghost"
@@ -303,7 +383,31 @@ export default function PdfSubmissionsPage() {
                   ))}
               </div>
 
+              <ApprovalTracker submissionId={selected.submission_id} />
+
               <div className="flex flex-wrap justify-end gap-2 pt-2">
+                {/* Edit button in detail dialog */
+                (() => {
+                  const role = me?.role || "";
+                  const isAdmin = role === "super_admin" || role === "admin";
+                  const subStatus = (selected.status || "").toLowerCase();
+                  const approvalStatus = (selected.approval_status || "").toLowerCase();
+                  const isRejected = subStatus === "rejected" || approvalStatus === "rejected";
+                  const isVendor = role === "vendor_admin" || role === "vendor_user";
+                  const isSubmitter = selected.submitted_by === me?.user_id;
+                  const canEdit = isAdmin || ((isVendor || isSubmitter) && isRejected);
+                  return canEdit ? (
+                    <Button
+                      variant="outline"
+                      className="text-amber-700 border-amber-200"
+                      onClick={() => { setSelected(null); nav(`/p/${tpl?.slug}/edit/${selected.submission_id}`); }}
+                      data-testid="pdf-detail-edit"
+                    >
+                      <Pencil className="w-4 h-4 mr-1.5" /> Edit Submission
+                    </Button>
+                  ) : null;
+                })()
+                }
                 <Button variant="outline" onClick={() => printPdf(selected)} data-testid="pdf-detail-print">
                   <Printer className="w-4 h-4 mr-1.5" /> Print
                 </Button>
@@ -314,11 +418,19 @@ export default function PdfSubmissionsPage() {
                   <Download className="w-4 h-4 mr-1.5" /> Original PDF
                 </Button>
                 <Button
+                  variant="outline"
+                  onClick={() => viewCompletedPdf(selected)}
+                  className="border-blue-200 text-blue-700 bg-blue-50/50 hover:bg-blue-100"
+                  data-testid="pdf-detail-view-pdf"
+                >
+                  <Eye className="w-4 h-4 mr-1.5 text-blue-600" /> View Updated PDF
+                </Button>
+                <Button
                   onClick={() => downloadCompleted(selected)}
                   className="bg-blue-600 hover:bg-blue-700"
                   data-testid="pdf-detail-completed"
                 >
-                  <Download className="w-4 h-4 mr-1.5" /> Completed PDF
+                  <Download className="w-4 h-4 mr-1.5" /> Download PDF
                 </Button>
               </div>
             </div>

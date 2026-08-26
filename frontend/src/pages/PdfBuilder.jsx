@@ -22,7 +22,7 @@ import { makePdfField } from "@/lib/pdfFieldTypes";
 import {
   ArrowLeft, Sparkles, Eye, Globe, Share2, Copy, ZoomIn, ZoomOut, Maximize2,
   Maximize, RotateCw, Undo2, Redo2, Grid3X3, Ruler, Save, Download, Upload, FileJson,
-  ArrowsUpFromLine,
+  ArrowsUpFromLine, Wand2
 } from "lucide-react";
 
 const MAX_HIST = 50;
@@ -35,7 +35,7 @@ export default function PdfBuilderPage() {
   const [rotation, setRotation] = useState(0);
   const [page, setPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
   const [showGrid, setShowGrid] = useState(false);
   const [snap, setSnap] = useState(false);
   const [history, setHistory] = useState([]);
@@ -124,44 +124,85 @@ export default function PdfBuilderPage() {
     }
     if (f.font_auto_fit === undefined) f.font_auto_fit = true;
     update({ ...tpl, fields: [...(tpl.fields || []), f] });
-    setSelectedId(f.id);
+    setSelectedIds([f.id]);
   };
   const onPaletteAdd = (type) => {
     onAddField(type, page, 0.1, 0.1);
   };
-  const onFieldChange = (fid, patch) => {
-    // If uniform-height is on, force every non-locked resize to keep the
-    // template's common height (unless the field is explicitly locked).
+
+  const onSelect = useCallback((id, multi = false) => {
+    if (!id) {
+      if (!multi) setSelectedIds([]);
+      return;
+    }
+    if (Array.isArray(id)) {
+      setSelectedIds(id);
+      return;
+    }
+    setSelectedIds(prev => {
+      if (multi) {
+        return prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      }
+      return [id];
+    });
+  }, []);
+
+  const onFieldChange = (fid_or_ids, patch) => {
+    const ids = Array.isArray(fid_or_ids) ? fid_or_ids : [fid_or_ids];
     const uniform = !!tpl.settings?.uniform_height;
     const targetH = tpl.settings?.uniform_height_value ?? 0.04;
     const nextFields = tpl.fields.map((f) => {
-      if (f.id !== fid) return f;
+      if (!ids.includes(f.id)) return f;
       let out = { ...f, ...patch };
       if (uniform && !out.locked && patch && (patch.height !== undefined)) {
-        out.height = targetH; // ignore ad-hoc resize; keep uniform
+        out.height = targetH;
       }
       return out;
     });
     update({ ...tpl, fields: nextFields });
   };
-  const onDuplicate = (fid) => {
-    const f = tpl.fields.find((x) => x.id === fid);
-    if (!f) return;
-    const copy = { ...f, id: `pf_${Math.random().toString(36).slice(2, 10)}`,
-                   x: Math.min(0.95, f.x + 0.02), y: Math.min(0.95, f.y + 0.02) };
-    update({ ...tpl, fields: [...tpl.fields, copy] });
-    setSelectedId(copy.id);
+  
+  const onDuplicate = (fid_or_ids) => {
+    const ids = Array.isArray(fid_or_ids) ? fid_or_ids : [fid_or_ids];
+    const newFields = [];
+    const newIds = [];
+    for (const fid of ids) {
+      const f = tpl.fields.find((x) => x.id === fid);
+      if (!f) continue;
+      const copy = { ...f, id: `pf_${Math.random().toString(36).slice(2, 10)}`,
+                     x: Math.min(0.95, f.x + 0.02), y: Math.min(0.95, f.y + 0.02) };
+      newFields.push(copy);
+      newIds.push(copy.id);
+    }
+    if (newFields.length > 0) {
+      update({ ...tpl, fields: [...tpl.fields, ...newFields] });
+      setSelectedIds(newIds);
+    }
   };
-  const onDelete = (fid) => {
-    update({ ...tpl, fields: tpl.fields.filter((f) => f.id !== fid) });
-    if (selectedId === fid) setSelectedId(null);
+  
+  const onDelete = (fid_or_ids) => {
+    const ids = Array.isArray(fid_or_ids) ? fid_or_ids : [fid_or_ids];
+    update({ ...tpl, fields: tpl.fields.filter((f) => !ids.includes(f.id)) });
+    setSelectedIds((prev) => prev.filter(id => !ids.includes(id)));
   };
-  const onZ = (fid, dir) => {
-    const next = tpl.fields.map((f) => f.id === fid ? { ...f, z_index: (f.z_index || 0) + dir } : f);
+  
+  const onZ = (fid_or_ids, dir) => {
+    const ids = Array.isArray(fid_or_ids) ? fid_or_ids : [fid_or_ids];
+    const next = tpl.fields.map((f) => ids.includes(f.id) ? { ...f, z_index: (f.z_index || 0) + dir } : f);
     update({ ...tpl, fields: next });
   };
-  const onLock = (fid) => onFieldChange(fid, { locked: !tpl.fields.find((f) => f.id === fid)?.locked });
-  const onVisible = (fid) => onFieldChange(fid, { visible: !tpl.fields.find((f) => f.id === fid)?.visible });
+  
+  const onLock = (fid_or_ids) => {
+    const ids = Array.isArray(fid_or_ids) ? fid_or_ids : [fid_or_ids];
+    const f1 = tpl.fields.find(f => ids.includes(f.id));
+    if (f1) onFieldChange(ids, { locked: !f1.locked });
+  };
+  
+  const onVisible = (fid_or_ids) => {
+    const ids = Array.isArray(fid_or_ids) ? fid_or_ids : [fid_or_ids];
+    const f1 = tpl.fields.find(f => ids.includes(f.id));
+    if (f1) onFieldChange(ids, { visible: !f1.visible });
+  };
 
   // ---------- keyboard shortcuts ------------------------------------------
   useEffect(() => {
@@ -171,23 +212,46 @@ export default function PdfBuilderPage() {
       if (["input", "textarea", "select"].includes(tag) || e.target?.isContentEditable) return;
       if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); undo(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.shiftKey && e.key === "Z"))) { e.preventDefault(); redo(); return; }
-      if ((e.ctrlKey || e.metaKey) && e.key === "d" && selectedId) { e.preventDefault(); onDuplicate(selectedId); return; }
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) { e.preventDefault(); onDelete(selectedId); return; }
-      if (!selectedId) return;
+      if ((e.ctrlKey || e.metaKey) && e.key === "d" && selectedIds.length > 0) { e.preventDefault(); onDuplicate(selectedIds); return; }
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedIds.length > 0) { e.preventDefault(); onDelete(selectedIds); return; }
+      if (selectedIds.length === 0) return;
+      
       const step = e.shiftKey ? 0.01 : 0.002;
-      const f = tpl?.fields?.find((x) => x.id === selectedId);
-      if (!f) return;
       let patch;
-      if (e.key === "ArrowLeft")  patch = { x: Math.max(0, f.x - step) };
-      else if (e.key === "ArrowRight") patch = { x: Math.min(1 - f.width, f.x + step) };
-      else if (e.key === "ArrowUp")   patch = { y: Math.max(0, f.y - step) };
-      else if (e.key === "ArrowDown") patch = { y: Math.min(1 - f.height, f.y + step) };
-      if (patch) { e.preventDefault(); onFieldChange(selectedId, patch); }
+      if (e.key === "ArrowLeft") patch = { x: -step };
+      else if (e.key === "ArrowRight") patch = { x: step };
+      else if (e.key === "ArrowUp") patch = { y: -step };
+      else if (e.key === "ArrowDown") patch = { y: step };
+      
+      if (patch) {
+        e.preventDefault();
+        const nextFields = tpl.fields.map(f => {
+          if (!selectedIds.includes(f.id)) return f;
+          return {
+            ...f,
+            x: patch.x ? Math.max(0, Math.min(1 - f.width, f.x + patch.x)) : f.x,
+            y: patch.y ? Math.max(0, Math.min(1 - f.height, f.y + patch.y)) : f.y
+          };
+        });
+        update({ ...tpl, fields: nextFields });
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line
-  }, [tpl, selectedId]);
+  }, [tpl, selectedIds]);
+  const autoDetectFields = async () => {
+    try {
+      setSaving(true);
+      const r = await api.post(`/pdf-forms/${id}/auto-detect`);
+      update(r.data);
+      toast.success("Auto-detect complete!");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Auto-detect failed");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // ---------- publish / preview / share -----------------------------------
   const publish = async () => {
@@ -227,6 +291,23 @@ export default function PdfBuilderPage() {
     }
   };
 
+  const downloadOriginal = async () => {
+    if (!tpl) return;
+    try {
+      const r = await api.get(`/pdf-forms/${tpl.template_id}/file`, { responseType: "blob" });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${tpl.slug}-original.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Download failed");
+    }
+  };
+
   // ---------- zoom modes --------------------------------------------------
   const fitWidth = () => setZoom(1.5);
   const fitPage = () => setZoom(1.0);
@@ -239,7 +320,6 @@ export default function PdfBuilderPage() {
   };
 
   if (!tpl) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
-  const selected = tpl.fields.find((f) => f.id === selectedId) || null;
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -309,10 +389,31 @@ export default function PdfBuilderPage() {
             <input type="file" accept="application/json" className="hidden" data-testid="tb-import"
                    onChange={(e) => e.target.files?.[0] && importJson(e.target.files[0])} />
           </label>
-          <a className="p-2 rounded-md hover:bg-slate-100 text-slate-600" title="Download original PDF"
-             href={`${API}/pdf-forms/${tpl.template_id}/file`} target="_blank" rel="noreferrer">
+          <button className="p-2 rounded-md hover:bg-slate-100 text-slate-600" title="Download original PDF"
+             onClick={downloadOriginal}>
             <Download className="w-4 h-4" />
-          </a>
+          </button>
+          <label className="px-2.5 py-1.5 rounded-md border border-violet-200 bg-violet-50/60 hover:bg-violet-100 text-violet-700 cursor-pointer flex items-center gap-1 text-xs font-semibold transition" title="Upload new version of the background PDF template">
+            <Upload className="w-3.5 h-3.5 text-violet-600" />
+            <span>v{tpl.version || 1} Update PDF</span>
+            <input type="file" accept="application/pdf,.pdf" className="hidden" data-testid="tb-replace-pdf"
+                   onChange={async (e) => {
+                     const file = e.target.files?.[0];
+                     if (!file) return;
+                     try {
+                       const fd = new FormData();
+                       fd.append("file", file);
+                       const r = await api.post(`/pdf-forms/${tpl.template_id}/replace-pdf`, fd);
+                       setTpl(r.data);
+                       toast.success(`Updated background PDF template to Version ${r.data.version}! All submission downloads will now use this updated PDF.`);
+                     } catch (err) {
+                       toast.error(err?.response?.data?.detail || "Could not replace PDF");
+                     }
+                   }} />
+          </label>
+          <Button data-testid="pdf-autodetect-btn" variant="outline" size="sm" onClick={autoDetectFields}>
+            <Wand2 className="w-4 h-4 mr-1.5" /> Auto Detect (AI)
+          </Button>
           <Button data-testid="pdf-preview-btn" variant="outline" size="sm" onClick={() => { setPreviewValues({}); setPreviewOpen(true); }}>
             <Eye className="w-4 h-4 mr-1.5" /> Preview
           </Button>
@@ -349,10 +450,10 @@ export default function PdfBuilderPage() {
             pages={tpl.pages}
             zoom={zoom}
             rotation={rotation}
-            selectedId={selectedId}
+            selectedIds={selectedIds}
             showGrid={showGrid}
             snapToGrid={snap}
-            onSelect={setSelectedId}
+            onSelect={onSelect}
             onFieldChange={onFieldChange}
             onAddField={onAddField}
             onDuplicate={onDuplicate}
@@ -364,19 +465,18 @@ export default function PdfBuilderPage() {
     </div>
 
     {/* Right Panel */}
-    <PdfProperties
-        field={selected}
-        fields={tpl.fields}
-        onChange={onFieldChange}
-        onDuplicate={onDuplicate}
-        onDelete={onDelete}
-        onZ={onZ}
-        onLock={onLock}
-        onVisible={onVisible}
-        template={tpl}
-        onTemplateChange={(patch) => update({ ...tpl, ...patch })}
-    />
-
+        <PdfProperties
+          fields={tpl.fields}
+          selectedIds={selectedIds}
+          onChange={onFieldChange}
+          onDuplicate={onDuplicate}
+          onDelete={onDelete}
+          onZ={onZ}
+          onLock={onLock}
+          onVisible={onVisible}
+          template={tpl}
+          onTemplateChange={update}
+        />
 </div>
 
       {/* Preview — Jotform-style split-pane: form view left, PDF preview right */}

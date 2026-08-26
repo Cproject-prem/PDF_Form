@@ -3,12 +3,10 @@ export const ROLE_LABELS = {
   admin: "Admin",
   vendor_admin: "Vendor Admin",
   vendor_user: "Vendor User",
-  vendor: "Vendor",
-  member: "Member",
   user: "User",
 };
 
-export const ROLES = ["super_admin", "admin", "vendor_admin", "vendor_user", "vendor", "member", "user"];
+export const ROLES = ["super_admin", "admin", "vendor_admin", "vendor_user", "user"];
 
 export function formatBytes(bytes) {
   if (!bytes) return "0 B";

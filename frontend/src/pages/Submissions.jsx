@@ -12,8 +12,9 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle
 } from "@/components/ui/dialog";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import { toast } from "sonner";
 import { ArrowLeft, Download, Eye, Search, Trash2, FileText } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
@@ -109,15 +110,21 @@ export default function SubmissionsPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <Input data-testid="sub-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search submissions…" className="pl-10 h-9" />
             </div>
-            <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger className="w-40 h-9" data-testid="sub-status-filter"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All status</SelectItem>
-                <SelectItem value="submitted">Submitted</SelectItem>
-                <SelectItem value="approved">Approved</SelectItem>
-                <SelectItem value="rejected">Rejected</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="w-40">
+              <SearchableDropdown
+                options={[
+                  { label: "All status", value: "all" },
+                  { label: "Submitted", value: "submitted" },
+                  { label: "Approved", value: "approved" },
+                  { label: "Rejected", value: "rejected" },
+                ]}
+                value={status}
+                onChange={setStatus}
+                placeholder="All status"
+                className="h-9 text-xs"
+                testId="sub-status-filter"
+              />
+            </div>
           </div>
 
           {loading ? (

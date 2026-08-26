@@ -17,7 +17,7 @@ import {
   Search, MapPin, Zap, Building2, User as UserIcon, Mail, Calendar,
   ArrowLeft, ExternalLink, FileText, FileType2, Pencil, Plus, Save,
   History, ChevronRight, ChevronDown, LayoutGrid, Rows3,
-  Folder, FolderPlus, Upload, Trash2, Download, X, Check, FolderArchive, Eye,
+  Folder, FolderOpen, FolderPlus, Upload, Trash2, Download, X, Check, FolderArchive, Eye,
   Wrench, SprayCan,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
@@ -287,7 +287,7 @@ function PlantCard({ plant, alert, gcAlert }) {
           </div>
           <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
             <Metric icon={<Zap className="w-3.5 h-3.5" />}
-                    label="AC Capacity" value={plant.ac_capacity ? `${plant.ac_capacity} MW` : "—"} />
+                    label="AC Capacity" value={plant.ac_capacity ? `${plant.ac_capacity} kWp` : "—"} />
             <Metric icon={<MapPin className="w-3.5 h-3.5" />}
                     label="Region" value={plant.region || "—"} />
             <Metric icon={<Building2 className="w-3.5 h-3.5" />}
@@ -332,8 +332,8 @@ const PLANT_PREFERRED_COLS = [
   ["state",                 "State"],
   ["district",              "District"],
   ["site_status",           "Status"],
-  ["ac_capacity",           "AC Capacity"],
-  ["dc_capacity",           "DC Capacity"],
+  ["ac_capacity",           "AC Capacity (kWp)"],
+  ["dc_capacity",           "DC Capacity (kWp)"],
   ["vendor_name",           "Vendor"],
   ["cluster_manager_name",  "Cluster Mgr"],
   ["approver_email",        "Approver"],
@@ -540,8 +540,8 @@ function PlantDetail({ siteCode }) {
             </Badge>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
-            <HeroStat label="AC Capacity" value={p.ac_capacity ? `${p.ac_capacity} MW` : "—"} />
-            <HeroStat label="DC Capacity" value={p.dc_capacity ? `${p.dc_capacity} MW` : "—"} />
+            <HeroStat label="AC Capacity" value={p.ac_capacity ? `${p.ac_capacity} kWp` : "—"} />
+            <HeroStat label="DC Capacity" value={p.dc_capacity ? `${p.dc_capacity} kWp` : "—"} />
             <HeroStat label="Inverter" value={p.inverter_capacity ? `${p.inverter_capacity} MW` : "—"} />
             <HeroStat label="Region" value={p.region || "—"} />
           </div>
@@ -598,17 +598,26 @@ function PlantDetail({ siteCode }) {
               </Section>
             );
           })}
-          {extras.length > 0 && (
-            <Section title="Additional details" icon={<FileText className="w-4 h-4" />}>
-              {extras.map((k) => (
-                <Row key={k} label={humanize(k)} value={renderMaybe(p[k])} />
-              ))}
-            </Section>
-          )}
+			{extras.length > 0 && (
+			<Section title="Additional details" icon={<FileText className="w-4 h-4" />}>
+				<div className="h-[300px] overflow-y-auto pr-2 nice-scroll">
+				{extras.map((k) => (
+					<Row
+					key={k}
+					label={humanize(k)}
+					value={p[k]}
+					/>
+				))}
+				</div>
+			</Section>
+			)}
             </div>
 
             {/* Equipment Testing Status */}
             <PlantEquipmentTestingCard site={p} />
+
+            {/* Inventory Summary — Admin/SuperAdmin Only */}
+            {canEdit && <PlantInventoryCard siteCode={siteCode} siteName={p.site_name} />}
 
             {/* Recent submissions */}
             <Card className="rounded-2xl border-slate-100 card-soft bg-white">
@@ -756,6 +765,7 @@ function PlantEditHistory({ siteCode }) {
           No edits yet — this plant hasn&apos;t been modified since it was imported.
         </div>
       ) : (
+		<div className="max-h-[500px] overflow-y-auto">
         <ol className="divide-y divide-slate-100" data-testid="plant-history-list">
           {rows.map((r) => {
             const isOpen = !!expanded[r.snapshot_id];
@@ -814,6 +824,7 @@ function PlantEditHistory({ siteCode }) {
             );
           })}
         </ol>
+		</div>
       )}
     </Card>
   );
@@ -1010,6 +1021,55 @@ function Row({ label, value, monospace }) {
 }
 
 
+// ── Folder Drag & Drop Helper ─────────────────────────────────────────────
+async function getFilesFromDataTransferItems(items) {
+  const files = [];
+  const entries = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind === "file") {
+      const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+      if (entry) entries.push(entry);
+      else files.push(item.getAsFile());
+    }
+  }
+
+  async function readEntry(entry) {
+    if (entry.isFile) {
+      return new Promise((resolve) => {
+        entry.file((file) => resolve([file]), () => resolve([]));
+      });
+    } else if (entry.isDirectory) {
+      return new Promise((resolve) => {
+        const dirReader = entry.createReader();
+        const allEntries = [];
+        function readEntries() {
+          dirReader.readEntries(async (entriesBatch) => {
+            if (entriesBatch.length === 0) {
+              let dirFiles = [];
+              for (const e of allEntries) {
+                dirFiles = dirFiles.concat(await readEntry(e));
+              }
+              resolve(dirFiles);
+            } else {
+              allEntries.push(...entriesBatch);
+              readEntries();
+            }
+          }, () => resolve([]));
+        }
+        readEntries();
+      });
+    }
+    return [];
+  }
+
+  for (const entry of entries) {
+    const entryFiles = await readEntry(entry);
+    files.push(...entryFiles);
+  }
+  return files;
+}
+
 /* -----------------------------------------------------------------------
    PlantDocumentsCard — per-plant document vault. Admin & super_admin can
    create/upload/delete; other roles get read-only.  Wire-format matches
@@ -1017,17 +1077,30 @@ function Row({ label, value, monospace }) {
    ----------------------------------------------------------------------- */
 function PlantDocumentsCard({ siteId }) {
   const { user: me } = useAuth();
-  const canEdit = me?.role === "super_admin" || me?.role === "admin";
+  const canEditGlobal = me?.role === "super_admin" || me?.role === "admin";
+
+  // folders = nested tree: [{name, file_count, children:[...], can_edit}]
   const [folders, setFolders] = useState([]);
-  const [openFolder, setOpenFolder] = useState(null);
+  // openPath = { folder: "Contracts", subfolder: "2026" } or { folder: "Contracts", subfolder: "" }
+  const [openPath, setOpenPath] = useState(null);
+  const [folderCanEdit, setFolderCanEdit] = useState(false);
+  // expanded = Set of root folder names that are expanded in the tree
+  const [expanded, setExpanded] = useState(new Set());
   const [files, setFiles] = useState([]);
+  const [subfolders, setSubfolders] = useState([]);
   const [newFolder, setNewFolder] = useState("");
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(false);  // "root" | "sub" | false
   const [busy, setBusy] = useState(false);
-  const [renameFor, setRenameFor] = useState(null);   // folder name being edited
+  const [renameFor, setRenameFor] = useState(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
-  const [viewFile, setViewFile] = useState(null);      // { name } or null
+  const [viewFile, setViewFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState(new Set()); // multi-select
+
+  // ── helpers ─────────────────────────────────────────────────────────────
+  const sfParam = (sf) => sf ? `?subfolder=${encodeURIComponent(sf)}` : "";
+  const folderUrl = (f) =>
+    `/plants/${siteId}/folders/${encodeURIComponent(f)}`;
 
   const load = () => {
     api.get(`/plants/${siteId}/folders`)
@@ -1036,23 +1109,52 @@ function PlantDocumentsCard({ siteId }) {
   };
   useEffect(() => { if (siteId) load(); }, [siteId]);
 
-  const loadFiles = (name) => {
-    setOpenFolder(name);
-    api.get(`/plants/${siteId}/folders/${encodeURIComponent(name)}/files`)
-      .then((r) => setFiles(r.data.files || []))
-      .catch(() => setFiles([]));
+  const loadContents = (folder, subfolder = "") => {
+    const path = { folder, subfolder };
+    setOpenPath(path);
+    setSelectedFiles(new Set()); // clear selection on folder change
+    const sf = sfParam(subfolder);
+    api.get(`${folderUrl(folder)}/files${sf}`)
+      .then((r) => {
+        setFiles(r.data.files || []);
+        setSubfolders(r.data.subfolders || []);
+        setFolderCanEdit(r.data.can_edit || false);
+      })
+      .catch(() => { setFiles([]); setSubfolders([]); setFolderCanEdit(false); });
   };
 
-  const addFolder = async () => {
+  const toggleExpand = (name) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  // ── folder CRUD ──────────────────────────────────────────────────────────
+  const addRootFolder = async () => {
     const name = newFolder.trim();
     if (!name) return;
     setBusy(true);
     try {
       await api.post(`/plants/${siteId}/folders`, { name });
-      setNewFolder("");
-      setCreating(false);
-      load();
+      setNewFolder(""); setCreating(false); load();
       toast.success(`Folder "${name}" created`);
+    } catch (e) { toast.error(getErrorMessage(e, "Create failed")); }
+    finally { setBusy(false); }
+  };
+
+  const addSubfolder = async () => {
+    if (!openPath?.folder) return;
+    const name = newFolder.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      await api.post(`${folderUrl(openPath.folder)}/subfolders`, { name });
+      setNewFolder(""); setCreating(false);
+      load();
+      loadContents(openPath.folder, openPath.subfolder);
+      toast.success(`Subfolder "${name}" created`);
     } catch (e) { toast.error(getErrorMessage(e, "Create failed")); }
     finally { setBusy(false); }
   };
@@ -1061,42 +1163,37 @@ function PlantDocumentsCard({ siteId }) {
     if (!window.confirm(`Delete folder "${name}" and everything inside?`)) return;
     try {
       await api.delete(`/plants/${siteId}/folders/${encodeURIComponent(name)}`);
-      if (openFolder === name) { setOpenFolder(null); setFiles([]); }
-      load();
-      toast.success(`Folder "${name}" deleted`);
+      if (openPath?.folder === name) { setOpenPath(null); setFiles([]); setSubfolders([]); }
+      setExpanded((prev) => { const n = new Set(prev); n.delete(name); return n; });
+      load(); toast.success(`Folder "${name}" deleted`);
     } catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
   };
 
-  const startRename = (name) => {
-    setRenameFor(name);
-    setRenameDraft(name);
+  const removeSubfolder = async (folder, subfolder) => {
+    if (!window.confirm(`Delete subfolder "${subfolder}" and everything inside?`)) return;
+    try {
+      await api.delete(`${folderUrl(folder)}/subfolders/${encodeURIComponent(subfolder)}`);
+      load();
+      if (openPath?.folder === folder) loadContents(folder, openPath.subfolder === subfolder ? "" : openPath.subfolder);
+      toast.success(`Subfolder "${subfolder}" deleted`);
+    } catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
   };
-  const cancelRename = () => {
-    setRenameFor(null);
-    setRenameDraft("");
-  };
+
+  const startRename = (name) => { setRenameFor(name); setRenameDraft(name); };
+  const cancelRename = () => { setRenameFor(null); setRenameDraft(""); };
   const commitRename = async () => {
-    const oldName = renameFor;
-    const newName = renameDraft.trim();
+    const oldName = renameFor, newName = renameDraft.trim();
     if (!oldName || !newName || oldName === newName) { cancelRename(); return; }
     try {
-      await api.patch(
-        `/plants/${siteId}/folders/${encodeURIComponent(oldName)}`,
-        { name: newName },
-      );
-      if (openFolder === oldName) setOpenFolder(newName);
-      cancelRename();
-      load();
-      toast.success(`Renamed to "${newName}"`);
+      await api.patch(`/plants/${siteId}/folders/${encodeURIComponent(oldName)}`, { name: newName });
+      if (openPath?.folder === oldName) setOpenPath({ ...openPath, folder: newName });
+      cancelRename(); load(); toast.success(`Renamed to "${newName}"`);
     } catch (e) { toast.error(getErrorMessage(e, "Rename failed")); }
   };
 
   const downloadFolderZip = async (name) => {
     try {
-      const r = await api.get(
-        `/plants/${siteId}/folders/${encodeURIComponent(name)}/download`,
-        { responseType: "blob" },
-      );
+      const r = await api.get(`/plants/${siteId}/folders/${encodeURIComponent(name)}/download`, { responseType: "blob" });
       const url = URL.createObjectURL(r.data);
       const a = document.createElement("a");
       a.href = url; a.download = `${name}.zip`;
@@ -1105,77 +1202,160 @@ function PlantDocumentsCard({ siteId }) {
     } catch (e) { toast.error(getErrorMessage(e, "Download failed")); }
   };
 
-  /**
-   * Upload one or more files.  Accepts either an <input> change event OR a
-   * plain FileList (from the drag-and-drop drop handler).  Uploads run
-   * serially so the toast counts stay accurate and the server is never hit
-   * with a stampede of parallel writes.
-   */
+  // ── file operations ──────────────────────────────────────────
   const uploadFiles = async (fileListOrEvent) => {
-    const list = fileListOrEvent?.target
-      ? fileListOrEvent.target.files
-      : fileListOrEvent;
-    if (fileListOrEvent?.target) fileListOrEvent.target.value = "";
-    if (!list || list.length === 0 || !openFolder) return;
+    // Extract files IMMEDIATELY into a plain array before any async work.
+    // If we hold a reference to the SyntheticEvent we may get a pooled/null target.
+    let files;
+    if (fileListOrEvent?.target) {
+      files = Array.from(fileListOrEvent.target.files || []);
+      fileListOrEvent.target.value = "";   // allow re-selecting the same file
+    } else {
+      files = Array.from(fileListOrEvent || []);
+    }
+    if (!files.length || !openPath) return;
     setBusy(true);
     let ok = 0, fail = 0;
-    for (const file of Array.from(list)) {
+    const { folder, subfolder } = openPath;
+    const sf = sfParam(subfolder);
+    for (const file of files) {
       const fd = new FormData();
       fd.append("file", file);
       try {
-        await api.post(
-          `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/upload`,
-          fd, { headers: { "Content-Type": "multipart/form-data" } },
-        );
+        // Do NOT set Content-Type manually — axios must set it so the
+        // multipart boundary is included automatically.
+        await api.post(`${folderUrl(folder)}/upload${sf}`, fd);
         ok++;
-      } catch (e) {
-        fail++;
-        toast.error(`${file.name}: ${getErrorMessage(e, "Upload failed")}`);
-      }
+      } catch (e) { fail++; toast.error(`${file.name}: ${getErrorMessage(e, "Upload failed")}`); }
     }
     if (ok) toast.success(`Uploaded ${ok} file${ok === 1 ? "" : "s"}${fail ? ` (${fail} failed)` : ""}`);
-    loadFiles(openFolder);
-    load();
-    setBusy(false);
+    loadContents(folder, subfolder); load(); setBusy(false);
   };
 
-  const onDrop = (e) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (!canEdit || !openFolder) return;
-    if (e.dataTransfer?.files?.length) uploadFiles(e.dataTransfer.files);
+  // Folder-picker upload: preserves one level of folder structure.
+  // Files are grouped by their root folder (webkitRelativePath[0]) and
+  // uploaded into a new subfolder of the currently-open folder.
+  const uploadFolder = async (e) => {
+    const rawFiles = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!rawFiles.length || !openPath) return;
+
+    // Group by root folder name (first segment of webkitRelativePath)
+    const groups = {};
+    for (const file of rawFiles) {
+      const rel = file.webkitRelativePath || file.name;
+      const rootFolder = rel.split("/")[0] || "Uploaded";
+      if (!groups[rootFolder]) groups[rootFolder] = [];
+      groups[rootFolder].push(file);
+    }
+
+    setBusy(true);
+    const { folder } = openPath;
+    let totalOk = 0, totalFail = 0;
+
+    for (const [subName, subFiles] of Object.entries(groups)) {
+      // 1. Create the subfolder (ignore error if it already exists)
+      try {
+        await api.post(`${folderUrl(folder)}/subfolders`, { name: subName });
+      } catch { /* already exists — continue */ }
+
+      // 2. Upload each file into that subfolder
+      const sf = `?subfolder=${encodeURIComponent(subName)}`;
+      for (const file of subFiles) {
+        const fd = new FormData();
+        fd.append("file", file);
+        try {
+          await api.post(`${folderUrl(folder)}/upload${sf}`, fd);
+          totalOk++;
+        } catch (err) {
+          totalFail++;
+          toast.error(`${file.name}: ${getErrorMessage(err, "Upload failed")}`);
+        }
+      }
+    }
+
+    if (totalOk) toast.success(`Uploaded ${totalOk} file${totalOk === 1 ? "" : "s"} into ${Object.keys(groups).length} subfolder${Object.keys(groups).length > 1 ? "s" : ""}${totalFail ? ` (${totalFail} failed)` : ""}`);
+    loadContents(folder, openPath.subfolder); load(); setBusy(false);
   };
-  const onDragOver = (e) => {
-    if (!canEdit || !openFolder) return;
-    e.preventDefault();
-    if (!isDragOver) setIsDragOver(true);
+
+  const onDrop = async (e) => {
+    e.preventDefault(); setIsDragOver(false);
+    if (!folderCanEdit || !openPath) return;
+    
+    if (e.dataTransfer?.items?.length) {
+      const allFiles = await getFilesFromDataTransferItems(e.dataTransfer.items);
+      if (allFiles.length > 0) uploadFiles(allFiles);
+    } else if (e.dataTransfer?.files?.length) {
+      uploadFiles(e.dataTransfer.files);
+    }
   };
-  const onDragLeave = (e) => {
-    // Only clear when leaving the drop container itself (not children).
-    if (e.currentTarget === e.target) setIsDragOver(false);
-  };
+  const onDragOver = (e) => { if (!folderCanEdit || !openPath) return; e.preventDefault(); if (!isDragOver) setIsDragOver(true); };
+  const onDragLeave = (e) => { if (e.currentTarget === e.target) setIsDragOver(false); };
 
   const removeFile = async (name) => {
     if (!window.confirm(`Delete "${name}"?`)) return;
+    const { folder, subfolder } = openPath;
     try {
-      await api.delete(
-        `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(name)}`,
-      );
-      loadFiles(openFolder);
-      load();
+      await api.delete(`${folderUrl(folder)}/files/${encodeURIComponent(name)}${sfParam(subfolder)}`);
+      loadContents(folder, subfolder); load();
     } catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
   };
 
-  const downloadUrl = (name) => {
-    const token = localStorage.getItem("ff_token") || "";
-    return `${api.defaults.baseURL}/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(name)}?_t=${token}`;
+  const removeSelected = async () => {
+    if (!selectedFiles.size) return;
+    if (!window.confirm(`Delete ${selectedFiles.size} file${selectedFiles.size > 1 ? "s" : ""}?`)) return;
+    const { folder, subfolder } = openPath;
+    let ok = 0, fail = 0;
+    for (const name of selectedFiles) {
+      try {
+        await api.delete(`${folderUrl(folder)}/files/${encodeURIComponent(name)}${sfParam(subfolder)}`);
+        ok++;
+      } catch { fail++; }
+    }
+    setSelectedFiles(new Set());
+    if (ok) toast.success(`Deleted ${ok} file${ok > 1 ? "s" : ""}${fail ? ` (${fail} failed)` : ""}`);
+    loadContents(folder, subfolder); load();
+  };
+
+  const downloadSelected = async () => {
+    if (!selectedFiles.size) return;
+    const { folder, subfolder } = openPath;
+    for (const name of selectedFiles) {
+      try {
+        const r = await api.get(
+          `${folderUrl(folder)}/files/${encodeURIComponent(name)}${sfParam(subfolder)}`,
+          { responseType: "blob" },
+        );
+        const url = URL.createObjectURL(r.data);
+        const a = document.createElement("a");
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) { toast.error(`${name}: ${getErrorMessage(e, "Download failed")}`); }
+    }
+  };
+
+  const toggleSelect = (name) => {
+    setSelectedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedFiles.size === files.length) {
+      setSelectedFiles(new Set());
+    } else {
+      setSelectedFiles(new Set(files.map((f) => f.name)));
+    }
   };
 
   const download = async (name) => {
-    // Use axios so the Authorization header is sent; then trigger a save.
+    const { folder, subfolder } = openPath;
     try {
       const r = await api.get(
-        `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(name)}`,
+        `${folderUrl(folder)}/files/${encodeURIComponent(name)}${sfParam(subfolder)}`,
         { responseType: "blob" },
       );
       const url = URL.createObjectURL(r.data);
@@ -1184,244 +1364,285 @@ function PlantDocumentsCard({ siteId }) {
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     } catch (e) { toast.error(getErrorMessage(e, "Download failed")); }
-    void downloadUrl;
   };
 
+  const breadcrumb = openPath
+    ? openPath.subfolder
+      ? `${openPath.folder} / ${openPath.subfolder}`
+      : openPath.folder
+    : null;
+
+  const FolderNode = ({ f }) => {
+    const isOpen = openPath?.folder === f.name && !openPath?.subfolder;
+    const isExpanded = expanded.has(f.name);
+    const hasChildren = f.children && f.children.length > 0;
+
+    return (
+      <div>
+        <div
+          className={`group flex items-center gap-1 px-2 py-1.5 rounded-lg text-sm cursor-pointer select-none ${
+            isOpen ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50 text-slate-700"
+          }`}
+          data-testid={`plant-doc-folder-${f.name}`}
+        >
+          <button
+            onClick={(e) => { e.stopPropagation(); toggleExpand(f.name); }}
+            className={`w-4 h-4 shrink-0 flex items-center justify-center text-slate-400 hover:text-slate-700 transition-transform ${
+              hasChildren ? "" : "invisible"
+            }`}
+          >
+            <ChevronRight className={`w-3.5 h-3.5 transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`} />
+          </button>
+
+          {renameFor === f.name ? (
+            <>
+              {isExpanded ? <FolderOpen className="w-4 h-4 shrink-0 text-blue-400" /> : <Folder className="w-4 h-4 shrink-0 text-slate-400" />}
+              <Input value={renameDraft} onChange={(e) => setRenameDraft(e.target.value)} autoFocus
+                     className="h-6 text-xs flex-1 py-0 px-1" onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") cancelRename(); }} />
+              <button onClick={commitRename} className="text-emerald-600 hover:text-emerald-700" title="Save"><Check className="w-3.5 h-3.5" /></button>
+              <button onClick={cancelRename} className="text-slate-400 hover:text-slate-600" title="Cancel"><X className="w-3.5 h-3.5" /></button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => { loadContents(f.name, ""); if (hasChildren && !isExpanded) toggleExpand(f.name); }}
+                      className="flex items-center gap-1.5 flex-1 min-w-0 text-left">
+                {isExpanded || isOpen
+                  ? <FolderOpen className="w-4 h-4 shrink-0 text-blue-400" />
+                  : <Folder className="w-4 h-4 shrink-0 text-slate-400" />}
+                <span className="flex-1 truncate text-xs font-medium">{f.name}</span>
+                <span className="text-[10px] text-slate-400 shrink-0">{f.file_count || ""}</span>
+              </button>
+              {canEditGlobal && (
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={(e) => { e.stopPropagation(); startRename(f.name); }} className="text-slate-400 hover:text-blue-600 p-0.5" title="Rename"><Pencil className="w-3 h-3" /></button>
+                  <button onClick={(e) => { e.stopPropagation(); removeFolder(f.name); }} className="text-slate-400 hover:text-red-600 p-0.5" title="Delete folder"><Trash2 className="w-3 h-3" /></button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {hasChildren && isExpanded && (
+          <div className="ml-5 border-l border-slate-100 pl-1 mt-0.5 space-y-0.5">
+            {f.children.map((child) => {
+              const isChildOpen = openPath?.folder === f.name && openPath?.subfolder === child.name;
+              return (
+                <div key={child.name}
+                     className={`group flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs cursor-pointer ${
+                       isChildOpen ? "bg-blue-50 text-blue-800" : "hover:bg-slate-50 text-slate-600"
+                     }`}
+                     data-testid={`plant-doc-subfolder-${f.name}-${child.name}`}>
+                  <Folder className="w-3.5 h-3.5 shrink-0 text-slate-300" />
+                  <button onClick={() => loadContents(f.name, child.name)} className="flex-1 text-left truncate">
+                    {child.name}
+                  </button>
+                  <span className="text-[10px] text-slate-400 shrink-0">{child.file_count || ""}</span>
+                  {f.can_edit && (
+                    <button onClick={(e) => { e.stopPropagation(); removeSubfolder(f.name, child.name); }}
+                            className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 p-0.5" title="Delete subfolder">
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const isAtRootFolder = openPath && !openPath.subfolder;
+  const viewFileUrl = openPath && viewFile
+    ? `${folderUrl(openPath.folder)}/files/${encodeURIComponent(viewFile.name)}${sfParam(openPath.subfolder)}`
+    : null;
+
   return (
-    <Card className="rounded-2xl border-slate-100 card-soft bg-white mt-4"
-          data-testid="plant-documents-card">
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white mt-4" data-testid="plant-documents-card">
       <div className="p-5 border-b border-slate-100 flex items-center justify-between">
         <div>
           <div className="font-heading font-semibold text-slate-900 flex items-center gap-2">
-            <Folder className="w-4 h-4 text-blue-500" />
-            Documents
+            <Folder className="w-4 h-4 text-blue-500" /> Documents
           </div>
           <div className="text-xs text-slate-500 mt-0.5">
-            {canEdit
-              ? "Organise contracts, certifications and photos per plant. Admin-only."
-              : "Read-only view of documents uploaded by your admin."}
+            {canEditGlobal ? "Organise contracts, certifications and photos per plant. Admin-only." : "Read-only view of documents uploaded by your admin."}
           </div>
         </div>
-        {canEdit && (
+        {canEditGlobal && (
           <div className="flex items-center gap-1.5">
             {!creating ? (
-              <Button size="sm" variant="outline" data-testid="plant-doc-new-folder"
-                      onClick={() => setCreating(true)}>
+              <Button size="sm" variant="outline" data-testid="plant-doc-new-folder" onClick={() => setCreating("root")}>
                 <FolderPlus className="w-3.5 h-3.5 mr-1" /> New folder
               </Button>
             ) : (
               <div className="flex items-center gap-1">
                 <Input value={newFolder} onChange={(e) => setNewFolder(e.target.value)}
-                       placeholder="Folder name" className="h-8 text-xs w-40"
-                       data-testid="plant-doc-folder-input"
-                       onKeyDown={(e) => e.key === "Enter" && addFolder()} />
-                <Button size="sm" onClick={addFolder} disabled={busy}
-                        data-testid="plant-doc-folder-save"
-                        className="bg-blue-600 hover:bg-blue-700">Add</Button>
-                <Button size="sm" variant="ghost" onClick={() => { setCreating(false); setNewFolder(""); }}>
-                  Cancel
-                </Button>
+                       placeholder={creating === "sub" ? "Subfolder name" : "Folder name"}
+                       className="h-8 text-xs w-40" data-testid="plant-doc-folder-input"
+                       autoFocus onKeyDown={(e) => e.key === "Enter" && (creating === "sub" ? addSubfolder() : addRootFolder())} />
+                <Button size="sm" onClick={creating === "sub" ? addSubfolder : addRootFolder}
+                        disabled={busy} className="bg-blue-600 hover:bg-blue-700" data-testid="plant-doc-folder-save">Add</Button>
+                <Button size="sm" variant="ghost" onClick={() => { setCreating(false); setNewFolder(""); }}>Cancel</Button>
               </div>
             )}
           </div>
         )}
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3">
-        {/* Folders column */}
-        <div className="lg:col-span-1 lg:border-r border-slate-100 p-3 min-h-[220px] max-h-[60vh] lg:max-h-[520px] overflow-y-auto nice-scroll">
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 h-[350px] overflow-y-auto">
+        <div className="lg:col-span-1 lg:border-r border-slate-100 p-3 min-h-[220px] max-h-[60vh] lg:max-h-[520px] overflow-y-auto nice-scroll space-y-0.5">
           {folders.length === 0 ? (
-            <div className="text-xs text-slate-400 text-center py-8">
-              No folders yet.
-            </div>
-          ) : folders.map((f) => (
-            <div
-              key={f.name}
-              className={`group px-2.5 py-2 rounded-lg flex items-center gap-2 text-sm ${
-                openFolder === f.name ? "bg-blue-50 text-blue-900" : "hover:bg-slate-50 text-slate-700"
-              }`}
-              data-testid={`plant-doc-folder-${f.name}`}
-            >
-              {renameFor === f.name ? (
-                <>
-                  <Folder className="w-4 h-4 shrink-0 text-slate-400" />
-                  <Input
-                    value={renameDraft}
-                    onChange={(e) => setRenameDraft(e.target.value)}
-                    autoFocus
-                    className="h-7 text-xs flex-1"
-                    data-testid={`plant-doc-folder-rename-input-${f.name}`}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitRename();
-                      if (e.key === "Escape") cancelRename();
-                    }}
-                  />
-                  <button onClick={commitRename}
-                          className="text-emerald-600 hover:text-emerald-700"
-                          data-testid={`plant-doc-folder-rename-save-${f.name}`}
-                          title="Save">
-                    <Check className="w-4 h-4" />
-                  </button>
-                  <button onClick={cancelRename}
-                          className="text-slate-400 hover:text-slate-600"
-                          title="Cancel">
-                    <X className="w-4 h-4" />
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={() => loadFiles(f.name)}
-                    className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
-                  >
-                    <Folder className="w-4 h-4 shrink-0 text-slate-400" />
-                    <span className="flex-1 truncate">{f.name}</span>
-                    <span className="text-[10px] text-slate-400">{f.file_count}</span>
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); downloadFolderZip(f.name); }}
-                    className="text-slate-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Download folder as .zip"
-                    data-testid={`plant-doc-folder-dl-${f.name}`}
-                  >
-                    <FolderArchive className="w-3.5 h-3.5" />
-                  </button>
-                  {canEdit && (
-                    <>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); startRename(f.name); }}
-                        className="text-slate-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="Rename"
-                        data-testid={`plant-doc-folder-rename-${f.name}`}
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); removeFolder(f.name); }}
-                        className="text-slate-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                        title="Delete folder"
-                        data-testid={`plant-doc-folder-del-${f.name}`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-          ))}
+            <div className="text-xs text-slate-400 text-center py-8">No folders yet.</div>
+          ) : folders.map((f) => <FolderNode key={f.name} f={f} />)}
         </div>
-        {/* Files column */}
+
         <div className="lg:col-span-2 p-3 min-h-[220px] max-h-[60vh] lg:max-h-[520px] overflow-y-auto nice-scroll">
-          {!openFolder ? (
-            <div className="text-xs text-slate-400 text-center py-8">
-              Select a folder to see its files.
-            </div>
+          {!openPath ? (
+            <div className="text-xs text-slate-400 text-center py-8">Select a folder to see its contents.</div>
           ) : (
-            <div
-              onDrop={onDrop}
-              onDragOver={onDragOver}
-              onDragLeave={onDragLeave}
-              className={`rounded-lg transition-colors ${
-                isDragOver && canEdit
-                  ? "bg-blue-50/70 ring-2 ring-blue-400 ring-dashed"
-                  : ""
-              }`}
-              data-testid="plant-doc-drop-zone"
-            >
-              <div className="flex items-center justify-between mb-2 px-1">
-                <div className="text-sm font-semibold text-slate-800 flex items-center gap-2">
-                  {openFolder}
-                  {isDragOver && canEdit && (
-                    <span className="text-xs text-blue-600 font-medium animate-pulse">
-                      · Drop to upload
-                    </span>
+            <div onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
+                 className={`flex-1 min-h-full rounded-lg transition-colors ${isDragOver && folderCanEdit ? "bg-blue-50/70 ring-2 ring-blue-400 ring-dashed" : ""}`}
+                 data-testid="plant-doc-drop-zone">
+              <div className="flex items-center justify-between mb-3 px-1">
+                <div className="flex items-center gap-2 min-w-0">
+                  {openPath.subfolder && (
+                    <button onClick={() => loadContents(openPath.folder, "")}
+                            className="text-slate-400 hover:text-blue-600 shrink-0" title="Back to parent folder">
+                      <ChevronRight className="w-4 h-4 rotate-180" />
+                    </button>
                   )}
+                  <span className="text-sm font-semibold text-slate-800 truncate">{breadcrumb}</span>
+                  {isDragOver && folderCanEdit && <span className="text-xs text-blue-600 font-medium animate-pulse shrink-0">· Drop to upload</span>}
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {folderCanEdit && isAtRootFolder && !creating && (
+                    <Button size="sm" variant="ghost" className="h-7 text-xs"
+                            onClick={() => { setCreating("sub"); setNewFolder(""); }}
+                            title="Add subfolder">
+                      <FolderPlus className="w-3.5 h-3.5 mr-1" /> Subfolder
+                    </Button>
+                  )}
                   <Button size="sm" variant="ghost" className="h-7 text-xs"
-                          onClick={() => downloadFolderZip(openFolder)}
-                          data-testid="plant-doc-folder-dl-current"
-                          title="Download this folder as .zip">
+                          onClick={() => downloadFolderZip(openPath.folder)} title="Download folder as .zip">
                     <FolderArchive className="w-3.5 h-3.5 mr-1" /> Zip
                   </Button>
-                  {canEdit && (
-                    <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
-                                      bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
-                           data-testid="plant-doc-upload-btn">
-                      <Upload className="w-3.5 h-3.5" />
-                      {busy ? "Uploading…" : "Upload files"}
-                      <input type="file" className="hidden" onChange={uploadFiles}
-                             disabled={busy} multiple />
-                    </label>
+                  {folderCanEdit && (
+                    <>
+                      <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 cursor-pointer" data-testid="plant-doc-upload-btn">
+                        <Upload className="w-3.5 h-3.5" />
+                        {busy ? "Uploading…" : "Upload"}
+                        <input type="file" className="hidden" onChange={uploadFiles} disabled={busy} multiple />
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-slate-700 text-white hover:bg-slate-800 cursor-pointer" data-testid="plant-doc-folder-upload-btn" title="Upload an entire folder">
+                        <FolderOpen className="w-3.5 h-3.5" />
+                        Folder
+                        <input type="file" className="hidden" onChange={uploadFolder} disabled={busy} multiple webkitdirectory="" />
+                      </label>
+                    </>
                   )}
                 </div>
               </div>
-              {files.length === 0 ? (
-                <div className={`text-xs text-center py-8 rounded-lg border border-dashed ${
-                  canEdit ? "border-slate-200 text-slate-500" : "border-slate-100 text-slate-400"
-                }`}>
-                  {canEdit
-                    ? "This folder is empty — drag & drop files here or use \"Upload files\"."
-                    : "This folder is empty."}
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg">
-                  {files.map((f) => (
-                    <div key={f.name} className="flex items-center gap-2 p-2 hover:bg-slate-50">
-                      <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+
+              {subfolders.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+                  {subfolders.map((sf) => (
+                    <button key={sf.name}
+                            onClick={() => loadContents(openPath.folder, sf.name)}
+                            className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-100 hover:border-blue-200 hover:bg-blue-50/50 transition-colors text-left group">
+                      <FolderOpen className="w-5 h-5 text-amber-400 shrink-0" />
                       <div className="min-w-0 flex-1">
-                        <button
-                          type="button"
-                          onClick={() => setViewFile({ name: f.name })}
-                          className="text-sm text-left truncate w-full hover:text-blue-700 hover:underline"
-                          title="Open preview"
-                          data-testid={`plant-doc-file-open-${f.name}`}
-                        >
-                          {f.name}
-                        </button>
-                        <div className="text-[10px] text-slate-400">
-                          {formatBytes(f.size_bytes)} · {formatDate(f.modified_at)}
-                        </div>
+                        <div className="text-xs font-medium text-slate-700 truncate">{sf.name}</div>
+                        <div className="text-[10px] text-slate-400">{sf.file_count} file{sf.file_count !== 1 ? "s" : ""}</div>
                       </div>
-                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                              onClick={() => setViewFile({ name: f.name })}
-                              data-testid={`plant-doc-file-view-${f.name}`}
-                              title="Open in viewer">
-                        <Eye className="w-3.5 h-3.5 text-slate-600" />
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                              onClick={() => download(f.name)}
-                              data-testid={`plant-doc-file-dl-${f.name}`}
-                              title="Download">
-                        <Download className="w-3.5 h-3.5 text-slate-600" />
-                      </Button>
-                      {canEdit && (
-                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                                onClick={() => removeFile(f.name)}
-                                data-testid={`plant-doc-file-del-${f.name}`}
-                                title="Delete">
-                          <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                        </Button>
-                      )}
-                    </div>
+                    </button>
                   ))}
                 </div>
               )}
+
+              {files.length === 0 && subfolders.length === 0 ? (
+                <div className={`text-xs text-center py-8 rounded-lg border border-dashed ${folderCanEdit ? "border-slate-200 text-slate-500" : "border-slate-100 text-slate-400"}`}>
+                  {folderCanEdit ? "Empty - drag & drop files here or use \"Upload files\"." : "This folder is empty."}
+                </div>
+              ) : files.length > 0 ? (
+                <div className="border border-slate-100 rounded-lg overflow-hidden">
+                  <div className="flex items-center gap-2 px-2 py-1.5 bg-slate-50 border-b border-slate-100">
+                    <input
+                      type="checkbox"
+                      className="w-3.5 h-3.5 cursor-pointer accent-blue-600"
+                      checked={selectedFiles.size === files.length && files.length > 0}
+                      ref={(el) => { if (el) el.indeterminate = selectedFiles.size > 0 && selectedFiles.size < files.length; }}
+                      onChange={toggleSelectAll}
+                      title="Select all"
+                    />
+                    {selectedFiles.size > 0 ? (
+                      <>
+                        <span className="text-xs text-blue-700 font-medium">{selectedFiles.size} selected</span>
+                        <button onClick={downloadSelected}
+                          className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-slate-200 hover:bg-slate-300 text-slate-700">
+                          <Download className="w-3 h-3" /> Download
+                        </button>
+                        {canEdit && (
+                          <button onClick={removeSelected}
+                            className="flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-red-100 hover:bg-red-200 text-red-700">
+                            <Trash2 className="w-3 h-3" /> Delete
+                          </button>
+                        )}
+                        <button onClick={() => setSelectedFiles(new Set())}
+                          className="text-xs text-slate-400 hover:text-slate-600 ml-auto">✕ Clear</button>
+                      </>
+                    ) : (
+                      <span className="text-[10px] text-slate-400">{files.length} file{files.length !== 1 ? "s" : ""}</span>
+                    )}
+                  </div>
+                  {/* File rows */}
+                  <div className="divide-y divide-slate-100">
+                    {files.map((f) => (
+                      <div key={f.name}
+                           className={`flex items-center gap-2 p-2 transition-colors ${
+                             selectedFiles.has(f.name) ? "bg-blue-50" : "hover:bg-slate-50"
+                           }`}>
+                        <input
+                          type="checkbox"
+                          className="w-3.5 h-3.5 cursor-pointer accent-blue-600 shrink-0"
+                          checked={selectedFiles.has(f.name)}
+                          onChange={() => toggleSelect(f.name)}
+                        />
+                        <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <button type="button" onClick={() => setViewFile({ name: f.name })}
+                                  className="text-sm text-left truncate w-full hover:text-blue-700 hover:underline"
+                                  data-testid={`plant-doc-file-open-${f.name}`}>
+                            {f.name}
+                          </button>
+                          <div className="text-[10px] text-slate-400">{formatBytes(f.size_bytes)} · {formatDate(f.modified_at)}</div>
+                        </div>
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setViewFile({ name: f.name })} title="Preview"><Eye className="w-3.5 h-3.5 text-slate-600" /></Button>
+                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => download(f.name)} title="Download"><Download className="w-3.5 h-3.5 text-slate-600" /></Button>
+                        {folderCanEdit && (
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => removeFile(f.name)} title="Delete">
+                            <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
       </div>
+
       <DocFileViewer
         open={!!viewFile}
         onClose={() => setViewFile(null)}
-        fetchUrl={viewFile && openFolder
-          ? `/plants/${siteId}/folders/${encodeURIComponent(openFolder)}/files/${encodeURIComponent(viewFile.name)}`
-          : null}
+        fetchUrl={viewFileUrl}
         fileName={viewFile?.name || ""}
       />
     </Card>
   );
 }
+
 
 function formatBytes(n) {
   if (!n) return "0 B";
@@ -1659,3 +1880,130 @@ function EditRoofDialog({ open, onOpenChange, site, roofIndex, onSaved }) {
     </Dialog>
   );
 }
+
+/* ─── Plant Inventory Summary Card ─── */
+function PlantInventoryCard({ siteCode, siteName }) {
+  const [summary, setSummary]     = useState(null);
+  const [history, setHistory]     = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const nav = useNavigate();
+
+  useEffect(() => {
+    if (!siteCode) return;
+    api.get("/inventory/summary", { params: { site_code: siteCode } })
+      .then(r => setSummary(r.data?.totals || null))
+      .catch(() => setSummary(null));
+    // Load recent plant history
+    api.get(`/inventory/plant-history/${siteCode}`, { params: { limit: 10 } })
+      .then(r => setHistory(r.data || []))
+      .catch(() => setHistory([]));
+  }, [siteCode]);
+
+  const go = () => nav(`/inventory?site_code=${siteCode}&tab=spares`);
+
+  const spareTotal = (summary?.total_spares || 0);
+  const spareAvail = (summary?.spares_available || 0);
+  const spareLow   = (summary?.spares_low || 0);
+  const spareOut   = (summary?.spares_out || 0);
+
+  const eventBadge = {
+    inventory_added:   { bg: "bg-emerald-100", text: "text-emerald-700", label: "Added"      },
+    inventory_updated: { bg: "bg-blue-100",    text: "text-blue-700",    label: "Updated"    },
+    inventory_deleted: { bg: "bg-red-100",     text: "text-red-700",     label: "Deleted"    },
+    stock_in:          { bg: "bg-teal-100",    text: "text-teal-700",    label: "Stock In"   },
+    stock_out:         { bg: "bg-orange-100",  text: "text-orange-700",  label: "Stock Out"  },
+    stock_adjustment:  { bg: "bg-purple-100",  text: "text-purple-700",  label: "Adjusted"   },
+    transfer_in:       { bg: "bg-cyan-100",    text: "text-cyan-700",    label: "Received"   },
+    transfer_out:      { bg: "bg-amber-100",   text: "text-amber-700",   label: "Sent Out"   },
+  };
+
+  return (
+    <Card className="rounded-2xl border-slate-100 card-soft bg-white mb-4">
+      <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-purple-600"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          </div>
+          <div>
+            <div className="font-heading font-semibold text-slate-900">Inventory</div>
+            <div className="text-xs text-slate-500">Equipment &amp; spare parts for this plant</div>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setHistoryOpen(h => !h)}
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+          >
+            {historyOpen ? "Hide History" : "📋 Activity Log"}
+          </button>
+          <button onClick={go} className="text-xs px-2.5 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 transition-colors font-medium">
+            View Inventory →
+          </button>
+        </div>
+      </div>
+
+      {!summary ? (
+        <div className="p-6 text-center text-slate-400 text-sm">No inventory data yet</div>
+      ) : (
+        <div className="p-5 grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="text-center">
+            <div className="text-2xl font-bold text-slate-800">{summary.total_equipment || 0}</div>
+            <div className="text-xs text-slate-500 mt-0.5">Equipment</div>
+            <div className="text-[10px] text-slate-400">{summary.operational || 0} operational</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-slate-800">{summary.faulty || 0}</div>
+            <div className="text-xs text-slate-500 mt-0.5">Faulty</div>
+            <div className="text-[10px] text-amber-500">{summary.under_maintenance || 0} in maintenance</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-slate-800">{spareTotal}</div>
+            <div className="text-xs text-slate-500 mt-0.5">Spare Parts</div>
+            {spareOut > 0 ? (
+              <span className="text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full">{spareOut} out of stock</span>
+            ) : spareLow > 0 ? (
+              <span className="text-[10px] bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded-full">{spareLow} low stock</span>
+            ) : (
+              <span className="text-[10px] bg-emerald-100 text-emerald-600 px-1.5 py-0.5 rounded-full">All available</span>
+            )}
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-emerald-600">{spareAvail}</div>
+            <div className="text-xs text-slate-500 mt-0.5">Available Spares</div>
+            <div className="text-[10px] text-slate-400">of {spareTotal} total</div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Expandable Activity Log ─── */}
+      {historyOpen && (
+        <div className="border-t border-slate-100 px-5 pb-4">
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mt-4 mb-2">Recent Inventory Activity</div>
+          {history.length === 0 ? (
+            <div className="text-xs text-slate-400 text-center py-4">No inventory activity recorded yet</div>
+          ) : (
+            <div className="space-y-2">
+              {history.map((h, i) => {
+                const b = eventBadge[h.event_type] || { bg: "bg-slate-100", text: "text-slate-600", label: h.event_type || "Event" };
+                const dateStr = h.performed_at
+                  ? new Date(h.performed_at).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
+                  : "";
+                return (
+                  <div key={i} className="flex items-start gap-2 text-xs py-1.5 border-b border-slate-50 last:border-0">
+                    <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${b.bg} ${b.text}`}>{b.label}</span>
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium text-slate-700 truncate block">{h.item_name || "—"}</span>
+                      <span className="text-slate-400 text-[10px]">{h.description || ""}</span>
+                    </div>
+                    <div className="shrink-0 text-[10px] text-slate-400 whitespace-nowrap">{dateStr}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+

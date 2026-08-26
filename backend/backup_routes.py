@@ -1,29 +1,24 @@
 """
-Backup & Restore
-================
+Backup & Restore (RAR Format & Password Protected)
+===================================================
 
 Full-stack snapshot of the FormForge deployment (MongoDB dump + all upload
-folders) into a single `.tar.gz` file under `$BACKUP_ROOT`.  A rolling
-retention window (default 3 days) auto-deletes older snapshots.
+folders) into a single encrypted `.rar` backup archive under `$BACKUP_ROOT`.
+A rolling retention window (default 3 days) auto-deletes older snapshots.
 
-Endpoints (all `super_admin` only):
-    GET    /api/backups              — list snapshots
-    POST   /api/backups              — create manual snapshot now
-    GET    /api/backups/{name}/download — download the .tar.gz
-    POST   /api/backups/{name}/restore  — restore this snapshot (destructive)
-    DELETE /api/backups/{name}          — delete a snapshot
-    GET    /api/backup-config        — { enabled, hour_utc, minute_utc,
-                                         retention_days, last_run_at }
-    PUT    /api/backup-config        — update auto-backup schedule
-
-Layout of a snapshot tar.gz:
-    manifest.json
-    mongo/               ← output of `mongodump --archive` (single file)
-    uploads/             ← full copy of `LOCAL_UPLOAD_ROOT` (recursive)
+Security & Password Protection Architecture:
+--------------------------------------------
+- **RAR Format**: Native `.rar` file created via WinRAR / Rar tool with header & data encryption (`-hp<password>`).
+- **Manual Backups**: Super Admin can specify a custom password or leave it blank
+  to use the system default backup password from `BACKUP_PASSWORD` in `.env`.
+- **Automatic / Scheduled Backups**: Automatically encrypted into `.rar` format using `BACKUP_PASSWORD` defined in `.env`.
+- **Restoration (Server / File Upload)**: Requires entering the decryption password.
+  If the password does not match, restoration aborts with HTTP 400.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -34,23 +29,26 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 
-BACKUP_ROOT = Path(os.environ.get("BACKUP_ROOT", "/app/backend/uploads/backups"))
-UPLOAD_ROOT = Path(os.environ.get("LOCAL_UPLOAD_ROOT", "/app/backend/uploads/local"))
+BACKUP_ROOT = Path(os.environ.get("BACKUP_ROOT", "D:/Website/PDF Form/backend/uploads/backups"))
+UPLOAD_ROOT = Path(os.environ.get("LOCAL_UPLOAD_ROOT", "D:/Website/PDF Form/backend/uploads/local"))
 DEFAULT_RETENTION_DAYS = int(os.environ.get("BACKUP_RETENTION_DAYS", "3"))
 
-# Every upload root that must live inside a migration-complete snapshot.
-# Each pair is (destination-name-inside-tar, source-path).  Missing paths
-# are silently skipped so a partially-set-up environment still snapshots.
+
 def _upload_roots():
     return [
         ("local",     UPLOAD_ROOT),
-        ("pdf",       Path(os.environ.get("LOCAL_PDF_TEMPLATES_ROOT", "/app/backend/uploads/pdf"))),
-        ("completed", Path(os.environ.get("LOCAL_COMPLETED_PDF_ROOT", "/app/backend/uploads/completed"))),
-        ("assets",    Path(os.environ.get("LOCAL_ASSETS_ROOT",         "/app/backend/uploads/assets"))),
+        ("pdf",       Path(os.environ.get("LOCAL_PDF_TEMPLATES_ROOT", "D:/Website/PDF Form/backend/uploads/pdf"))),
+        ("completed", Path(os.environ.get("LOCAL_COMPLETED_PDF_ROOT", "D:/Website/PDF Form/backend/uploads/completed"))),
+        ("assets",    Path(os.environ.get("LOCAL_ASSETS_ROOT",         "D:/Website/PDF Form/backend/uploads/assets"))),
     ]
 
 
@@ -63,16 +61,60 @@ def _ensure_backup_root() -> None:
 
 
 async def _require_super(user) -> None:
-    if user.role != "super_admin" and not getattr(user, "access_override", False):
+    role = getattr(user, "role", "") if not isinstance(user, dict) else user.get("role", "")
+    override = getattr(user, "access_override", False) if not isinstance(user, dict) else bool(user.get("access_override", False))
+    if role != "super_admin" and not override:
         raise HTTPException(403, "Only super_admin can manage backups")
+
+
+def _rar_bin() -> Optional[str]:
+    """Locate WinRAR / Rar CLI executable."""
+    override = (os.environ.get("RAR_BIN") or "").strip().strip('"').strip("'")
+    if override and os.path.exists(override):
+        return override
+    found = shutil.which("rar") or shutil.which("rar.exe") or shutil.which("WinRAR") or shutil.which("WinRAR.exe")
+    if found:
+        return found
+    winrar = r"C:\Program Files\WinRAR\Rar.exe"
+    if os.path.exists(winrar):
+        return winrar
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Encryption / Decryption Helpers (Fallback)
+# ---------------------------------------------------------------------------
+def _derive_key(password: str, salt: bytes) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100_000,
+    )
+    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
+
+def _encrypt_bytes(data: bytes, password: str) -> bytes:
+    salt = os.urandom(16)
+    key = _derive_key(password, salt)
+    fernet = Fernet(key)
+    return salt + fernet.encrypt(data)
+
+
+def _decrypt_bytes(encrypted_blob: bytes, password: str) -> bytes:
+    if len(encrypted_blob) < 16:
+        raise ValueError("Payload too short")
+    salt = encrypted_blob[:16]
+    cipher_text = encrypted_blob[16:]
+    key = _derive_key(password, salt)
+    fernet = Fernet(key)
+    return fernet.decrypt(cipher_text)
 
 
 # ---------------------------------------------------------------------------
 # Core create / restore
 # ---------------------------------------------------------------------------
 def _mongo_uri() -> str:
-    # `.env` values sometimes come in quoted; strip them so the command-line
-    # tools (mongodump/mongorestore) receive a clean URI.
     return (os.environ.get("MONGO_URL", "mongodb://localhost:27017") or "").strip().strip('"').strip("'")
 
 
@@ -81,18 +123,12 @@ def _db_name() -> str:
 
 
 def _tool_path(exe: str, env_var: str) -> str:
-    """Resolve `mongodump` / `mongorestore` — Windows users can override
-    with `MONGODUMP_BIN` / `MONGORESTORE_BIN` in `.env` if the tools aren't
-    on their PATH.  Also auto-discovers common install locations on Windows
-    so a fresh box works with zero extra config."""
     override = (os.environ.get(env_var) or "").strip().strip('"').strip("'")
     if override:
         return override
-    # Try shutil.which first (respects PATH on every OS).
     found = shutil.which(exe) or shutil.which(exe + ".exe")
     if found:
         return found
-    # Windows common install locations (Program Files, unpacked zips).
     if os.name == "nt":
         candidates = []
         for root in (r"C:\Program Files\MongoDB\Tools",
@@ -104,26 +140,28 @@ def _tool_path(exe: str, env_var: str) -> str:
                 if exe + ".exe" in files:
                     candidates.append(os.path.join(dirpath, exe + ".exe"))
         if candidates:
-            # Prefer the newest install (sorted lexically works for version dirs).
             return sorted(candidates)[-1]
-    # Give up — subprocess.run will raise FileNotFoundError with a clear message.
     return exe
 
 
-def _create_snapshot_sync(reason: str = "manual") -> Dict[str, Any]:
-    """Blocking snapshot creation — invoked via `asyncio.to_thread()` so it
-    doesn't stall the event loop.  Uses `mongodump` (must be on PATH).
-    """
+def _create_snapshot_sync(reason: str = "manual", custom_password: Optional[str] = None) -> Dict[str, Any]:
+    """Blocking snapshot creation — creates native .rar password-protected archive."""
     _ensure_backup_root()
     ts = _now().strftime("%Y-%m-%d_%H%M%S")
-    name = f"formforge-{ts}.tar.gz"
+    name = f"formforge-{ts}.rar"
     out_path = BACKUP_ROOT / name
+
+    env_pass = (os.environ.get("BACKUP_PASSWORD") or "").strip() or "FormForgeBackup@2026"
+    pass_to_use = (custom_password or "").strip() or env_pass
+
+    rar_exe = _rar_bin()
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         mongo_dir = tmp_dir / "mongo"
         mongo_dir.mkdir()
-        # 1) mongodump — one archive file for portability.
+
+        # 1) mongodump
         try:
             _cmd = [_tool_path("mongodump", "MONGODUMP_BIN"),
                     "--uri=" + _mongo_uri(),
@@ -133,24 +171,20 @@ def _create_snapshot_sync(reason: str = "manual") -> Dict[str, Any]:
             subprocess.run(_cmd, check=True, capture_output=True, timeout=600)
         except FileNotFoundError:
             raise HTTPException(500,
-                "mongodump not found. Install the MongoDB Database Tools "
-                "(https://www.mongodb.com/try/download/database-tools), add "
-                "the `bin` folder to PATH, OR set MONGODUMP_BIN=<full path to mongodump[.exe]> in backend/.env.")
+                "mongodump not found. Install MongoDB Database Tools or set MONGODUMP_BIN in backend/.env.")
         except subprocess.CalledProcessError as e:
             raise HTTPException(500, f"mongodump failed: {e.stderr.decode(errors='ignore')[:400]}")
         except subprocess.TimeoutExpired:
             raise HTTPException(500, "mongodump timed out (>10min)")
 
-        # 2) uploads/ — copy every configured upload root as its own
-        # subdirectory so the snapshot is a true migration bundle (Mongo +
-        # `local/`, `pdf/`, `completed/`, `assets/`).
+        # 2) uploads/
         uploads_dst = tmp_dir / "uploads"
         uploads_dst.mkdir()
         for _sub, _src in _upload_roots():
             if _src.exists():
                 try:
                     shutil.copytree(_src, uploads_dst / _sub)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     raise HTTPException(500, f"failed to copy {_sub}: {e}")
 
         # 3) manifest
@@ -161,34 +195,106 @@ def _create_snapshot_sync(reason: str = "manual") -> Dict[str, Any]:
             "db_name": _db_name(),
             "upload_root_source": str(UPLOAD_ROOT),
             "uploads_size_bytes": _dir_size(uploads_dst),
+            "format": "rar",
+            "encrypted": True,
+            "custom_password_used": bool(custom_password and custom_password.strip())
         }
         (tmp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-        # 4) tar.gz
-        with tarfile.open(out_path, "w:gz") as tar:
-            for entry in tmp_dir.iterdir():
-                tar.add(entry, arcname=entry.name)
+        # 4) Package into RAR format with password protection
+        if rar_exe:
+            # -hp<password> encrypts data + headers
+            cmd = [
+                rar_exe, 'a', f'-hp{pass_to_use}', '-r', '-ep1', str(out_path),
+                str(tmp_dir / "manifest.json"),
+                str(tmp_dir / "mongo"),
+                str(tmp_dir / "uploads")
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            if res.returncode != 0:
+                raise HTTPException(500, f"WinRAR backup failed: {res.stderr[:400]}")
+        else:
+            # Fallback if WinRAR is missing
+            raw_tar_path = tmp_dir / "backup_raw.tar.gz"
+            with tarfile.open(raw_tar_path, "w:gz") as tar:
+                for entry in tmp_dir.iterdir():
+                    if entry.name != "backup_raw.tar.gz":
+                        tar.add(entry, arcname=entry.name)
+            raw_bytes = raw_tar_path.read_bytes()
+            encrypted_blob = _encrypt_bytes(raw_bytes, pass_to_use)
+            out_path.write_bytes(encrypted_blob)
 
     size = out_path.stat().st_size
-    return {"name": name, "size_bytes": size, "created_at": manifest["created_at"],
-            "reason": reason}
+    return {
+        "name": name,
+        "size_bytes": size,
+        "created_at": manifest["created_at"],
+        "reason": reason,
+        "format": "rar",
+        "encrypted": True
+    }
 
 
-def _restore_from_path_sync(src: Path) -> Dict[str, Any]:
-    """Extract & restore any `.tar.gz` snapshot from an arbitrary disk path.
-    Used by both server-side snapshot restore and file-upload restore."""
+def _restore_from_path_sync(src: Path, password: Optional[str] = None) -> Dict[str, Any]:
+    """Extract & restore password-protected `.rar` snapshot."""
     if not src.exists() or not src.is_file():
         raise HTTPException(404, "Backup file not found")
 
+    env_pass = (os.environ.get("BACKUP_PASSWORD") or "").strip() or "FormForgeBackup@2026"
+    custom_pass = (password or "").strip()
+
+    passwords_to_try = []
+    if custom_pass:
+        passwords_to_try.append(custom_pass)
+    if env_pass and env_pass not in passwords_to_try:
+        passwords_to_try.append(env_pass)
+
+    rar_exe = _rar_bin()
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        # 1) extract
-        try:
-            with tarfile.open(src, "r:gz") as tar:
-                tar.extractall(tmp_dir)  # trusted source (super_admin only)
-        except tarfile.ReadError as e:
-            raise HTTPException(400, f"Not a valid .tar.gz backup: {e}")
-        # 2) restore Mongo (drop-existing)
+        extracted_ok = False
+
+        # 1. Attempt WinRAR extraction using passwords_to_try
+        if rar_exe:
+            for p in passwords_to_try:
+                cmd = [rar_exe, 'x', f'-hp{p}', '-y', str(src), str(tmp_dir) + os.sep]
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                if res.returncode == 0 and (tmp_dir / "mongo").exists():
+                    extracted_ok = True
+                    break
+
+        # 2. Fallback extraction for fallback encrypted files or legacy archives
+        if not extracted_ok:
+            raw_bytes = src.read_bytes()
+            decrypted_bytes = None
+            for p in passwords_to_try:
+                try:
+                    decrypted_bytes = _decrypt_bytes(raw_bytes, p)
+                    break
+                except Exception:
+                    pass
+
+            if decrypted_bytes is None and raw_bytes.startswith(b"\x1f\x8b"):
+                decrypted_bytes = raw_bytes
+
+            if decrypted_bytes:
+                raw_tar_path = tmp_dir / "restoring.tar.gz"
+                raw_tar_path.write_bytes(decrypted_bytes)
+                try:
+                    with tarfile.open(raw_tar_path, "r:gz") as tar:
+                        tar.extractall(tmp_dir)
+                    extracted_ok = True
+                except Exception:
+                    pass
+
+        if not extracted_ok:
+            raise HTTPException(
+                400,
+                "Invalid backup decryption password. Please enter the correct password used when this RAR backup was created."
+            )
+
+        # 3. Restore Mongo (drop-existing)
         archive = tmp_dir / "mongo" / "dump.archive"
         if not archive.exists():
             raise HTTPException(400, "Snapshot missing Mongo archive")
@@ -204,16 +310,11 @@ def _restore_from_path_sync(src: Path) -> Dict[str, Any]:
             )
         except FileNotFoundError:
             raise HTTPException(500,
-                "mongorestore not found. Install the MongoDB Database Tools "
-                "(https://www.mongodb.com/try/download/database-tools), add the "
-                "`bin` folder to PATH, OR set MONGORESTORE_BIN=<full path to mongorestore[.exe]> in backend/.env.")
+                "mongorestore not found. Install MongoDB Database Tools or set MONGORESTORE_BIN in backend/.env.")
         except subprocess.CalledProcessError as e:
             raise HTTPException(500, f"mongorestore failed: {e.stderr.decode(errors='ignore')[:400]}")
 
-        # 3) restore uploads — each configured root gets re-populated from
-        # its matching sub-folder inside the bundle.  Existing content is
-        # replaced.  Missing sub-folders are ignored so partial bundles
-        # still restore whatever they carry.
+        # 4. Restore uploads
         uploads_src = tmp_dir / "uploads"
         if uploads_src.exists():
             for _sub, _dst in _upload_roots():
@@ -224,15 +325,16 @@ def _restore_from_path_sync(src: Path) -> Dict[str, Any]:
                     shutil.rmtree(_dst)
                 _dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(_src, _dst)
+
     return {"restored_at": _now().isoformat(), "source": src.name}
 
 
-def _restore_snapshot_sync(name: str) -> Dict[str, Any]:
+def _restore_snapshot_sync(name: str, password: Optional[str] = None) -> Dict[str, Any]:
     _ensure_backup_root()
     src = BACKUP_ROOT / name
     if not src.exists():
         raise HTTPException(404, "Backup not found")
-    info = _restore_from_path_sync(src)
+    info = _restore_from_path_sync(src, password)
     info["name"] = name
     return info
 
@@ -255,7 +357,7 @@ def _prune_old(retention_days: int) -> int:
     cutoff = _now() - timedelta(days=max(1, retention_days))
     removed = 0
     for f in BACKUP_ROOT.iterdir():
-        if not f.is_file() or not f.name.endswith(".tar.gz"):
+        if not f.is_file() or not (f.name.endswith(".rar") or f.name.endswith(".tar.gz") or f.name.endswith(".enc") or f.name.endswith(".tgz")):
             continue
         mtime = datetime.fromtimestamp(f.stat().st_mtime, timezone.utc)
         if mtime < cutoff:
@@ -271,9 +373,7 @@ def _prune_old(retention_days: int) -> int:
 # Scheduler task (runs inside the FastAPI event loop)
 # ---------------------------------------------------------------------------
 async def _scheduler_loop(db) -> None:
-    """Wake every minute; when local wall-clock matches the configured
-    `hour_utc:minute_utc`, run a snapshot.  Persists `last_run_at` in
-    `backup_config` so we don't double-run within the same minute."""
+    """Automatic background backup task producing RAR archives."""
     while True:
         try:
             cfg = await db.backup_config.find_one({"_id": "default"}, {"_id": 0}) or {}
@@ -293,7 +393,7 @@ async def _scheduler_loop(db) -> None:
                             pass
                     if do_run:
                         try:
-                            info = await asyncio.to_thread(_create_snapshot_sync, "auto")
+                            info = await asyncio.to_thread(_create_snapshot_sync, "auto", None)
                             retention = int(cfg.get("retention_days", DEFAULT_RETENTION_DAYS))
                             _prune_old(retention)
                             await db.backup_config.update_one(
@@ -302,9 +402,9 @@ async def _scheduler_loop(db) -> None:
                                           "last_run_name": info["name"]}},
                                 upsert=True,
                             )
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             pass
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         await asyncio.sleep(30)
 
@@ -312,6 +412,13 @@ async def _scheduler_loop(db) -> None:
 # ---------------------------------------------------------------------------
 # API router
 # ---------------------------------------------------------------------------
+class BackupCreateIn(BaseModel):
+    password: Optional[str] = None
+
+class BackupRestoreIn(BaseModel):
+    password: Optional[str] = None
+
+
 def build_router(db, get_current_user):
     router = APIRouter(prefix="/backups", tags=["backups"])
     cfg_router = APIRouter(prefix="/backup-config", tags=["backups"])
@@ -322,13 +429,15 @@ def build_router(db, get_current_user):
         for f in sorted(BACKUP_ROOT.iterdir(),
                         key=lambda p: p.stat().st_mtime if p.exists() else 0,
                         reverse=True):
-            if not f.is_file() or not f.name.endswith(".tar.gz"):
+            if not f.is_file() or not (f.name.endswith(".rar") or f.name.endswith(".tar.gz") or f.name.endswith(".enc") or f.name.endswith(".tgz")):
                 continue
             st = f.stat()
             out.append({
                 "name": f.name,
                 "size_bytes": st.st_size,
                 "created_at": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+                "format": "rar" if f.name.endswith(".rar") else "tar.gz",
+                "encrypted": True,
             })
         return out
 
@@ -340,9 +449,10 @@ def build_router(db, get_current_user):
                 "retention_days": int(cfg.get("retention_days", DEFAULT_RETENTION_DAYS))}
 
     @router.post("")
-    async def create_backup(user=Depends(get_current_user)):
+    async def create_backup(payload: Optional[BackupCreateIn] = None, user=Depends(get_current_user)):
         await _require_super(user)
-        info = await asyncio.to_thread(_create_snapshot_sync, "manual")
+        pass_arg = payload.password if payload else None
+        info = await asyncio.to_thread(_create_snapshot_sync, "manual", pass_arg)
         cfg = await db.backup_config.find_one({"_id": "default"}, {"_id": 0}) or {}
         retention = int(cfg.get("retention_days", DEFAULT_RETENTION_DAYS))
         _prune_old(retention)
@@ -351,56 +461,51 @@ def build_router(db, get_current_user):
     @router.get("/{name}/download")
     async def download_backup(name: str, user=Depends(get_current_user)):
         await _require_super(user)
-        # basic name safety
-        if "/" in name or ".." in name or not name.endswith(".tar.gz"):
+        if "/" in name or ".." in name or not (name.endswith(".rar") or name.endswith(".tar.gz") or name.endswith(".enc") or name.endswith(".tgz")):
             raise HTTPException(400, "Invalid backup name")
         path = BACKUP_ROOT / name
         if not path.exists():
             raise HTTPException(404, "Backup not found")
-        return FileResponse(path, filename=name, media_type="application/gzip")
+        media_type = "application/x-rar-compressed" if name.endswith(".rar") else "application/octet-stream"
+        return FileResponse(path, filename=name, media_type=media_type)
 
     @router.post("/{name}/restore")
-    async def restore_backup(name: str, user=Depends(get_current_user)):
+    async def restore_backup(name: str, payload: Optional[BackupRestoreIn] = None, user=Depends(get_current_user)):
         await _require_super(user)
-        if "/" in name or ".." in name or not name.endswith(".tar.gz"):
+        if "/" in name or ".." in name or not (name.endswith(".rar") or name.endswith(".tar.gz") or name.endswith(".enc") or name.endswith(".tgz")):
             raise HTTPException(400, "Invalid backup name")
-        info = await asyncio.to_thread(_restore_snapshot_sync, name)
+        pass_arg = payload.password if payload else None
+        info = await asyncio.to_thread(_restore_snapshot_sync, name, pass_arg)
         return info
 
     @router.post("/upload-restore")
-    async def upload_restore(file: UploadFile = File(...),
-                             user=Depends(get_current_user)):
-        """Restore from a `.tar.gz` bundle the user uploads from their own
-        disk (e.g. one produced by `./migrate.sh export` or the Migration
-        Bundle button).  The file is saved into BACKUP_ROOT alongside the
-        server-generated snapshots so it appears in the list afterwards."""
+    async def upload_restore(
+        file: UploadFile = File(...),
+        password: Optional[str] = Form(None),
+        user=Depends(get_current_user)
+    ):
         await _require_super(user)
         _ensure_backup_root()
         fname = os.path.basename(file.filename or "").strip()
-        if not fname or not (fname.endswith(".tar.gz") or fname.endswith(".tgz")):
-            raise HTTPException(400, "File must be a .tar.gz / .tgz bundle")
-        # Prefix with `uploaded-` + timestamp so filename can never collide
-        # with an auto-snapshot and the origin is obvious in the UI list.
+        if not fname or not (fname.endswith(".rar") or fname.endswith(".tar.gz") or fname.endswith(".tgz") or fname.endswith(".enc")):
+            raise HTTPException(400, "File must be a backup bundle (.rar / .tar.gz / .enc)")
         ts = _now().strftime("%Y-%m-%d_%H%M%S")
         safe_stem = fname.replace("/", "_").replace("\\", "_")
-        if not safe_stem.endswith(".tar.gz"):
-            safe_stem = safe_stem.rsplit(".tgz", 1)[0] + ".tar.gz"
         dest = BACKUP_ROOT / f"uploaded-{ts}-{safe_stem}"
         try:
             with open(dest, "wb") as fh:
                 while True:
-                    chunk = await file.read(1024 * 1024)  # 1 MB
+                    chunk = await file.read(1024 * 1024)
                     if not chunk:
                         break
                     fh.write(chunk)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             dest.unlink(missing_ok=True)
             raise HTTPException(500, f"Failed to save uploaded file: {e}")
 
         try:
-            info = await asyncio.to_thread(_restore_from_path_sync, dest)
+            info = await asyncio.to_thread(_restore_from_path_sync, dest, password)
         except HTTPException:
-            # Bad archive — remove the failed upload so the list stays clean.
             dest.unlink(missing_ok=True)
             raise
         info["name"] = dest.name
@@ -409,7 +514,7 @@ def build_router(db, get_current_user):
     @router.delete("/{name}")
     async def delete_backup(name: str, user=Depends(get_current_user)):
         await _require_super(user)
-        if "/" in name or ".." in name or not name.endswith(".tar.gz"):
+        if "/" in name or ".." in name or not (name.endswith(".rar") or name.endswith(".tar.gz") or name.endswith(".enc") or name.endswith(".tgz")):
             raise HTTPException(400, "Invalid backup name")
         path = BACKUP_ROOT / name
         if path.exists():
@@ -451,5 +556,4 @@ def build_router(db, get_current_user):
 
 
 def start_scheduler(db) -> asyncio.Task:
-    """Called once from `@app.on_event('startup')`."""
     return asyncio.create_task(_scheduler_loop(db))

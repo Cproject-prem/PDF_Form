@@ -13,6 +13,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -36,7 +37,7 @@ export default function Manpower() {
   const [enabled, setEnabled] = useState(true);
   const [selected, setSelected] = useState(null);
 
-  const load = async () => {
+  const load = async (isRefresh = false) => {
     setLoading(true);
     try {
       const q = new URLSearchParams();
@@ -44,11 +45,26 @@ export default function Manpower() {
       if (state) q.set("state", state);
       if (location) q.set("location", location);
       if (company) q.set("company", company);
+      if (isRefresh) q.set("_t", Date.now().toString());
       const r = await api.get(`/manpower?${q.toString()}`);
       setRows(r.data.items || []);
       setEnabled(r.data.enabled !== false);
+      return r.data.items || [];
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to load manpower");
+      return [];
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    setLoading(true);
+    try {
+      await Promise.all([load(true), loadFilters()]);
+      toast.success("Manpower data refreshed live from DB");
+    } catch {
+      toast.error("Failed to refresh manpower data");
     } finally {
       setLoading(false);
     }
@@ -56,7 +72,7 @@ export default function Manpower() {
 
   const loadFilters = async () => {
     try {
-      const r = await api.get("/manpower/filters");
+      const r = await api.get(`/manpower/filters?_t=${Date.now()}`);
       setFilters(r.data);
     } catch { /* silent */ }
   };
@@ -97,6 +113,28 @@ export default function Manpower() {
     );
   };
 
+  const getEligibility = (mp) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const expired = [];
+
+    const isExpired = (dateStr) => {
+      if (!dateStr) return true; // Missing is treated as expired
+      const d = new Date(dateStr);
+      return d < today;
+    };
+
+    if (isExpired(mp.medical_expiry_date)) expired.push("Medical");
+    if (isExpired(mp.safety_belt_expiry_date)) expired.push("Safety Belt");
+    if (isExpired(mp.height_work_expiry_date)) expired.push("Height Work");
+
+    if (expired.length === 0) {
+      return { status: "Eligible", remark: "" };
+    } else {
+      return { status: "Ineligible", remark: expired.join(", ") + " Expired" };
+    }
+  };
+
   return (
     <AppLayout>
       <div className="max-w-7xl mx-auto px-6 py-6">
@@ -112,10 +150,10 @@ export default function Manpower() {
               Edits are made in the source portal.
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={load} data-testid="manpower-refresh"
+          <Button variant="outline" size="sm" onClick={handleRefresh} data-testid="manpower-refresh"
                   disabled={loading}>
             <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${loading ? "animate-spin" : ""}`} />
-            Refresh
+            Refresh Data
           </Button>
         </div>
 
@@ -135,7 +173,7 @@ export default function Manpower() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <Input value={search}
                      onChange={(e) => setSearch(e.target.value)}
-                     placeholder="Search by ID, name, company, state, location…"
+                     placeholder="Search by ID, name, designation, company, state, location…"
                      className="pl-9"
                      data-testid="manpower-search" />
             </div>
@@ -165,19 +203,20 @@ export default function Manpower() {
                 <tr className="text-left text-[11px] uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3 w-[280px]">Manpower</th>
                   <th className="px-4 py-3">Name</th>
+                  <th className="px-4 py-3">Designation</th>
                   <th className="px-4 py-3">Company</th>
-                  <th className="px-4 py-3">Work State</th>
                   <th className="px-4 py-3">Location</th>
                   <th className="px-4 py-3">Vendor ID</th>
+                  <th className="px-4 py-3">Eligibility</th>
                   <th className="px-4 py-3">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {loading && (
-                  <tr><td colSpan={7} className="text-center text-slate-400 py-10">Loading…</td></tr>
+                  <tr><td colSpan={8} className="text-center text-slate-400 py-10">Loading…</td></tr>
                 )}
                 {!loading && rows.length === 0 && (
-                  <tr><td colSpan={7} className="text-center text-slate-400 py-10">
+                  <tr><td colSpan={8} className="text-center text-slate-400 py-10">
                     No manpower records match your filters.
                   </td></tr>
                 )}
@@ -203,17 +242,34 @@ export default function Manpower() {
                     <td className="px-4 py-3 font-medium text-slate-800">
                       {mp.full_name || <span className="text-slate-300">—</span>}
                     </td>
+                    <td className="px-4 py-3 text-slate-600 truncate max-w-[160px]">
+                      {mp.designation || <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="px-4 py-3 text-slate-600 truncate max-w-[180px]">
                       {mp.company_name || <span className="text-slate-300">—</span>}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {mp.work_state || <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-3 text-slate-600">
                       {mp.location || <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-3 text-slate-600 font-mono text-xs">
                       {mp.vendor_id || <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const eligibility = getEligibility(mp);
+                        return (
+                          <div className="flex flex-col gap-1">
+                            <span className={`inline-block w-fit px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${eligibility.status === 'Eligible' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                              {eligibility.status}
+                            </span>
+                            {eligibility.remark && (
+                              <span className="text-[10px] text-red-500 max-w-[120px] leading-tight font-medium">
+                                {eligibility.remark}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-3">{badge(mp.status)}</td>
                   </tr>
@@ -236,14 +292,18 @@ export default function Manpower() {
 
 /* -------------------------------------------------------------------------- */
 function Filter({ label, value, onChange, options, testid }) {
+  const opts = [{ label: `All ${label}s`, value: "" }, ...(options || []).map((o) => ({ label: String(o), value: String(o) }))];
   return (
-    <select value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="h-9 px-2 rounded-lg border border-slate-200 bg-white text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-100"
-            data-testid={testid}>
-      <option value="">All {label}s</option>
-      {(options || []).map((o) => <option key={o} value={o}>{o}</option>)}
-    </select>
+    <div className="w-44">
+      <SearchableDropdown
+        options={opts}
+        value={value}
+        onChange={onChange}
+        placeholder={`All ${label}s`}
+        className="h-9 text-xs"
+        testId={testid}
+      />
+    </div>
   );
 }
 
@@ -302,7 +362,7 @@ function ManpowerDetailDialog({ open, manpowerId, photoUrlBuilder, onClose }) {
               <ManpowerPhoto mp={{ has_photo: !!doc._photo, full_name: doc.full_name, manpower_id: doc.manpower_id }}
                              src={doc._photo ? photoUrlBuilder({ has_photo: true, manpower_id: doc.manpower_id }) : null}
                              size={96} />
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0 flex-1 pr-8">
                 <div className="text-xs text-slate-500 tabular-nums">{doc.manpower_id}</div>
                 <div className="text-xl font-semibold text-slate-900">{doc.full_name || "(no name)"}</div>
                 <div className="text-sm text-slate-500 mt-1 flex items-center gap-3 flex-wrap">
@@ -310,14 +370,11 @@ function ManpowerDetailDialog({ open, manpowerId, photoUrlBuilder, onClose }) {
                   <span className="inline-flex items-center gap-1"><MapPin className="w-3 h-3" /> {doc.location || doc.city || "—"}</span>
                 </div>
               </div>
-              <Button size="sm" variant="ghost" className="w-8 h-8 p-0" onClick={onClose}
-                      data-testid="manpower-detail-close">
-                <X className="w-4 h-4" />
-              </Button>
             </div>
 
             <div className="p-5 overflow-y-auto nice-scroll grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1">
               {kv("Status", doc.status)}
+              {kv("Designation", doc.designation)}
               {kv("Company", doc.company_name)}
               {kv("Work State", doc.work_state)}
               {kv("Location", doc.location)}

@@ -5,7 +5,7 @@ Routes are all prefixed with /api. Auth uses JWT (HS256) for primary login
 and supports Emergent Google OAuth as a secondary login path. Files are
 stored via the Emergent Object Storage integration.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Form as FastAPIForm, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
@@ -192,7 +192,9 @@ class User(BaseModel):
     created_at: str
     password_hash: Optional[str] = None  # not exposed via API
     vendor_id: Optional[str] = None  # set for vendor users (RLS scope)
+    vendor_name: Optional[str] = None  # injected for site_filter matching
     cluster_manager_name: Optional[str] = None  # for admin role — links to Site.cluster_manager_name
+    cluster: Optional[str] = None  # cluster group (e.g. South-1, South-2, West-1)
     region: Optional[str] = None  # for admin role — links to Site.region (regional access scope)
     assignments: Optional[Dict[str, List[str]]] = None  # {forms:[], pdf_forms:[], sites:[], workflows:[]}
     access_override: bool = False  # add-on flag → grants Super-Admin-level access
@@ -207,6 +209,7 @@ class UserOut(BaseModel):
     created_at: str
     vendor_id: Optional[str] = None
     cluster_manager_name: Optional[str] = None
+    cluster: Optional[str] = None
     region: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
     access_override: bool = False
@@ -341,6 +344,12 @@ async def startup():
         await _seed_sites(db)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Site demo seed skipped: {e}")
+    # Backfill user names on existing database records
+    try:
+        from fix_user_names import run_backfill as _bf_names
+        await _bf_names()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"User names backfill skipped: {e}")
     # additional indexes for vendor / site / master
     await db.vendors.create_index("vendor_id", unique=True)
     await db.sites.create_index("site_id", unique=True)
@@ -513,7 +522,12 @@ async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer)
         raise HTTPException(status_code=401, detail="User not found")
     if not user.get("is_active", True):
         raise HTTPException(status_code=403, detail="User disabled")
-    return User(**user)
+    u_obj = User(**user)
+    if u_obj.vendor_id:
+        v = await db.vendors.find_one({"vendor_id": u_obj.vendor_id})
+        if v:
+            u_obj.vendor_name = v.get("vendor_name")
+    return u_obj
 
 async def get_optional_user(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> Optional[User]:
     if not creds or not creds.credentials:
@@ -521,7 +535,12 @@ async def get_optional_user(creds: HTTPAuthorizationCredentials = Depends(bearer
     try:
         data = decode_token(creds.credentials)
         user = await db.users.find_one({"user_id": data["sub"]}, {"_id": 0, "password_hash": 0})
-        return User(**user) if user else None
+        u_obj = User(**user) if user else None
+        if u_obj and u_obj.vendor_id:
+            v = await db.vendors.find_one({"vendor_id": u_obj.vendor_id})
+            if v:
+                u_obj.vendor_name = v.get("vendor_name")
+        return u_obj
     except Exception:
         return None
 
@@ -576,36 +595,105 @@ async def login(body: LoginIn, request: Request):
     logger.info(f"login_success email={email} role={user.get('role')} ip={ip}")
     return {"token": token, "user": UserOut(**user)}
 
+class GoogleAuthIn(BaseModel):
+    code: Optional[str] = None
+    id_token: Optional[str] = None
+    session_id: Optional[str] = None
+    redirect_uri: Optional[str] = None
+
+class GoogleSessionIn(BaseModel):
+    session_id: str
+
+@api.post("/auth/google/callback")
 @api.post("/auth/google/session")
-async def google_session(body: GoogleSessionIn):
-    # Exchange session_id with Emergent Auth and create/update user
-    try:
-        r = requests.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": body.session_id}, timeout=15
-        )
-        r.raise_for_status()
-        info = r.json()
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Google session exchange failed: {e}")
-    email = info["email"].lower()
+async def google_auth_callback(body: GoogleAuthIn):
+    """Direct Google OAuth callback handler: exchanges authorization code,
+    ID token, or session_id for a user login token."""
+    email, name, picture = None, None, None
+
+    doc = await db.settings.find_one({"_id": "global"}) or {}
+    client_id = doc.get("google_client_id") or os.environ.get("GOOGLE_CLIENT_ID", "")
+    client_secret = doc.get("google_client_secret") or os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+    if body.code:
+        # Direct Google OAuth 2.0 Code exchange
+        try:
+            token_url = "https://oauth2.googleapis.com/token"
+            res = requests.post(token_url, data={
+                "code": body.code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": body.redirect_uri or "",
+                "grant_type": "authorization_code",
+            }, timeout=15)
+            res.raise_for_status()
+            tokens = res.json()
+            access_token = tokens.get("access_token")
+
+            user_info_res = requests.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=15,
+            )
+            user_info_res.raise_for_status()
+            user_info = user_info_res.json()
+            email = user_info.get("email", "").lower()
+            name = user_info.get("name") or email.split("@")[0]
+            picture = user_info.get("picture")
+        except Exception as e:
+            raise HTTPException(401, f"Google OAuth exchange failed: {e}")
+
+    elif body.id_token:
+        # Direct Google ID token verification
+        try:
+            res = requests.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={body.id_token}", timeout=15)
+            res.raise_for_status()
+            user_info = res.json()
+            email = user_info.get("email", "").lower()
+            name = user_info.get("name") or email.split("@")[0]
+            picture = user_info.get("picture")
+        except Exception as e:
+            raise HTTPException(401, f"Google ID token verification failed: {e}")
+
+    elif body.session_id:
+        # Legacy session ID exchange fallback
+        try:
+            r = requests.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": body.session_id}, timeout=15
+            )
+            r.raise_for_status()
+            info = r.json()
+            email = info["email"].lower()
+            name = info.get("name", email.split("@")[0])
+            picture = info.get("picture")
+        except Exception as e:
+            raise HTTPException(401, f"Google session exchange failed: {e}")
+    else:
+        raise HTTPException(400, "Missing Google authorization code or token")
+
+    if not email:
+        raise HTTPException(400, "Could not obtain email address from Google")
+
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user:
         uid = f"user_{uuid.uuid4().hex[:12]}"
         user = {
             "user_id": uid,
             "email": email,
-            "name": info.get("name", email.split("@")[0]),
+            "name": name or email.split("@")[0],
             "role": "user",
-            "picture": info.get("picture"),
+            "picture": picture,
             "is_active": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "password_hash": None,
         }
         await db.users.insert_one(user)
     else:
-        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"picture": info.get("picture")}})
-        user["picture"] = info.get("picture")
+        if picture:
+            await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"picture": picture}})
+            user["picture"] = picture
+
     user.pop("password_hash", None)
     token = make_token(user["user_id"], user["role"])
     return {"token": token, "user": UserOut(**user)}
@@ -618,17 +706,28 @@ async def me(user: User = Depends(get_current_user)):
 @api.get("/auth/menu")
 async def auth_menu(user: User = Depends(get_current_user)):
     """Return the sidebar menu (with group segregation) + capability matrix."""
-    from permissions import capabilities_for, menu_for, normalize_role, MENU_GROUPS
-    items = menu_for(user)
+    import importlib
+    import permissions
+    importlib.reload(permissions)
+    items = permissions.menu_for(user)
+    
+    # Check if inventory module is enabled in global settings
+    sett = await db.settings.find_one({"_id": "global"}, {"enable_inventory": 1})
+    inventory_enabled = bool(sett and sett.get("enable_inventory"))
+    if not inventory_enabled:
+        items = [i for i in items if i.get("key") != "inventory"]
+
     # Only include groups that actually have at least one visible item
     used = {i.get("group") for i in items}
-    groups = [g for g in MENU_GROUPS if g["key"] in used]
+    groups = [g for g in permissions.MENU_GROUPS if g["key"] in used]
     return {
         "menu": items,
         "groups": groups,
-        "capabilities": capabilities_for(user),
-        "role": normalize_role(user.role),
+        "capabilities": permissions.capabilities_for(user),
+        "role": permissions.normalize_role(user.role),
+        "inventory_enabled": inventory_enabled,
     }
+
 
 
 # ---------- Global submissions list (admin / vendor admin views) ----------
@@ -667,7 +766,7 @@ async def list_all_submissions(user: User = Depends(get_current_user), q: Option
 
 # ---------- Consolidated submissions overview (all forms + PDF forms, grouped) ----------
 @api.get("/submissions/overview")
-async def submissions_overview(user: User = Depends(get_current_user)):
+async def submissions_overview(start_date: Optional[str] = None, end_date: Optional[str] = None, user: User = Depends(get_current_user)):
     """Return submissions grouped form-wise across BOTH standard forms and PDF forms.
 
     Access model:
@@ -748,9 +847,14 @@ async def submissions_overview(user: User = Depends(get_current_user)):
         return subs
 
     for f in forms:
-        sq = {"form_id": f["form_id"]}
+        sq = {"$and": [{"form_id": f["form_id"]}]}
         if sub_q_extra:
-            sq = {"$and": [sq, sub_q_extra]}
+            sq["$and"].append(sub_q_extra)
+        if start_date or end_date:
+            date_flt = {}
+            if start_date: date_flt["$gte"] = start_date
+            if end_date: date_flt["$lte"] = end_date
+            sq["$and"].append({"created_at": date_flt})
         subs = await db.submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
         subs = await _enrich(subs)
         groups.append({
@@ -778,9 +882,14 @@ async def submissions_overview(user: User = Depends(get_current_user)):
         pdf_q = {"$and": [{"is_deleted": False}, rls]}
     pdfs = await db.pdf_templates.find(pdf_q, {"_id": 0}).sort("updated_at", -1).to_list(2000)
     for t in pdfs:
-        sq = {"template_id": t["template_id"]}
+        sq = {"$and": [{"template_id": t["template_id"]}]}
         if sub_q_extra:
-            sq = {"$and": [sq, sub_q_extra]}
+            sq["$and"].append(sub_q_extra)
+        if start_date or end_date:
+            date_flt = {}
+            if start_date: date_flt["$gte"] = start_date
+            if end_date: date_flt["$lte"] = end_date
+            sq["$and"].append({"created_at": date_flt})
         subs = await db.pdf_submissions.find(sq, {"_id": 0}).sort("created_at", -1).to_list(500)
         subs = await _enrich(subs)
         groups.append({
@@ -819,12 +928,20 @@ def _xlsx_val(v):
 
 
 @api.get("/forms/{form_id}/submissions/export.xlsx")
-async def export_submissions_xlsx(form_id: str, user: User = Depends(get_current_user)):
+async def export_submissions_xlsx(form_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None, user: User = Depends(get_current_user)):
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
     form = await _get_form_for_user(form_id, user)
     scope = await _submission_scope_query(user)
-    xls_q = {"$and": [{"form_id": form_id}, scope]} if scope else {"form_id": form_id}
+    xls_q = {"$and": [{"form_id": form_id}]}
+    if scope:
+        xls_q["$and"].append(scope)
+    if start_date or end_date:
+        date_flt = {}
+        if start_date: date_flt["$gte"] = start_date
+        if end_date: date_flt["$lte"] = end_date
+        xls_q["$and"].append({"created_at": date_flt})
+
     rows = await db.submissions.find(xls_q, {"_id": 0}) \
         .sort("created_at", 1).to_list(5000)
     fields = [f for f in (form.get("fields") or [])
@@ -927,6 +1044,7 @@ class UserCreateIn(BaseModel):
     role: str = "user"
     vendor_id: Optional[str] = None
     cluster_manager_name: Optional[str] = None
+    cluster: Optional[str] = None
     region: Optional[str] = None
     access_override: bool = False
     send_welcome_email: bool = True
@@ -974,6 +1092,7 @@ async def create_user(body: UserCreateIn, user: User = Depends(_require_user_edi
         "is_active": True, "created_at": datetime.now(timezone.utc).isoformat(),
         "vendor_id": body.vendor_id or None,
         "cluster_manager_name": body.cluster_manager_name or None,
+        "cluster": body.cluster or None,
         "region": body.region or None,
         "access_override": override_flag,
     }
@@ -1039,6 +1158,7 @@ class UserUpdateIn(BaseModel):
     password: Optional[str] = None
     vendor_id: Optional[str] = None
     cluster_manager_name: Optional[str] = None
+    cluster: Optional[str] = None
     region: Optional[str] = None
     assignments: Optional[Dict[str, List[str]]] = None
     access_override: Optional[bool] = None
@@ -1122,6 +1242,8 @@ async def update_user(user_id: str, body: UserUpdateIn, user: User = Depends(_re
         updates["vendor_id"] = body.vendor_id or None
     if body.cluster_manager_name is not None:
         updates["cluster_manager_name"] = body.cluster_manager_name or None
+    if body.cluster is not None:
+        updates["cluster"] = body.cluster or None
     if body.region is not None:
         updates["region"] = body.region or None
     if body.assignments is not None:
@@ -1422,8 +1544,13 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
                 fname = _rf(form.get("filename_template"), form=form, submission=doc)
                 if not fname.lower().endswith(".pdf"):
                     fname += ".pdf"
-                from plant_docs_routes import save_internal_plant_doc
-                save_internal_plant_doc(site_doc["site_id"], "Form", fname, pdf_bytes)
+                from plant_docs_routes import save_internal_plant_doc, parse_vault_path
+                # Use doc_vault_path from form settings, fall back to "Form"
+                vault_path = (form.get("settings") or {}).get("doc_vault_path") or "/Form"
+                folder, subfolder = parse_vault_path(vault_path)
+                if not folder:
+                    folder = "Form"
+                save_internal_plant_doc(site_doc["site_id"], folder, fname, pdf_bytes, subfolder_name=subfolder)
     except Exception as _e:
         logger.warning(f"failed to auto-sync Form PDF to vault: {_e}")
 
@@ -1433,10 +1560,17 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
 
 # ---------- Submissions (owner view) ----------
 @api.get("/forms/{form_id}/submissions", response_model=List[Submission])
-async def list_submissions(form_id: str, user: User = Depends(get_current_user)):
+async def list_submissions(form_id: str, start_date: Optional[str] = None, end_date: Optional[str] = None, user: User = Depends(get_current_user)):
     await _get_form_for_user(form_id, user)
     scope = await _submission_scope_query(user)
-    query = {"$and": [{"form_id": form_id}, scope]} if scope else {"form_id": form_id}
+    query = {"$and": [{"form_id": form_id}]}
+    if scope:
+        query["$and"].append(scope)
+    if start_date or end_date:
+        date_flt = {}
+        if start_date: date_flt["$gte"] = start_date
+        if end_date: date_flt["$lte"] = end_date
+        query["$and"].append({"created_at": date_flt})
     rows = await db.submissions.find(query, {"_id": 0}).sort("created_at", -1).to_list(2000)
     return [Submission(**r) for r in rows]
 
@@ -1983,36 +2117,125 @@ class SmtpIn(BaseModel):
     use_tls: bool = True
     enabled: bool = False
 
+class WhatsAppIn(BaseModel):
+    enabled: bool = False
+    phone_number_id: str = ""
+    access_token: str = ""
+    api_version: str = "v19.0"
+
+class NotificationCronIn(BaseModel):
+    enabled: bool = False
+    time_of_day: str = "08:00"
+    email_to_column: str = "vendor_email"
+    email_cc_column: str = "cc_email"
+    email_subject: str = "Schedule Missed - {{month_year}}"
+    email_body_html: str = "<p>The following schedules are more than 7 days overdue:</p><br/>{{missed_table}}"
+
+class RbacPolicyIn(BaseModel):
+    admin_can_edit_sites: bool = True
+    vendor_admin_can_view_sites: bool = True
+    vendor_user_can_view_sites: bool = True
+    admin_can_edit_master_data: bool = False
+    admin_can_create_forms: bool = True
+
 class SettingsIn(BaseModel):
     company_name: str = "FormForge"
     company_logo_url: str = ""
     primary_color: str = "#2563EB"
+    bg_image_url: str = ""
+    login_bg_url: str = ""
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    enable_google_login: bool = True
+    enable_inventory: bool = False
+    ai_bot_name: str = "FormForge AI"
+    ai_bot_logo_url: str = ""
+    ai_bot_gif_url: str = ""
     smtp: SmtpIn = SmtpIn()
+    whatsapp: WhatsAppIn = WhatsAppIn()
+    notifications: NotificationCronIn = NotificationCronIn()
+    rbac: RbacPolicyIn = RbacPolicyIn()
+
 
 @api.get("/settings", response_model=SettingsIn)
 async def get_settings(user: User = Depends(require_role("super_admin"))):
     doc = await db.settings.find_one({"_id": "global"}, {"_id": 0})
     if not doc:
         return SettingsIn()
-    # don't leak password back to UI
+    # don't leak password/secret back to UI
     if "smtp" in doc and "password" in doc["smtp"]:
         doc["smtp"]["password"] = "********" if doc["smtp"]["password"] else ""
+    if "whatsapp" in doc and "access_token" in doc["whatsapp"]:
+        doc["whatsapp"]["access_token"] = "********" if doc["whatsapp"]["access_token"] else ""
+    if "google_client_secret" in doc:
+        doc["google_client_secret"] = "********" if doc["google_client_secret"] else ""
     return SettingsIn(**doc)
 
 @api.put("/settings", response_model=SettingsIn)
 async def update_settings(body: SettingsIn, user: User = Depends(require_role("super_admin"))):
     doc = body.model_dump()
-    # if password is mask, keep existing
+    existing = None
+    # if password/secret is mask, keep existing
     if doc["smtp"]["password"] == "********":
         existing = await db.settings.find_one({"_id": "global"})
         if existing and existing.get("smtp", {}).get("password"):
             doc["smtp"]["password"] = existing["smtp"]["password"]
         else:
             doc["smtp"]["password"] = ""
+            
+    if doc.get("whatsapp", {}).get("access_token") == "********":
+        existing = existing or await db.settings.find_one({"_id": "global"})
+        if existing and existing.get("whatsapp", {}).get("access_token"):
+            doc["whatsapp"]["access_token"] = existing["whatsapp"]["access_token"]
+        else:
+            doc["whatsapp"]["access_token"] = ""
+            
+    if doc.get("google_client_secret") == "********":
+        existing = existing or await db.settings.find_one({"_id": "global"})
+        if existing and existing.get("google_client_secret"):
+            doc["google_client_secret"] = existing["google_client_secret"]
+        else:
+            doc["google_client_secret"] = ""
+
     await db.settings.update_one({"_id": "global"}, {"$set": doc}, upsert=True)
     if doc["smtp"]["password"]:
         doc["smtp"]["password"] = "********"
+    if doc["whatsapp"]["access_token"]:
+        doc["whatsapp"]["access_token"] = "********"
+    if doc.get("google_client_secret"):
+        doc["google_client_secret"] = "********"
     return SettingsIn(**doc)
+
+@api.post("/settings/whatsapp/test")
+async def whatsapp_test(body: Dict[str, Any], user: User = Depends(require_role("super_admin"))):
+    doc = await db.settings.find_one({"_id": "global"}) or {}
+    wa = doc.get("whatsapp", {})
+    
+    if not wa or not wa.get("enabled") or not wa.get("access_token"):
+        return {"status": "skipped_not_configured"}
+        
+    to_number = str(body.get("to", "")).strip()
+    if not to_number:
+        raise HTTPException(400, "Missing 'to' phone number")
+        
+    import httpx
+    try:
+        async with httpx.AsyncClient() as cli:
+            resp = await cli.post(
+                f"https://graph.facebook.com/{wa.get('api_version', 'v19.0')}/{wa.get('phone_number_id')}/messages",
+                headers={"Authorization": f"Bearer {wa.get('access_token')}"},
+                json={
+                    "messaging_product": "whatsapp",
+                    "to": to_number,
+                    "type": "text",
+                    "text": {"body": "This is a test message from FormForge."}
+                },
+                timeout=15.0
+            )
+        from workflow_routes import _safe_json
+        return {"status": "sent", "status_code": resp.status_code, "body": _safe_json(resp)}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
 
 
 # --- Branding (public + logo upload) --------------------------------------
@@ -2026,10 +2249,21 @@ async def public_branding():
     screen and the initial SPA bootstrap so the app name / logo can be
     shown before the user is authenticated."""
     doc = await db.settings.find_one({"_id": "global"}, {"_id": 0}) or {}
+    ai_name = doc.get("ai_bot_name")
+    ai_name = ai_name.strip() if isinstance(ai_name, str) and ai_name.strip() else "FormForge AI"
+    google_cid = doc.get("google_client_id") or os.environ.get("GOOGLE_CLIENT_ID", "")
     return {
-        "app_name":       doc.get("company_name")     or "FormForge",
-        "logo_url":       doc.get("company_logo_url") or "",
-        "primary_color":  doc.get("primary_color")    or "#2563EB",
+        "test_ping":           "v2_updated",
+        "app_name":            doc.get("company_name")     or "FormForge",
+        "logo_url":            doc.get("company_logo_url") or "",
+        "primary_color":       doc.get("primary_color")    or "#2563EB",
+        "bg_image_url":        doc.get("bg_image_url")     or "",
+        "login_bg_url":        doc.get("login_bg_url")     or "",
+        "google_client_id":    google_cid,
+        "enable_google_login": doc.get("enable_google_login", True),
+        "ai_bot_name":         ai_name,
+        "ai_bot_logo_url":     doc.get("ai_bot_logo_url") or "",
+        "ai_bot_gif_url":      doc.get("ai_bot_gif_url")  or "",
     }
 
 
@@ -2059,11 +2293,63 @@ async def upload_logo(
     return {"logo_url": url}
 
 
+@api.post("/settings/background")
+async def upload_background(
+    file: UploadFile = File(...),
+    target: str = FastAPIForm("app"),  # "app" (all pages) or "login" (login page)
+    user: User = Depends(require_role("super_admin", "admin")),
+):
+    """Upload a background image, animated GIF, or video file for App pages or Login page."""
+    data = await file.read()
+    max_bytes = 25 * 1024 * 1024   # 25 MB max for background images / GIFs / videos
+    if len(data) > max_bytes:
+        raise HTTPException(413, "Background file must be under 25 MB")
+    ct = file.content_type or ""
+    if not (ct.startswith("image/") or ct.startswith("video/")):
+        raise HTTPException(400, "Upload must be an image, GIF, or video file")
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in ("png", "jpg", "jpeg", "webp", "svg", "gif", "mp4", "webm", "ogg", "mov", "m4v"):
+        raise HTTPException(400, "Allowed extensions: PNG, JPG, WEBP, SVG, GIF, MP4, WEBM, OGG, MOV, M4V")
+    fname = f"bg-{target}-{uuid.uuid4().hex[:12]}.{ext}"
+    (_BRANDING_DIR / fname).write_bytes(data)
+    url = f"/api/public/branding/logo/{fname}"
+    field_name = "login_bg_url" if target == "login" else "bg_image_url"
+    await db.settings.update_one(
+        {"_id": "global"}, {"$set": {field_name: url}}, upsert=True,
+    )
+    return {"url": url, "field": field_name}
+
+
+@api.post("/settings/ai-avatar")
+async def upload_ai_avatar(
+    file: UploadFile = File(...),
+    target: str = FastAPIForm("gif"),  # "gif" or "logo"
+    user: User = Depends(require_role("super_admin", "admin")),
+):
+    """Upload an AI Bot Logo image or Chatbot GIF file."""
+    data = await file.read()
+    max_bytes = 5 * 1024 * 1024   # 5 MB max for animated GIFs
+    if len(data) > max_bytes:
+        raise HTTPException(413, "AI avatar file must be under 5 MB")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Upload must be an image or GIF file")
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in ("png", "jpg", "jpeg", "webp", "svg", "gif"):
+        raise HTTPException(400, "Only PNG / JPG / WEBP / SVG / GIF allowed")
+    fname = f"ai-{target}-{uuid.uuid4().hex[:12]}.{ext}"
+    (_BRANDING_DIR / fname).write_bytes(data)
+    url = f"/api/public/branding/logo/{fname}"
+    field_name = "ai_bot_gif_url" if target == "gif" else "ai_bot_logo_url"
+    await db.settings.update_one(
+        {"_id": "global"}, {"$set": {field_name: url}}, upsert=True,
+    )
+    return {"url": url, "field": field_name}
+
+
+
 @api.get("/public/branding/logo/{name}")
 async def serve_logo(name: str):
-    """Serve the uploaded logo file (public — logos are meant to be
-    shown to unauthenticated users on the login page)."""
-    # Path-traversal defence: keep to just the basename we generated.
+    """Serve the uploaded logo or background image/video file."""
     safe = Path(name).name
     fp = _BRANDING_DIR / safe
     if not fp.exists() or not fp.is_file():
@@ -2072,6 +2358,8 @@ async def serve_logo(name: str):
     media = {
         "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
         "webp": "image/webp", "svg": "image/svg+xml", "gif": "image/gif",
+        "mp4": "video/mp4", "webm": "video/webm", "ogg": "video/ogg",
+        "mov": "video/quicktime", "m4v": "video/mp4",
     }.get(ext, "application/octet-stream")
     return FileResponse(fp, media_type=media)
 
@@ -2155,6 +2443,12 @@ api.include_router(_pdf_tpl_router)
 api.include_router(_pdf_public_router)
 api.include_router(_pdf_sub_router)
 api.include_router(_pdf_pub_sub_router)
+from ai_routes import build_ai_router
+api.include_router(build_ai_router(db, get_current_user))
+
+# ---------- Portal Security Center ----------
+from security_center import build_security_center_router
+api.include_router(build_security_center_router(db, get_current_user))
 
 # ---------- Workflow Automation ----------
 from workflow_routes import build_workflow_routers
@@ -2225,11 +2519,19 @@ _bk_router, _bk_cfg = _build_backup_router(db, get_current_user)
 api.include_router(_bk_router)
 api.include_router(_bk_cfg)
 
+# ---------- Inventory Management ----------
+from inventory_routes import build_inventory_router
+api.include_router(build_inventory_router(db, get_current_user))
+
 
 @app.on_event("startup")
 async def _kick_backup_scheduler():
     # Runs alongside the FastAPI event loop. Safe no-op if scheduler is off.
     _start_backup_scheduler(db)
+    from workflow_routes import start_workflow_scheduler
+    start_workflow_scheduler(db)
+    from cron_jobs import start_missed_schedules_cron
+    start_missed_schedules_cron(db)
 
 # Mount router
 app.include_router(api)
@@ -2248,3 +2550,7 @@ app.add_middleware(
     SecurityHeadersMiddleware,
     enable_hsts=os.environ.get("SECURITY_HTTPS", "false").lower() == "true",
 )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)

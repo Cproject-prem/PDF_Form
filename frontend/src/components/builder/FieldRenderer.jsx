@@ -12,6 +12,7 @@ import { Star, Upload, X, FileText } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
+import SignaturePadField from "@/components/pdfbuilder/SignaturePadField";
 
 // Renders a single field. `value` and `onChange` enable controlled input.
 // `mode` = "preview" | "fill" | "builder-static"
@@ -171,6 +172,21 @@ export default function FieldRenderer({ field, value, onChange, mode = "fill", i
         </div>
       );
     }
+    case "signature":
+      return (
+        <div className="space-y-1.5">
+          {renderLabel()}
+          <SignaturePadField
+            field={field}
+            value={value}
+            onChange={onChange}
+            disabled={disabled}
+            label={field.label || "Signature"}
+            testid={`sig-${field.id}`}
+          />
+          {renderDesc()}
+        </div>
+      );
     case "file":
       return (
         <FileField field={field} value={value} onChange={onChange} disabled={disabled} isPublic={isPublic}

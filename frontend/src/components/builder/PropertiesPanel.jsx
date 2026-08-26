@@ -63,7 +63,7 @@ export default function PropertiesPanel({ form, selectedId, onUpdate }) {
   };
   if (!field) return <EmptyPropertiesAside />;
   return (
-    <aside className="w-96 shrink-0 border-l border-slate-200 bg-white overflow-hidden flex flex-col" data-testid="properties-panel">
+    <aside className="w-96 shrink-0 border-l border-slate-200 bg-white dark:bg-slate-900 overflow-hidden flex flex-col h-full max-h-[calc(100vh-3.5rem)]" data-testid="properties-panel">
       <FieldPropertiesTabs field={field} formFields={form.fields || []} onChange={update} />
     </aside>
   );
@@ -71,7 +71,7 @@ export default function PropertiesPanel({ form, selectedId, onUpdate }) {
 
 export function EmptyPropertiesAside() {
   return (
-    <aside className="w-80 shrink-0 border-l border-slate-200 bg-white overflow-y-auto nice-scroll">
+    <aside className="w-80 shrink-0 border-l border-slate-200 bg-white dark:bg-slate-900 overflow-y-auto nice-scroll h-full max-h-[calc(100vh-3.5rem)]">
       <div className="p-6">
         <div className="text-xs font-bold uppercase tracking-[0.1em] text-slate-500 mb-2">Properties</div>
         <div className="flex flex-col items-center justify-center text-center py-12">

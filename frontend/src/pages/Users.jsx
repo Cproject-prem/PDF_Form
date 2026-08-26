@@ -14,6 +14,7 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import {
   Table, TableHeader, TableHead, TableRow, TableBody, TableCell,
 } from "@/components/ui/table";
@@ -103,9 +104,9 @@ export default function UsersPage() {
   };
 
   const availableRoles = useMemo(() => {
-    if (myRole === "super_admin") return ROLES;
-    if (myRole === "admin") return ROLES.filter((r) => r !== "super_admin");
-    if (myRole === "vendor_admin") return ["vendor", "vendor_user"];
+    if (myRole === "super_admin") return ROLES.filter((r) => r !== "vendor" && r !== "member");
+    if (myRole === "admin") return ROLES.filter((r) => r !== "super_admin" && r !== "vendor" && r !== "member");
+    if (myRole === "vendor_admin") return ["vendor_user"];
     return [];
   }, [myRole]);
 
@@ -291,23 +292,25 @@ export default function UsersPage() {
 /* --------------------------- Scope pill --------------------------- */
 function ScopePill({ user }) {
   const items = [];
+  if (user.cluster) items.push({ label: "Cluster", value: user.cluster });
   if (user.region) items.push({ label: "Region", value: user.region });
   if (user.cluster_manager_name) items.push({ label: "Cluster mgr", value: user.cluster_manager_name });
   if (user.vendor_id) items.push({ label: "Vendor", value: user.vendor_id });
-  if (items.length === 0 && !user.access_override) return <span className="text-slate-400">—</span>;
+  if (items.length === 0 && !user.access_override) return <span className="text-slate-400 dark:text-slate-500">—</span>;
   return (
     <div className="flex flex-wrap gap-1">
       {user.access_override && (
         <span
           data-testid={`user-override-${user.email}`}
-          className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold"
+          className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 font-bold border border-amber-200 dark:border-amber-800/60"
         >
           OVERRIDE
         </span>
       )}
       {items.map((i) => (
-        <span key={i.label} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">
-          <span className="text-slate-400 mr-1">{i.label}:</span>{i.value}
+        <span key={i.label} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/60 flex items-center">
+          <span className="text-slate-500 dark:text-slate-400 font-medium mr-1">{i.label}:</span>
+          <span className="font-semibold text-blue-900 dark:text-blue-200">{i.value}</span>
         </span>
       ))}
     </div>
@@ -323,22 +326,24 @@ function ScopePill({ user }) {
 function PlantsBadge({ user }) {
   const role = user.role;
   if (role === "super_admin" || user.access_override) {
-    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">All</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-200 font-bold border border-emerald-200 dark:border-emerald-800/60">All</span>;
   }
   if (role === "admin") {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-medium">
+      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-200 font-bold border border-emerald-200 dark:border-emerald-800/60">
         {user.cluster_manager_name ? "Cluster scope" : (user.region ? "Region scope" : "Any")}
       </span>
     );
   }
   if (role === "vendor_admin") {
-    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-medium">All vendor plants</span>;
+    return <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-950/80 text-blue-800 dark:text-blue-200 font-bold border border-blue-200 dark:border-blue-800/60">All vendor plants</span>;
   }
   const n = (user.assignments?.sites || []).length;
   return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-      n === 0 ? "bg-red-50 text-red-600" : "bg-blue-50 text-blue-700"
+    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${
+      n === 0 
+        ? "bg-red-50 dark:bg-red-950/80 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60" 
+        : "bg-blue-50 dark:bg-blue-950/80 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800/60"
     }`}>
       {n} {n === 1 ? "plant" : "plants"}
     </span>
@@ -446,7 +451,7 @@ function CreateUserDialog({ open, onOpenChange, availableRoles, regions, cluster
   const canGrantOverride = me?.role === "super_admin";
   const emptyForm = () => ({
     name: "", email: "", password: "", role: availableRoles[0] || "user",
-    region: "", cluster_manager_name: "", vendor_id: "",
+    region: "", cluster_manager_name: "", cluster: "", vendor_id: "",
     access_override: false,
     autoGenerate: true, send_welcome_email: true,
   });
@@ -467,6 +472,7 @@ function CreateUserDialog({ open, onOpenChange, availableRoles, regions, cluster
       send_welcome_email: form.send_welcome_email,
       region: form.region || null,
       cluster_manager_name: form.cluster_manager_name || null,
+      cluster: form.cluster || null,
       vendor_id: form.vendor_id || null,
       access_override: !!form.access_override,
     };
@@ -511,39 +517,45 @@ function CreateUserDialog({ open, onOpenChange, availableRoles, regions, cluster
               </SelectContent>
             </Select>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label className="mb-1 block">Cluster Group</Label>
+              <Input
+                value={form.cluster || ""}
+                onChange={(e) => setForm({ ...form, cluster: e.target.value })}
+                placeholder="e.g. South-1, West-1"
+                className="h-9 text-xs"
+              />
+            </div>
+            <div><Label className="mb-1 block">Region (Site Master)</Label>
+              <SearchableDropdown
+                options={[{ label: "Any region", value: "__any__" }, ...regions.map((r) => ({ label: r, value: r }))] }
+                value={form.region}
+                onChange={(v) => setForm({ ...form, region: v })}
+                placeholder="Any"
+                className="h-9 text-xs"
+              />
+            </div>
+          </div>
           {form.role === "admin" && (
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>Region (Site Master)</Label>
-                <Select value={form.region} onValueChange={(v) => setForm({ ...form, region: v })}>
-                  <SelectTrigger data-testid="new-user-region"><SelectValue placeholder="Any" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__any__">Any region</SelectItem>
-                    {regions.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div><Label>Cluster manager</Label>
-                <Select value={form.cluster_manager_name}
-                        onValueChange={(v) => setForm({ ...form, cluster_manager_name: v })}>
-                  <SelectTrigger data-testid="new-user-cm"><SelectValue placeholder="None" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">None</SelectItem>
-                    {clusterMgrs.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div><Label className="mb-1 block">Cluster manager</Label>
+              <SearchableDropdown
+                options={[{ label: "None", value: "__none__" }, ...clusterMgrs.map((c) => ({ label: c, value: c }))] }
+                value={form.cluster_manager_name}
+                onChange={(v) => setForm({ ...form, cluster_manager_name: v })}
+                placeholder="None"
+                className="h-9 text-xs"
+              />
             </div>
           )}
           {isVendorRole && (
-            <div><Label>Vendor</Label>
-              <Select value={form.vendor_id} onValueChange={(v) => setForm({ ...form, vendor_id: v })}>
-                <SelectTrigger data-testid="new-user-vendor"><SelectValue placeholder="Choose vendor" /></SelectTrigger>
-                <SelectContent>
-                  {vendors.map((v) => (
-                    <SelectItem key={v.vendor_id} value={v.vendor_id}>{v.vendor_name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div><Label className="mb-1 block">Vendor</Label>
+              <SearchableDropdown
+                options={vendors.map((v) => ({ label: v.vendor_name, value: v.vendor_id }))}
+                value={form.vendor_id}
+                onChange={(v) => setForm({ ...form, vendor_id: v })}
+                placeholder="Choose vendor..."
+                className="h-9 text-xs"
+              />
             </div>
           )}
           <div className="border-t border-slate-100 pt-3 space-y-2">
@@ -629,6 +641,7 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
         role: user.role,
         region: user.region || "",
         cluster_manager_name: user.cluster_manager_name || "",
+        cluster: user.cluster || "",
         vendor_id: user.vendor_id || "",
         is_active: user.is_active,
         access_override: !!user.access_override,
@@ -644,7 +657,7 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
   // available on the Site Master page — see the "Relink vendors" button).
   const [vendorPlants, setVendorPlants] = useState([]);
   useEffect(() => {
-    if (!form?.vendor_id || form.role !== "vendor") { setVendorPlants([]); return; }
+    if (!form?.vendor_id || (form.role !== "vendor" && form.role !== "vendor_user")) { setVendorPlants([]); return; }
     const vendorRow = (vendors || []).find((v) => v.vendor_id === form.vendor_id) || {};
     const vName = String(vendorRow.name || vendorRow.vendor_name || "").trim().toLowerCase();
     const vEmail = String(vendorRow.email || vendorRow.vendor_email || "").trim().toLowerCase();
@@ -679,7 +692,7 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
     try {
       const resp = await api.patch(`/users/${user.user_id}`, patch);
       // Persist plant assignments for vendor members (never blocks main save).
-      if (form.role === "vendor") {
+      if (form.role === "vendor" || form.role === "vendor_user") {
         try {
           await api.put(`/vendor-users/${user.user_id}/assignments`, {
             forms: user.assignments?.forms || [],
@@ -724,27 +737,35 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
               </SelectContent>
             </Select>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label>Cluster Group</Label>
+              <Input
+                value={form.cluster || ""}
+                onChange={(e) => setForm({ ...form, cluster: e.target.value })}
+                placeholder="e.g. South-1, West-1"
+                className="h-9 text-xs"
+              />
+            </div>
+            <div><Label>Region</Label>
+              <Select value={form.region || "__any__"} onValueChange={(v) => setForm({ ...form, region: v })}>
+                <SelectTrigger data-testid="edit-user-region"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__any__">Any region</SelectItem>
+                  {regions.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           {form.role === "admin" && (
-            <div className="grid grid-cols-2 gap-3">
-              <div><Label>Region</Label>
-                <Select value={form.region || "__any__"} onValueChange={(v) => setForm({ ...form, region: v })}>
-                  <SelectTrigger data-testid="edit-user-region"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__any__">Any region</SelectItem>
-                    {regions.map((r) => <SelectItem key={r} value={r}>{r}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div><Label>Cluster manager</Label>
-                <Select value={form.cluster_manager_name || "__none__"}
-                        onValueChange={(v) => setForm({ ...form, cluster_manager_name: v })}>
-                  <SelectTrigger data-testid="edit-user-cm"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">None</SelectItem>
-                    {clusterMgrs.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div><Label>Cluster manager</Label>
+              <Select value={form.cluster_manager_name || "__none__"}
+                      onValueChange={(v) => setForm({ ...form, cluster_manager_name: v })}>
+                <SelectTrigger data-testid="edit-user-cm"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">None</SelectItem>
+                  {clusterMgrs.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
             </div>
           )}
           {isVendorRole && (
@@ -759,7 +780,7 @@ function EditUserDialog({ user, onOpenChange, availableRoles, regions, clusterMg
               </Select>
             </div>
           )}
-          {form.role === "vendor" && form.vendor_id && (
+          {(form.role === "vendor" || form.role === "vendor_user") && form.vendor_id && (
             <PlantAssignPicker
               plants={vendorPlants}
               selected={form.assigned_sites || []}

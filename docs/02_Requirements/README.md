@@ -66,3 +66,8 @@
 | NFR-8 | Full offline / air-gapped install possible (no external SaaS deps for core features) |
 | NFR-9 | Time-zone: UTC in DB; client renders in local TZ |
 | NFR-10 | All state changes on `sites`, `forms` → snapshot into `*_versions` for audit |
+| NFR-11 | **AI Isolation**: Failure of any AI component (Ollama down, AI service crashed, model load error, RAG vector DB offline, embedding failure, AI timeout) **MUST NOT** prevent or crash core FormForge functionality. |
+| NFR-12 | **AI Optionality**: AI must be a 100% optional auxiliary service. System must start and operate normally when `AI_ENABLED=false` or when AI microservice is stopped. |
+| NFR-13 | **AI Timeout Isolation**: AI timeouts (`AI_REQUEST_TIMEOUT=30`, `AI_CONNECT_TIMEOUT=5`) must return controlled responses and never block core FastAPI request threads indefinitely. |
+| NFR-14 | **AI Resource Bounding**: AI service resource consumption (RAM/CPU) must be bounded (`deploy.resources.limits`) so that AI load cannot starve core FormForge application services. |
+

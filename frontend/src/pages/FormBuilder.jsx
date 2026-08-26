@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 import VendorAccessGrid from "@/components/VendorAccessGrid";
+import VaultPathInput from "@/components/VaultPathInput";
 
 export default function FormBuilderPage() {
   const { id } = useParams();
@@ -247,6 +248,9 @@ function SettingsPanel({ form, onUpdate }) {
                 <code className="mx-1 px-1 bg-slate-100 rounded">{"{datetime}"}</code>.
                 Leave blank to use the system default (<code>{"{asset_id}_{submitter_name}_{datetime}"}</code>).
               </p>
+            </div>
+            <div className="pt-2 border-t border-slate-100">
+              <VaultPathInput value={s.doc_vault_path} onChange={(v) => setSettings({ doc_vault_path: v })} />
             </div>
           </div>
         </div>

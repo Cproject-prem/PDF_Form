@@ -74,17 +74,30 @@ api.interceptors.response.use(
 if (typeof window !== "undefined") {
   window.addEventListener("unhandledrejection", (event) => {
     const r = event?.reason;
-    // Only swallow axios errors — any other unhandled rejection is likely
-    // a real programming bug that developers should still see.
-    if (r && (r.isAxiosError || r?.name === "AxiosError" || r?.response)) {
+    // Swallow Axios errors — includes Network Error (no .response),
+    // HTTP errors (.response present), and timeout/CORS failures.
+    const isAxios =
+      r &&
+      (r.isAxiosError ||
+        r?.name === "AxiosError" ||
+        r?.response ||
+        r?.code === "ERR_NETWORK" ||
+        r?.code === "ECONNABORTED" ||
+        r?.message === "Network Error");
+    if (isAxios) {
       event.preventDefault();
       // eslint-disable-next-line no-console
-      console.warn("[api] silently swallowed unhandled axios rejection:",
-        r?.config?.method?.toUpperCase(), r?.config?.url,
-        "status:", r?.response?.status);
+      console.warn(
+        "[api] swallowed unhandled axios rejection:",
+        r?.config?.method?.toUpperCase(),
+        r?.config?.url,
+        "code:", r?.code,
+        "status:", r?.response?.status ?? "no-response"
+      );
     }
   });
 }
+
 
 /**
  * Normalise any axios/FastAPI error into a plain string suitable for

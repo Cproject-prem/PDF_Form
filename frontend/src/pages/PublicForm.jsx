@@ -30,6 +30,33 @@ export default function PublicFormPage() {
       .catch((e) => setError(e?.response?.data?.detail || "Form not found"));
   }, [slug, me]);
 
+  // --- Parse site_name query param plant override ---------------------------
+  useEffect(() => {
+    if (!form) return;
+    const params = new URLSearchParams(loc.search);
+    const siteParam = params.get("site_name") || params.get("plant") || params.get("site_id");
+    if (siteParam) {
+      const SITE_KEYS = ["site_name", "plant_name", "site_code", "asset_id", "site", "plant"];
+      const siteField = (form.fields || []).find((f) => {
+        const lbl = (f.label || "").toLowerCase().trim();
+        const name = (f.name || f.id || "").toLowerCase().trim();
+        return SITE_KEYS.includes(lbl) || SITE_KEYS.includes(name) || f.is_site_name === true;
+      });
+      setValues((prev) => {
+        if (siteField && prev[siteField.id] === siteParam) return prev;
+        if (!siteField && prev._overridden_site_name === siteParam) return prev;
+        const patch = { ...prev };
+        if (siteField) {
+          patch[siteField.id] = siteParam;
+        } else {
+          patch["_overridden_site_name"] = siteParam;
+          patch["site_name"] = siteParam;
+        }
+        return patch;
+      });
+    }
+  }, [form, loc.search]);
+
   // Whenever any trigger field's value changes, recompute every dependent
   // per-field lookup and patch the values dict.
   useEffect(() => {

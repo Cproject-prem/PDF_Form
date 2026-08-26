@@ -73,6 +73,13 @@ export function AuthProvider({ children }) {
     setUser(r.data.user);
     return r.data.user;
   };
+  const authenticateGoogle = async (payload) => {
+    const r = await api.post("/auth/google/callback", payload);
+    localStorage.setItem("ff_token", r.data.token);
+    localStorage.setItem("ff_user", JSON.stringify(r.data.user));
+    setUser(r.data.user);
+    return r.data.user;
+  };
   const logout = () => {
     localStorage.removeItem("ff_token");
     localStorage.removeItem("ff_user");
@@ -80,7 +87,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setSessionFromGoogle, branding, reloadBranding }}>
+    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setSessionFromGoogle, authenticateGoogle, branding, reloadBranding }}>
       {children}
     </AuthCtx.Provider>
   );

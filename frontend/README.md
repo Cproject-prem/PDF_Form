@@ -1,70 +1,151 @@
-# Getting Started with Create React App
+﻿# FormForge Frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+React 18 single-page application built with Create React App + craco.
+Part of the FormForge Solar Plant O&M Platform.
+
+---
+
+## Quick Start
+
+```powershell
+cd "D:\Website\PDF Form\frontend"
+yarn install
+yarn start
+```
+
+Opens at: http://localhost:3000
+
+Requires the core backend to be running on http://localhost:8001.
+
+---
+
+## Environment Setup
+
+Create a `.env` file in this directory:
+
+```
+REACT_APP_BACKEND_URL=http://localhost:8001
+```
+
+For production, leave it empty (`REACT_APP_BACKEND_URL=`) so the browser uses the same origin as the page (served via nginx).
+
+---
 
 ## Available Scripts
 
-In the project directory, you can run:
+| Command | Description |
+|---|---|
+| `yarn start` | Dev server with hot-reload at localhost:3000 |
+| `yarn build` | Production bundle into `build/` |
+| `yarn test` | Run test suite |
+| `yarn lint` | ESLint check |
 
-### `npm start`
+---
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## Key Pages
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+| Route | Page | Description |
+|---|---|---|
+| `/` | Dashboard | Overview and quick stats |
+| `/forms` | Form Builder | Drag-and-drop dynamic form designer |
+| `/submissions` | Submissions Hub | View, filter, and manage all form submissions |
+| `/workflow` | Workflow Designer | Approval chain and email notification designer |
+| `/pdf-templates` | PDF Templates | PDF template builder with field mapping |
+| `/ai-training` | AI Training | RAG knowledge base, folder management, test-RAG, chat playground |
+| `/master-data` | Master Data | Sites, vendors, plants, regions |
+| `/reports` | Reports | Submission analytics and exports |
+| `/admin` | Admin | User management, RBAC configuration |
 
-### `npm test`
+---
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## AI Status Indicator (Header)
 
-### `npm run build`
+The AI Training page shows a real-time status badge in the header:
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+| Badge | Colour | Meaning |
+|---|---|---|
+| AI Fully Active | Green | All AI components healthy |
+| RAG Active · LLM Offline | Blue | Knowledge Base & RAG indexing work; Ollama LLM not running |
+| AI Service Offline | Grey | AI microservice unreachable; all other features unaffected |
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+---
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+## Architecture
 
-### `npm run eject`
+```
+frontend/src/
+├── pages/              Top-level route components
+│   ├── AiTraining.jsx  AI knowledge management (folders, RAG, test-RAG, chat)
+│   ├── FormBuilder.jsx Dynamic drag-and-drop form designer
+│   ├── Submissions.jsx Submission viewer with workflow actions
+│   └── ...
+├── components/         Shared UI components (shadcn/ui based)
+│   ├── ui/             Base shadcn components (Button, Dialog, Input, ...)
+│   ├── FormRenderer.jsx Dynamic form field renderer
+│   └── ...
+└── lib/
+    ├── api.js          Axios client (auto-prefixes /api, handles JWT)
+    ├── fieldTypes.js   Form field type registry
+    └── workflowNodes.js Workflow node type definitions
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+---
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+## Tech Stack
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+| Library | Version | Purpose |
+|---|---|---|
+| React | 18 | UI framework |
+| CRA + craco | Latest | Build toolchain with customisation |
+| shadcn/ui + Radix UI | Latest | Component library |
+| Lucide React | Latest | Icon set |
+| Axios | Latest | HTTP client |
+| React Router | v6 | Client-side routing |
+| React Beautiful DnD / dnd-kit | Latest | Drag-and-drop form builder |
+| React Hot Toast | Latest | Toast notifications |
+| Tailwind CSS | v3 | Utility-first CSS |
+| TanStack React Query | Latest | Data fetching/caching |
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+---
 
-## Learn More
+## Connecting to AI Features
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+The frontend talks to the AI microservice **indirectly** via the backend proxy:
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+```
+Frontend -> POST /api/ai/status      -> Backend -> ai-service /health
+Frontend -> POST /api/ai/test-rag    -> Backend -> ai-service /ai/rag/query + /ai/chat
+Frontend -> POST /api/ai/chat        -> Backend -> ai-service /ai/chat
+```
 
-### Code Splitting
+If the AI microservice is down, only AI Training features are affected.
+All form, submission, workflow, and PDF features continue normally.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+---
 
-### Analyzing the Bundle Size
+## Build for Production
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+```powershell
+# Build the static bundle
+yarn build
 
-### Making a Progressive Web App
+# The build/ directory is then served by the nginx container
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+Or via Docker (recommended):
+```bash
+docker compose build frontend
+docker compose up -d
+```
 
-### Advanced Configuration
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+## Troubleshooting
 
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+| Symptom | Fix |
+|---|---|
+| Blank screen / connection refused | Check `REACT_APP_BACKEND_URL` in `.env`; ensure backend is running on 8001 |
+| CORS errors in console | Backend `CORS_ORIGINS` must include `http://localhost:3000` |
+| AI status always shows offline | Ensure ai-service is running on port 9005 and `AI_SERVICE_URL` is set in backend/.env |
+| Changes not reflecting | Hard-refresh (Ctrl+Shift+R) or clear browser cache |
+| Build fails | Delete `node_modules/` and run `yarn install` again |

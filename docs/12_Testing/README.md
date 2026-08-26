@@ -97,7 +97,18 @@ npx playwright test
 | `plant-history-change` | one field diff row inside a snapshot |
 | `tick-{fieldId}` | tick field container |
 
-## Regression test data
-
 - All fixture data lives in `backend/tests/fixtures/`.
 - Never mutates production `formforge` DB; uses `formforge_test`.
+
+## AI Fault Injection & Failure Scenarios
+
+Automated tests in `ai-service/tests/test_ai_service.py` verify that core FormForge application remains operational under AI failure modes:
+
+| Failure Scenario | Fault Simulation | Expected Behavior | Verification Script |
+|------------------|------------------|-------------------|---------------------|
+| **AI Disabled** | `AI_ENABLED=false` | Core application functions normally; AI endpoint returns controlled disabled message. | `pytest backend/tests/test_ai_proxy.py` |
+| **AI Microservice Down** | Stop `formforge-ai` container | Backend Circuit Breaker opens (`OPEN` state); returns fallback message without blocking. | `pytest backend/tests/test_ai_proxy.py` |
+| **Ollama Down** | Stop `ollama` container | `formforge-ai` reports `/health` as `degraded`/`unavailable`; core app operates normally. | `pytest ai-service/tests/` |
+| **RAG Vector DB Crash** | Delete/Corrupt `vector_db` index | VectorStore returns empty context; AI chat responds without document context. | `pytest ai-service/tests/` |
+| **AI Request Timeout** | Simulate 35 s network delay | Core backend hits `AI_REQUEST_TIMEOUT=30`, returning controlled fallback response. | `pytest backend/tests/test_ai_proxy.py` |
+

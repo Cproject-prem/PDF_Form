@@ -1,24 +1,6 @@
 # =============================================================================
 #  FormForge — docker-compose (portable, single command boot)
 # =============================================================================
-#
-#   $ cp backend/.env.example backend/.env      # edit as needed
-#   $ docker compose up -d --build              # first boot builds images
-#   $ docker compose logs -f backend            # tail server logs
-#   $ docker compose down                       # stop everything (keeps data)
-#   $ docker compose down -v                    # stop AND wipe mongo + uploads
-#
-#  Volumes:
-#      formforge_mongo_data     — Mongo dataset
-#      formforge_uploads        — user uploads / plant docs / backups
-#      formforge_completed      — filled PDF outputs
-#      formforge_assets         — image assets
-#
-#  Ports exposed to the host:
-#      80  → gateway (frontend + /api → backend)
-#      27017 → mongo (dev only; remove for prod)
-#
-# =============================================================================
 
 services:
   mongo:
@@ -27,7 +9,7 @@ services:
     volumes:
       - formforge_mongo_data:/data/db
     ports:
-      - "27017:27017"      # remove for prod so Mongo is private
+      - "127.0.0.1:27017:27017"      # Dev only; bound to localhost for security
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
       interval: 20s
@@ -42,7 +24,6 @@ services:
     env_file:
       - ./backend/.env
     environment:
-      # Override anything from .env that must point at container hosts
       MONGO_URL: "mongodb://mongo:27017"
       LOCAL_UPLOAD_ROOT: "/app/backend/uploads/local"
       LOCAL_PLANT_DOCS_ROOT: "/app/backend/uploads/local/plants"
@@ -50,6 +31,10 @@ services:
       LOCAL_COMPLETED_PDF_ROOT: "/app/backend/uploads/completed"
       LOCAL_ASSETS_ROOT: "/app/backend/uploads/assets"
       BACKUP_ROOT: "/app/backend/uploads/backups"
+      AI_ENABLED: "true"
+      AI_SERVICE_URL: "http://formforge-ai:9000"
+      AI_REQUEST_TIMEOUT: "30.0"
+      AI_CONNECT_TIMEOUT: "5.0"
     volumes:
       - formforge_uploads:/app/backend/uploads/local
       - formforge_completed:/app/backend/uploads/completed
@@ -67,11 +52,49 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        # Empty → SPA hits same-origin `/api/...`, which the gateway proxies.
         REACT_APP_BACKEND_URL: ""
     restart: unless-stopped
     expose:
       - "80"
+
+  # Optional Auxiliary AI Microservice (Completely Isolated)
+  formforge-ai:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      AI_ENABLED: "true"
+      AI_PORT: "9000"
+      OLLAMA_URL: "http://ollama:11434"
+      OLLAMA_MODEL: "gemma"
+      VECTOR_DB_PATH: "/app/data/vector_db"
+      MAX_CONCURRENT_REQUESTS: "10"
+      REQUEST_TIMEOUT_SECONDS: "30.0"
+      CONNECT_TIMEOUT_SECONDS: "5.0"
+    volumes:
+      - formforge_vector_data:/app/data/vector_db
+    expose:
+      - "9000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Optional Local LLM Engine (Internal Network Only)
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - formforge_ollama_models:/root/.ollama
+    expose:
+      - "11434"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   gateway:
     image: nginx:1.27-alpine
@@ -91,3 +114,5 @@ volumes:
   formforge_assets:
   formforge_pdf_templates:
   formforge_backups:
+  formforge_vector_data:
+  formforge_ollama_models:

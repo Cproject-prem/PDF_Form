@@ -21,6 +21,20 @@ function makeDevServerV5Compatible(devServerConfig) {
     ...compatibleConfig
   } = devServerConfig;
 
+  // Suppress the red "Uncaught runtime errors" overlay for Axios / XHR
+  // network errors (e.g. "Network Error" when the backend is briefly
+  // unavailable or the AI service is offline).  Compile errors still
+  // appear normally.  All network errors are still logged to the
+  // browser console via the api.js interceptors.
+  compatibleConfig.client = {
+    ...compatibleConfig.client,
+    overlay: {
+      errors: false,       // hides the runtime JS error overlay
+      warnings: false,     // keep warnings out of the overlay too
+      runtimeErrors: false // webpack-dev-server v4.11+ explicit flag
+    },
+  };
+
   compatibleConfig.server =
     typeof https === "object"
       ? { type: "https", options: https }
@@ -108,6 +122,20 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
+  // Suppress the "Uncaught runtime errors" red overlay.
+  // Must be set here (before makeDevServerV5Compatible rewrites the config)
+  // because the overlay is injected by the webpack-dev-server client bundle
+  // which loads before any React app code — so window.addEventListener
+  // patches in index.js cannot intercept it.
+  devServerConfig.client = {
+    ...devServerConfig.client,
+    overlay: {
+      errors: false,
+      warnings: false,
+      runtimeErrors: false,
+    },
+  };
+
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;

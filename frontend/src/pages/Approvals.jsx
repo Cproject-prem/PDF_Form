@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -10,10 +10,14 @@ import {
 import {
   Tabs, TabsList, TabsTrigger, TabsContent,
 } from "@/components/ui/tabs";
+import {
+  Popover, PopoverContent, PopoverTrigger,
+} from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import {
   CheckCircle2, XCircle, RotateCcw, Clock, ShieldCheck, FileSignature, AlertTriangle,
-  FileText, FileType2, MapPin, Building2, User as UserIcon, Globe,
+  FileText, FileType2, MapPin, Building2, User as UserIcon, Globe, Filter,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -22,8 +26,13 @@ export default function ApprovalsPage() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [pdfUrl, setPdfUrl] = useState(null);
   const [comment, setComment] = useState("");
   const [working, setWorking] = useState(false);
+
+  const [filterSite, setFilterSite] = useState([]);
+  const [filterSubmitter, setFilterSubmitter] = useState([]);
+  const [filterApprover, setFilterApprover] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -54,6 +63,40 @@ export default function ApprovalsPage() {
     }
   };
 
+  const viewPdf = async (apv) => {
+    if (!apv.submission_id || apv.submission_kind !== "pdf") return;
+    const toastId = toast.loading("Loading PDF...");
+    try {
+      const token = localStorage.getItem("ff_token");
+      const r = await fetch(`${API}/pdf-submissions/${apv.submission_id}/completed`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) throw new Error("Failed to load PDF. It may have been deleted or you lack permission.");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      setPdfUrl(url);
+      toast.dismiss(toastId);
+    } catch (e) {
+      toast.dismiss(toastId);
+      toast.error(e.message || "Failed to load PDF");
+    }
+  };
+
+  const uniqueSites = [...new Set(items.map(i => i.site_name).filter(Boolean))].sort();
+  const uniqueSubmitters = [...new Set(items.map(i => i.submitted_by_name || i.submitted_by_email).filter(Boolean))].sort();
+  const uniqueApprovers = [...new Set(items.flatMap(i => i.approvers || []).filter(Boolean))].sort();
+
+  const filteredItems = items.filter(apv => {
+    if (filterSite.length > 0 && !filterSite.includes(apv.site_name)) return false;
+    const subName = apv.submitted_by_name || apv.submitted_by_email;
+    if (filterSubmitter.length > 0 && !filterSubmitter.includes(subName)) return false;
+    if (filterApprover.length > 0) {
+      const apvList = apv.approvers || [];
+      if (!filterApprover.some(a => apvList.includes(a))) return false;
+    }
+    return true;
+  });
+
   return (
     <AppLayout>
       <div className="max-w-6xl">
@@ -65,25 +108,32 @@ export default function ApprovalsPage() {
           <p className="text-slate-500 mt-1">Steps where you are listed as an approver.</p>
         </div>
 
-        <Tabs value={tab} onValueChange={setTab}>
-          <TabsList data-testid="approvals-tabs">
-            <TabsTrigger value="pending" data-testid="tab-pending">Pending</TabsTrigger>
-            <TabsTrigger value="approved" data-testid="tab-approved">Approved</TabsTrigger>
-            <TabsTrigger value="rejected" data-testid="tab-rejected">Rejected</TabsTrigger>
-            <TabsTrigger value="all" data-testid="tab-all">All</TabsTrigger>
-          </TabsList>
+                <Tabs value={tab} onValueChange={setTab}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <TabsList data-testid="approvals-tabs">
+              <TabsTrigger value="pending" data-testid="tab-pending">Pending</TabsTrigger>
+              <TabsTrigger value="approved" data-testid="tab-approved">Approved</TabsTrigger>
+              <TabsTrigger value="rejected" data-testid="tab-rejected">Rejected</TabsTrigger>
+              <TabsTrigger value="all" data-testid="tab-all">All</TabsTrigger>
+            </TabsList>
+            <div className="flex items-center gap-2 flex-wrap">
+              <FilterDropdown label="Site" options={uniqueSites} selected={filterSite} onChange={setFilterSite} />
+              <FilterDropdown label="Submitter" options={uniqueSubmitters} selected={filterSubmitter} onChange={setFilterSubmitter} />
+              <FilterDropdown label="Approver" options={uniqueApprovers} selected={filterApprover} onChange={setFilterApprover} />
+            </div>
+          </div>
 
           <TabsContent value={tab} className="mt-4">
             {loading ? (
               <div className="text-slate-400 p-6">Loading…</div>
-            ) : items.length === 0 ? (
+            ) : filteredItems.length === 0 ? (
               <Card className="p-10 text-center rounded-2xl border-slate-100">
                 <ShieldCheck className="w-10 h-10 mx-auto text-slate-300" />
                 <p className="text-sm text-slate-500 mt-2">No {tab} approvals.</p>
               </Card>
             ) : (
               <div className="grid sm:grid-cols-2 gap-3">
-                {items.map((apv) => (
+                {filteredItems.map((apv) => (
                   <Card
                     key={apv.approval_id}
                     data-testid={`apv-card-${apv.approval_id}`}
@@ -114,8 +164,13 @@ export default function ApprovalsPage() {
         </Tabs>
       </div>
 
-      <Dialog open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
-        <DialogContent className="max-w-xl">
+      <Dialog open={!!selected} onOpenChange={(o) => {
+        if (!o) {
+          setSelected(null);
+          setPdfUrl(null);
+        }
+      }}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           {selected && (
             <>
               <DialogHeader>
@@ -130,7 +185,19 @@ export default function ApprovalsPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <Info label="Status"><StatusBadge status={selected.status} /></Info>
                   <Info label="Submission">
-                    <code className="text-xs">{selected.submission_id || "—"}</code>
+                    <div className="flex items-center gap-2">
+                      <code className="text-xs">{selected.submission_id || "—"}</code>
+                      {selected.submission_kind === "pdf" && selected.submission_id && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 text-[10px] px-2 py-0 border-slate-200"
+                          onClick={() => viewPdf(selected)}
+                        >
+                          View PDF
+                        </Button>
+                      )}
+                    </div>
                   </Info>
                   <Info label="Approvers">{(selected.approvers || []).join(", ")}</Info>
                   <Info label="Created">{formatDate(selected.created_at)}</Info>
@@ -159,6 +226,18 @@ export default function ApprovalsPage() {
                         {d.comment && <div className="text-slate-600 mt-0.5">{d.comment}</div>}
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {pdfUrl && (
+                  <div className="mt-4 border border-slate-200 rounded-lg overflow-hidden bg-slate-50">
+                    <div className="bg-slate-100 border-b border-slate-200 px-3 py-1.5 flex justify-between items-center">
+                      <span className="text-xs font-medium text-slate-600">PDF Preview</span>
+                      <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={() => window.open(pdfUrl, '_blank')}>
+                        Open in new tab
+                      </Button>
+                    </div>
+                    <iframe src={pdfUrl} className="w-full h-[60vh]" title="PDF Document" />
                   </div>
                 )}
 
@@ -282,5 +361,59 @@ function ContextBadges({ apv, large = false }) {
         );
       })}
     </div>
+  );
+}
+
+function FilterDropdown({ label, options, selected, onChange }) {
+  const opts = options || [];
+  const count = (selected || []).length;
+  
+  const toggle = (opt) => {
+    if (selected.includes(opt)) {
+      onChange(selected.filter(x => x !== opt));
+    } else {
+      onChange([...selected, opt]);
+    }
+  };
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-8 border-dashed flex gap-2">
+          <Filter className="w-3.5 h-3.5" />
+          <span className="text-xs">{label}</span>
+          {count > 0 && (
+            <span className="border-l border-slate-200 pl-2 text-xs font-semibold">{count}</span>
+          )}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[240px] p-0" align="start">
+        <div className="p-3 border-b text-xs font-medium text-slate-500 bg-slate-50">
+          Filter by {label}
+        </div>
+        <div className="max-h-[300px] overflow-y-auto p-2 space-y-1">
+          {opts.length === 0 ? (
+            <div className="text-xs text-slate-400 p-2 text-center">No options available</div>
+          ) : (
+            opts.map(opt => {
+              const isChecked = selected.includes(opt);
+              return (
+                <label key={opt} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer">
+                  <Checkbox checked={isChecked} onCheckedChange={() => toggle(opt)} />
+                  <span className="text-sm truncate" title={opt}>{opt}</span>
+                </label>
+              );
+            })
+          )}
+        </div>
+        {count > 0 && (
+          <div className="p-2 border-t bg-slate-50">
+            <Button variant="ghost" size="sm" className="w-full h-8 text-xs text-slate-500" onClick={() => onChange([])}>
+              Clear filters
+            </Button>
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }

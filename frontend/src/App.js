@@ -19,17 +19,22 @@ import UsersPage from "@/pages/Users";
 import PdfBuilderPage from "@/pages/PdfBuilder";
 import PdfSubmissionsPage from "@/pages/PdfSubmissions";
 import PublicPdfFormPage from "@/pages/PublicPdfForm";
+import EditPdfSubmissionPage from "@/pages/EditPdfSubmission";
 import WorkflowsPage from "@/pages/Workflows";
 import WorkflowDesignerPage from "@/pages/WorkflowDesigner";
 import ApprovalsPage from "@/pages/Approvals";
 import AuditLogsPage from "@/pages/AuditLogs";
+import SecurityCenterPage from "@/pages/SecurityCenter";
+import SecuritySettingsPage from "@/pages/SecuritySettings";
 import WorkflowAnalyticsPage from "@/pages/WorkflowAnalytics";
 import SmtpSettingsPage from "@/pages/SmtpSettings";
 import PublicApprovalPage from "@/pages/PublicApproval";
+import AiTrainingPage from "@/pages/AiTraining";
 import VendorsPage from "@/pages/Vendors";
 import SiteMasterPage from "@/pages/SiteMaster";
 import MasterDataPage from "@/pages/MasterData";
 import SchedulePage from "@/pages/Schedule";
+import InventoryPage from "@/pages/Inventory";
 import "@/App.css";
 
 function Protected({ children, roles }) {
@@ -41,10 +46,12 @@ function Protected({ children, roles }) {
   return children;
 }
 
-// Form-Builder / PDF-Builder access is restricted to admin+ or users flagged
-// with `access_override`.  Vendor tier is intentionally prevented from
-// reaching the builder UI even by pasting the URL directly.
-const BUILDER_ROLES = ["super_admin", "admin"];
+// Role constants — keep in sync with usePermissions.js
+const SUPER_ADMIN_ONLY       = ["super_admin"];
+const ADMIN_PLUS             = ["super_admin", "admin"];
+const VENDOR_ADMIN_PLUS      = ["super_admin", "admin", "vendor_admin"];
+const ALL_VENDOR_ROLES       = ["super_admin", "admin", "vendor_admin", "vendor_user"];
+const BUILDER_ROLES          = ADMIN_PLUS; // FormBuilder / PdfBuilder
 
 function Router() {
   const location = useLocation();
@@ -54,15 +61,29 @@ function Router() {
   }
   return (
     <Routes>
+      {/* ── Public routes ─────────────────────── */}
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/auth/callback" element={<AuthCallbackPage />} />
       <Route path="/f/:slug" element={<PublicFormPage />} />
       <Route path="/p/:slug" element={<PublicPdfFormPage />} />
+      <Route path="/p/:slug/edit/:submissionId" element={<EditPdfSubmissionPage />} />
       <Route path="/approve/:token" element={<PublicApprovalPage />} />
 
-      <Route path="/dashboard" element={<Protected><DashboardPage /></Protected>} />
+      {/* ── Admin+ workspace ──────────────────── */}
+      <Route path="/dashboard" element={<Protected roles={ADMIN_PLUS}><DashboardPage /></Protected>} />
+      <Route path="/workflows" element={<Protected roles={ADMIN_PLUS}><WorkflowsPage /></Protected>} />
+      <Route path="/workflows/:id/build" element={<Protected roles={BUILDER_ROLES}><WorkflowDesignerPage /></Protected>} />
+      <Route path="/approvals" element={<Protected roles={ADMIN_PLUS}><ApprovalsPage /></Protected>} />
+      <Route path="/workflow-analytics" element={<Protected roles={SUPER_ADMIN_ONLY}><WorkflowAnalyticsPage /></Protected>} />
+      <Route path="/reports" element={<Protected roles={ADMIN_PLUS}><WorkflowAnalyticsPage /></Protected>} />
+      <Route path="/inventory" element={<Protected roles={ADMIN_PLUS}><InventoryPage /></Protected>} />
+      <Route path="/master-data" element={<Protected roles={ADMIN_PLUS}><MasterDataPage /></Protected>} />
+      <Route path="/users" element={<Protected roles={ADMIN_PLUS}><UsersPage /></Protected>} />
+      <Route path="/ai-training" element={<Protected roles={ADMIN_PLUS}><AiTrainingPage /></Protected>} />
+
+      {/* ── Forms / Submissions (all authenticated) ── */}
       <Route path="/submissions" element={<Protected><SubmissionsHubPage /></Protected>} />
       <Route path="/forms" element={<Protected><FormsPage /></Protected>} />
       <Route path="/pdf-forms" element={<Protected><FormsPage /></Protected>} />
@@ -70,24 +91,25 @@ function Router() {
       <Route path="/forms/:id/submissions" element={<Protected><SubmissionsPage /></Protected>} />
       <Route path="/pdf-forms/:id/build" element={<Protected roles={BUILDER_ROLES}><PdfBuilderPage /></Protected>} />
       <Route path="/pdf-forms/:id/submissions" element={<Protected><PdfSubmissionsPage /></Protected>} />
-      <Route path="/workflows" element={<Protected><WorkflowsPage /></Protected>} />
-      <Route path="/workflows/:id/build" element={<Protected roles={BUILDER_ROLES}><WorkflowDesignerPage /></Protected>} />
-      <Route path="/approvals" element={<Protected><ApprovalsPage /></Protected>} />
-      <Route path="/workflow-analytics" element={<Protected><WorkflowAnalyticsPage /></Protected>} />
-      <Route path="/reports" element={<Protected><WorkflowAnalyticsPage /></Protected>} />
-      <Route path="/audit-logs" element={<Protected><AuditLogsPage /></Protected>} />
-      <Route path="/settings/smtp" element={<Protected><SmtpSettingsPage /></Protected>} />
-      <Route path="/settings/welcome-email" element={<Protected roles={["super_admin","admin"]}><WelcomeEmailSettingsPage /></Protected>} />
-      <Route path="/vendors" element={<Protected><VendorsPage /></Protected>} />
-      <Route path="/sites" element={<Protected><SiteMasterPage /></Protected>} />
+
+      {/* ── Plants / Schedule / Manpower (all authenticated) ── */}
       <Route path="/plants" element={<Protected><PlantsPage /></Protected>} />
       <Route path="/plants/:site_code" element={<Protected><PlantsPage /></Protected>} />
       <Route path="/manpower" element={<Protected><ManpowerPage /></Protected>} />
       <Route path="/schedule" element={<Protected><SchedulePage /></Protected>} />
-      <Route path="/master-data" element={<Protected><MasterDataPage /></Protected>} />
-      <Route path="/team" element={<Protected><UsersPage /></Protected>} />
-      <Route path="/settings" element={<Protected roles={["super_admin"]}><SettingsPage /></Protected>} />
-      <Route path="/users" element={<Protected roles={["super_admin", "admin"]}><UsersPage /></Protected>} />
+
+      {/* ── Sites / Vendors (vendor roles can view) ── */}
+      <Route path="/sites" element={<Protected roles={ALL_VENDOR_ROLES}><SiteMasterPage /></Protected>} />
+      <Route path="/vendors" element={<Protected roles={VENDOR_ADMIN_PLUS}><VendorsPage /></Protected>} />
+      <Route path="/team" element={<Protected roles={VENDOR_ADMIN_PLUS}><UsersPage /></Protected>} />
+
+      {/* ── Super-admin only ──────────────────── */}
+      <Route path="/security" element={<Protected roles={ADMIN_PLUS}><SecurityCenterPage /></Protected>} />
+      <Route path="/security/settings" element={<Protected roles={ADMIN_PLUS}><SecuritySettingsPage /></Protected>} />
+      <Route path="/audit-logs" element={<Protected roles={SUPER_ADMIN_ONLY}><AuditLogsPage /></Protected>} />
+      <Route path="/settings" element={<Protected roles={SUPER_ADMIN_ONLY}><SettingsPage /></Protected>} />
+      <Route path="/settings/smtp" element={<Protected roles={SUPER_ADMIN_ONLY}><SmtpSettingsPage /></Protected>} />
+      <Route path="/settings/welcome-email" element={<Protected roles={ADMIN_PLUS}><WelcomeEmailSettingsPage /></Protected>} />
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

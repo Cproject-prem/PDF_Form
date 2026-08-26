@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap,
   Handle, Position, addEdge, applyNodeChanges, applyEdgeChanges,
-  useReactFlow, MarkerType,
+  useReactFlow, MarkerType, reconnectEdge
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -25,13 +26,13 @@ import {
   ArrowLeft, Save, Play, Send, History, Trash2, Plus, X,
   Zap, GitBranch, Mail, ListChecks, Clock, Globe, Webhook, Hand, LogIn,
   CheckCheck, Pencil, ClipboardCheck, Calculator, Variable, ScrollText,
-  GitMerge, CircleStop, FileText, Copy, Loader2, Bug,
+  GitMerge, CircleStop, FileText, Copy, Loader2, Bug, MessageSquare
 } from "lucide-react";
 
 const ICONS = {
   Zap, GitBranch, Mail, ListChecks, Clock, Globe, Webhook, Hand, LogIn,
   CheckCheck, Pencil, ClipboardCheck, Calculator, Variable, ScrollText,
-  GitMerge, CircleStop, FileText,
+  GitMerge, CircleStop, FileText, MessageSquare
 };
 
 // ---------- Custom node component ---------------------------------------------
@@ -141,6 +142,8 @@ function DesignerInner() {
   const [saving, setSaving] = useState(false);
   const [executions, setExecutions] = useState([]);
   const [executionsOpen, setExecutionsOpen] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const [templateName, setTemplateName] = useState("");
   const flow = useReactFlow();
   const dragType = useRef(null);
 
@@ -198,13 +201,14 @@ function DesignerInner() {
   // node/edge handlers
   const onNodesChange = useCallback((changes) => setNodes((nds) => applyNodeChanges(changes, nds)), []);
   const onEdgesChange = useCallback((changes) => setEdges((eds) => applyEdgeChanges(changes, eds)), []);
+  const onReconnect = useCallback((oldEdge, newConnection) => setEdges((els) => reconnectEdge(oldEdge, newConnection, els)), []);
   const onConnect = useCallback((params) => {
     pushHistory();
     setEdges((eds) => addEdge({
       ...params,
       type: "smoothstep",
-      markerEnd: { type: MarkerType.ArrowClosed, color: "#94a3b8" },
-      style: { stroke: "#94a3b8", strokeWidth: 1.5 },
+      markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20, color: "#94a3b8" },
+      style: { strokeWidth: 2, stroke: "#94a3b8" }
     }, eds));
   }, [pushHistory]);
 
@@ -245,8 +249,18 @@ function DesignerInner() {
     if (!selectedId) return;
     pushHistory();
     setNodes((nds) => nds.filter((n) => n.id !== selectedId));
-    setEdges((eds) => eds.filter((e) => e.source !== selectedId && e.target !== selectedId));
+    setEdges((eds) => eds.filter((e) => e.id !== selectedId && e.source !== selectedId && e.target !== selectedId));
     setSelectedId(null);
+  };
+
+  const duplicateSelected = () => {
+    if (!selected) return;
+    const meta = getNodeMeta(selected.data.type);
+    const copy = {
+      ...meta,
+      defaults: { ...(selected.data.config || {}) },
+    };
+    addNode(copy, { x: selected.position.x + 40, y: selected.position.y + 40 });
   };
 
   const updateSelected = (patch) => {
@@ -334,6 +348,20 @@ function DesignerInner() {
     setExecutionsOpen(true);
   };
 
+  const saveTemplate = async () => {
+    try {
+      setSaving(true);
+      await api.post(`/workflows/${wf.workflow_id}/save-template`, { name: templateName });
+      toast.success("Saved as template");
+      setTemplateOpen(false);
+      setTemplateName("");
+    } catch (e) {
+      toast.error("Failed to save template");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (!wf) {
     return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
   }
@@ -368,6 +396,9 @@ function DesignerInner() {
           </Button>
           <Button data-testid="wf-history" variant="outline" size="sm" onClick={loadExecutions}>
             <History className="w-4 h-4 mr-1" /> Runs
+          </Button>
+          <Button data-testid="wf-save-template" variant="outline" size="sm" onClick={() => { setTemplateName(`Copy of ${wf.name}`); setTemplateOpen(true); }}>
+            <Copy className="w-4 h-4 mr-1" /> Save as Template
           </Button>
           {wf.status === "published" ? (
             <Button data-testid="wf-unpublish" variant="outline" size="sm" onClick={unpublish}>Unpublish</Button>
@@ -430,7 +461,9 @@ function DesignerInner() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onReconnect={onReconnect}
             onNodeClick={(_, n) => setSelectedId(n.id)}
+            onEdgeClick={(_, e) => setSelectedId(e.id)}
             onPaneClick={() => setSelectedId(null)}
             fitView
             fitViewOptions={{ padding: 0.3 }}
@@ -451,15 +484,17 @@ function DesignerInner() {
               allNodes={nodes}
               onChange={(patch) => updateSelected(patch)}
               onDelete={deleteSelected}
-              onDuplicate={() => {
-                const meta = getNodeMeta(selected.data.type);
-                const copy = {
-                  ...meta,
-                  defaults: { ...(selected.data.config || {}) },
-                };
-                addNode(copy, { x: selected.position.x + 40, y: selected.position.y + 40 });
-              }}
+              onDuplicate={duplicateSelected}
+              cfg={selected.data.config || {}}
             />
+          ) : selectedId ? (
+            <div className="p-4 flex flex-col items-center justify-center text-center mt-10 space-y-4">
+              <p className="text-sm text-slate-700 font-medium">Connection Selected</p>
+              <Button variant="destructive" onClick={deleteSelected} className="w-full">
+                <Trash2 className="w-4 h-4 mr-2" />
+                Remove Connection
+              </Button>
+            </div>
           ) : (
             <div className="p-6">
               <div className="text-xs uppercase tracking-wider font-bold text-slate-500 mb-2">Workflow</div>
@@ -562,6 +597,33 @@ function DesignerInner() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Save Template Dialog */}
+      <Dialog open={templateOpen} onOpenChange={setTemplateOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Save as Template</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="text-sm text-slate-500">
+              Save this workflow layout as a reusable template. It will appear in the templates list for future forms.
+            </div>
+            <div>
+              <div className="text-xs font-medium text-slate-500 mb-1">Template Name</div>
+              <Input
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                placeholder="e.g. Finance Approval"
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <Button variant="ghost" onClick={() => setTemplateOpen(false)}>Cancel</Button>
+              <Button onClick={saveTemplate} disabled={!templateName.trim() || saving}>
+                {saving ? "Saving..." : "Save Template"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -614,7 +676,7 @@ function ConfigPanel({ node, onChange, onDelete, onDuplicate, allNodes }) {
 
         {/* type-specific fields */}
         {meta.fields.map((f) => (
-          <FieldEditor key={f.key} field={f} value={readPath(cfg, f.key)} onChange={(v) => setCfg(f.key, v)} allNodes={allNodes} />
+          <FieldEditor key={f.key} field={f} value={readPath(cfg, f.key)} onChange={(v) => setCfg(f.key, v)} allNodes={allNodes} cfg={cfg} />
         ))}
       </div>
 
@@ -630,7 +692,62 @@ function readPath(obj, key) {
   return obj?.[a]?.[b];
 }
 
-function FieldEditor({ field, value, onChange, allNodes }) {
+function FieldIdValidator({ field, value, onChange, cfg }) {
+  const [formFields, setFormFields] = React.useState(null);
+  
+  React.useEffect(() => {
+    const tid = cfg?.filter?.template_id;
+    const fid = cfg?.filter?.form_id;
+    if (tid) {
+      import("@/lib/api").then(({ api }) => api.get(`/pdf-forms/${tid}`).then((r) => setFormFields(r.data?.fields || [])));
+    } else if (fid) {
+      import("@/lib/api").then(({ api }) => api.get(`/forms/${fid}`).then((r) => setFormFields(r.data?.fields || [])));
+    } else {
+      setFormFields(null);
+    }
+  }, [cfg?.filter?.template_id, cfg?.filter?.form_id]);
+
+  let statusMsg = null;
+  let statusColor = "text-slate-500";
+  if (!value) {
+    statusMsg = "Format: field_id (e.g. text-123)";
+  } else if (formFields) {
+    const found = formFields.find(f => f.id === value);
+    if (found) {
+      statusMsg = `✓ Found: ${found.label || found.name || found.id}`;
+      statusColor = "text-green-600";
+    } else {
+      statusMsg = "✗ Enter valid field ID";
+      statusColor = "text-red-500";
+    }
+  } else {
+    statusMsg = "Please select a form above first.";
+  }
+
+  return (
+    <div>
+      <label className="text-xs text-slate-500">{field.label}</label>
+      <Input
+        value={value ?? ""}
+        placeholder={field.placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className={!value ? "" : statusColor.includes("red") ? "border-red-500 focus-visible:ring-red-500" : "border-green-500 focus-visible:ring-green-500"}
+      />
+      <div className={`text-[10px] mt-1 ${statusColor}`}>{statusMsg}</div>
+    </div>
+  );
+}
+
+function FieldEditor({ field, value, onChange, allNodes, cfg }) {
+  if (field.type === "site_column_picker") {
+    return <SiteColumnPicker field={field} value={value} onChange={onChange} />;
+  }
+  if (field.type === "site_column_value_picker") {
+    return <SiteColumnValuePicker field={field} value={value} onChange={onChange} cfg={cfg} />;
+  }
+  if (field.type === "field_id_validator") {
+    return <FieldIdValidator field={field} value={value} onChange={onChange} cfg={cfg} />;
+  }
   if (field.type === "string") {
     return (
       <div>
@@ -758,6 +875,68 @@ function FormPicker({ field, value, onChange }) {
           ))}
         </SelectContent>
       </Select>
+    </div>
+  );
+}
+
+function SiteColumnValuePicker({ field, value, onChange, cfg }) {
+  const [opts, setOpts] = React.useState([]);
+  const depCol = cfg?.[field.depends_on];
+
+  React.useEffect(() => {
+    if (!depCol) {
+      setOpts([]);
+      return;
+    }
+    import("@/lib/api").then(({ api }) => {
+      api.get(`/sites/columns/${depCol}/values`)
+        .then((r) => setOpts(r.data || []))
+        .catch(() => setOpts([]));
+    });
+  }, [depCol]);
+
+  // Use the SearchableDropdown with multi=true
+  return (
+    <div>
+      <label className="text-xs text-slate-500">{field.label}</label>
+      <div className="h-8 mt-1">
+        <SearchableDropdown
+          options={opts}
+          value={value || []}
+          onChange={onChange}
+          placeholder={field.placeholder || "Select values..."}
+          multi={true}
+          disabled={!depCol}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Dropdown populated from /api/sites/columns — lets user pick a Site Master column key */
+function SiteColumnPicker({ field, value, onChange }) {
+  const [cols, setCols] = React.useState([]);
+  React.useEffect(() => {
+    import("@/lib/api").then(({ api }) =>
+      api.get("/sites/columns").then((r) => setCols(r.data || [])).catch(() => setCols([])));
+  }, []);
+  
+  const options = [
+    { value: "__none__", label: "(none / skip)" },
+    ...cols.map(c => ({ value: c.key, label: `${c.label} (${c.key})` }))
+  ];
+
+  return (
+    <div>
+      <label className="text-xs text-slate-500">{field.label}</label>
+      <div className="h-8 mt-1">
+        <SearchableDropdown
+          options={options}
+          value={value || ""}
+          onChange={(v) => onChange(v === "__none__" ? "" : v)}
+          placeholder={field.placeholder || "Select site column..."}
+        />
+      </div>
     </div>
   );
 }

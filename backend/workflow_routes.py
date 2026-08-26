@@ -157,6 +157,13 @@ class SmtpConfig(BaseModel):
     enabled: bool = False
 
 
+class WhatsAppConfig(BaseModel):
+    enabled: bool = False
+    phone_number_id: str = ""
+    access_token: str = ""
+    api_version: str = "v19.0"
+
+
 class EmailRequest(BaseModel):
     to: List[str]
     cc: List[str] = []
@@ -437,6 +444,14 @@ async def _load_smtp(db) -> Optional[SmtpConfig]:
     return SmtpConfig(**doc)
 
 
+async def _load_whatsapp(db) -> Optional[WhatsAppConfig]:
+    doc = await db.settings.find_one({"_id": "global"}) or {}
+    wa = doc.get("whatsapp")
+    if not wa:
+        return None
+    return WhatsAppConfig(**wa)
+
+
 async def _send_email(db, req: EmailRequest, execution_id: Optional[str] = None) -> Dict[str, Any]:
     """Queue + send an email. Always recorded in `email_queue` regardless of
     whether SMTP is enabled (so users can audit what would have been sent)."""
@@ -526,18 +541,36 @@ class WorkflowEngine:
         async for wf_doc in cursor:
             wf_doc.pop("_id", None)
             triggers = wf_doc.get("triggers") or []
-            matched = next((t for t in triggers if t.get("event") == event and self._trigger_matches(t, payload)), None)
+            matched = None
+            for t in triggers:
+                if t.get("event") == event and await self._trigger_matches(t, payload):
+                    matched = t
+                    break
             if not matched:
                 # also accept manual/api events when explicitly listed
                 continue
             execution_ids.append(await self.start(wf_doc, event, payload, user_id))
         return execution_ids
 
-    def _trigger_matches(self, trigger: Dict[str, Any], payload: Dict[str, Any]) -> bool:
+    async def _trigger_matches(self, trigger: Dict[str, Any], payload: Dict[str, Any]) -> bool:
         flt = trigger.get("filter") or {}
         for k, v in flt.items():
             if str(_lookup(payload, k)) != str(v):
                 return False
+                
+        site_match_field = trigger.get("site_match_field_id")
+        site_match_col = trigger.get("site_match_column")
+        if site_match_field and site_match_col and site_match_col != "__none__":
+            val = payload.get("values", {}).get(site_match_field)
+            if not val:
+                return False
+            # Find the site by the chosen column
+            site = await self.db.sites.find_one({site_match_col: val}, {"_id": 0})
+            if not site:
+                return False
+            # Attach the resolved site to the payload so it becomes a workflow variable
+            payload["site_row"] = site
+            
         return True
 
     async def start(self, wf_doc: Dict[str, Any], event: str, payload: Dict[str, Any],
@@ -565,8 +598,15 @@ class WorkflowEngine:
         if not entry:
             await self._finish(execution_id, "failed", error="No matching trigger node")
             return execution_id
+            
+        # Inject configured trigger fields (like date, time, day) into variables if not already provided
+        trigger_cfg = entry.get("config", {})
+        for k, v in trigger_cfg.items():
+            if k not in exec_doc["variables"] and k != "event":
+                exec_doc["variables"][k] = v
+                
         try:
-            await self._walk(wf_doc, execution_id, entry["id"], dict(payload))
+            await self._walk(wf_doc, execution_id, entry["id"], exec_doc["variables"])
             await self._finish(execution_id, "success")
         except _WaitApproval as wa:
             await self.db.workflow_executions.update_one(
@@ -746,9 +786,52 @@ class WorkflowEngine:
 
         if type_ == "action.send_email":
             to = _split_emails(cfg.get("to", ""))
+            
+            # Optionally resolve site emails
+            v = variables.get("values", {})
+            site_identifier = variables.get("site_name") or v.get("site_name") or v.get("site") or v.get("Site Name")
+            site = None
+            if site_identifier:
+                site = await self.db.sites.find_one({
+                    "$or": [{"site_name": site_identifier}, {"asset_id": site_identifier}, {"site_code": site_identifier}]
+                })
+                
+            # --- Region Filter Check ---
+            region_col = cfg.get("region_filter_column")
+            region_val = cfg.get("region_filter_value")
+            if region_col and region_val and site:
+                actual_val = str(site.get(region_col, "")).strip().lower()
+                
+                target_vals = region_val if isinstance(region_val, list) else [region_val]
+                target_vals = [str(v).strip().lower() for v in target_vals if v]
+                
+                if target_vals and actual_val not in target_vals:
+                    await self._log(execution_id, node["id"], f"email skipped: site {region_col} ({actual_val}) not in {target_vals}")
+                    return ["default"]
+                    
+            if cfg.get("use_site_to") and site:
+                col = cfg.get("site_to_column")
+                if col and site.get(col):
+                    to.extend(_split_emails(str(site.get(col))))
+
+            # Optionally add the submitter
+            if cfg.get("send_to_submitter"):
+                submitter_email = variables.get("user_email")
+                if submitter_email and submitter_email.strip():
+                    to.append(submitter_email.strip())
+                    
             cc = _split_emails(cfg.get("cc", ""))
+            if cfg.get("use_site_cc") and site:
+                col = cfg.get("site_cc_column")
+                if col and site.get(col):
+                    cc.extend(_split_emails(str(site.get(col))))
+                    
             bcc = _split_emails(cfg.get("bcc", ""))
+            
             attachments_cfg = cfg.get("attachments") or []
+            if cfg.get("attach_pdf") and "completed_pdf" not in attachments_cfg:
+                attachments_cfg.append("completed_pdf")
+                
             attachments: List[Dict[str, Any]] = []
 
             sid = variables.get("submission_id")
@@ -900,16 +983,81 @@ class WorkflowEngine:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("zip attachment generation failed: %s", exc)
 
+            body_content = str(cfg.get("body", ""))
+            body_fmt = cfg.get("body_format", "HTML")
+            
+            if body_fmt == "Plain Text (Direct Wording)":
+                import html
+                body_html = html.escape(body_content).replace("\n", "<br>")
+            else:
+                body_html = body_content
+                
             req = EmailRequest(
                 to=to, cc=cc, bcc=bcc,
                 subject=str(cfg.get("subject", "")),
-                body_html=str(cfg.get("body", "")),
+                body_html=body_html,
                 reply_to=cfg.get("reply_to") or None,
                 attachments=attachments,
             )
             result = await _send_email(self.db, req, execution_id=execution_id)
             await self._log(execution_id, node["id"], f"email {result['status']}", data=result)
             variables.setdefault("last_email", result)
+            return ["default"]
+
+        if type_ == "action.send_whatsapp":
+            cfg_wa = await _load_whatsapp(self.db)
+            if not cfg_wa or not cfg_wa.enabled:
+                await self._log(execution_id, node["id"], "whatsapp skipped_not_enabled")
+                return ["default"]
+
+            to_number = str(cfg.get("to", "")).strip()
+            group_name = str(cfg.get("group_name", "")).strip()
+            site_column = str(cfg.get("site_column", "")).strip()
+
+            # If site_column is specified, try to resolve it from db.sites
+            if site_column and site_column != "__none__":
+                v = variables.get("values", {})
+                site_identifier = variables.get("site_name") or v.get("site_name") or v.get("site") or v.get("Site Name")
+                if site_identifier:
+                    site = await self.db.sites.find_one({
+                        "$or": [{"site_name": site_identifier}, {"asset_id": site_identifier}, {"site_code": site_identifier}]
+                    })
+                    if site and site.get(site_column):
+                        to_number = str(site.get(site_column)).strip()
+            
+            # Fallback to group_name if to_number is still empty
+            if not to_number and group_name:
+                to_number = group_name
+
+            # If to is missing or empty, skip gracefully
+            if not to_number:
+                await self._log(execution_id, node["id"], "whatsapp skipped_no_recipient")
+                return ["default"]
+            
+            message = str(cfg.get("message", "")).strip()
+            
+            try:
+                import httpx
+                async with httpx.AsyncClient() as cli:
+                    resp = await cli.post(
+                        f"https://graph.facebook.com/{cfg_wa.api_version}/{cfg_wa.phone_number_id}/messages",
+                        headers={"Authorization": f"Bearer {cfg_wa.access_token}"},
+                        json={
+                            "messaging_product": "whatsapp",
+                            "to": to_number,
+                            "type": "text",
+                            "text": {"body": message}
+                        },
+                        timeout=15.0
+                    )
+                result = {"status_code": resp.status_code, "body": _safe_json(resp)}
+                if resp.status_code >= 400:
+                    log.error(f"WhatsApp API error: {resp.status_code} - {resp.text}")
+                await self._log(execution_id, node["id"], f"whatsapp sent -> {resp.status_code}", data=result)
+                variables.setdefault("last_whatsapp", result)
+            except Exception as e:
+                log.exception("WhatsApp send failed")
+                await self._log(execution_id, node["id"], f"whatsapp failed -> {e}")
             return ["default"]
 
         if type_ == "action.update_submission":
@@ -999,14 +1147,37 @@ class WorkflowEngine:
 
         auto_from_site = cfg.get("auto_from_site", True)
         site_name = variables.get("site_name")
+
+        # Multi-level approval: L1 → L2 → Admin, each mapped to a Site Master column
+        l1_col    = cfg.get("l1_site_column", "")
+        l2_col    = cfg.get("l2_site_column", "")
+        admin_col = cfg.get("admin_site_column", "approver_email")
+
         if not approvers and auto_from_site and site_name:
+            # Fetch full site doc so we can read any column
+            _proj = {"_id": 0, "approver_email": 1, "site_name": 1}
+            for _c in [l1_col, l2_col, admin_col]:
+                if _c:
+                    _proj[_c] = 1
             site = await self.db.sites.find_one(
                 {"$or": [{"site_name": site_name}, {"asset_id": site_name}, {"site_code": site_name}]},
-                {"_id": 0, "approver_email": 1, "site_name": 1},
+                _proj,
             )
-            if site and site.get("approver_email"):
-                approvers = [site["approver_email"]]
-                variables.setdefault("resolved_approver", site["approver_email"])
+            if site:
+                # Build sequential chain: L1 → L2 → Admin (skip blank)
+                _chain = []
+                for _col in [l1_col, l2_col, admin_col or "approver_email"]:
+                    if _col:
+                        _email = (site.get(_col) or "").strip()
+                        if _email and _email not in _chain:
+                            _chain.append(_email)
+                if _chain:
+                    approvers = _chain
+                    variables.setdefault("resolved_approver", _chain[-1])
+                elif site.get("approver_email"):
+                    # fallback to plain approver_email if no multi-level config matched
+                    approvers = [site["approver_email"]]
+                    variables.setdefault("resolved_approver", site["approver_email"])
 
         mode = "sequential" if node.get("type") == "approval.sequential" else (cfg.get("mode") or "sequential")
         due_days = int(cfg.get("due_days", 0) or 0)
@@ -1023,6 +1194,7 @@ class WorkflowEngine:
             "site_name": site_name,
             "subject": cfg.get("subject") or f"Approval needed: {variables.get('form_name') or 'submission'}",
             "description": cfg.get("description") or "",
+            "body_format": cfg.get("body_format", "HTML"),
             "approvers": approvers,
             "cc": cc_list,
             "mode": mode,
@@ -1049,7 +1221,13 @@ class WorkflowEngine:
                 # One-click links (no comment) as a fallback inside the email
                 approve_url = f"{base_url}/api/public/approvals/{token}/approve" if base_url else f"/api/public/approvals/{token}/approve"
                 reject_url = f"{base_url}/api/public/approvals/{token}/reject" if base_url else f"/api/public/approvals/{token}/reject"
-                html = _approval_email_html(approval["subject"], approval["description"], review_url, approve_url, reject_url)
+                
+                desc_html = approval["description"]
+                if approval.get("body_format") == "Plain Text (Direct Wording)":
+                    import html as html_lib
+                    desc_html = html_lib.escape(desc_html).replace("\n", "<br>")
+                    
+                html = _approval_email_html(approval["subject"], desc_html, review_url, approve_url, reject_url)
                 await _send_email(
                     self.db,
                     EmailRequest(
@@ -1208,6 +1386,41 @@ def build_workflow_routers(db, get_current_user):
         if wf["owner_id"] != user.user_id and user.role not in ("super_admin", "admin"):
             raise HTTPException(403, "Not allowed")
         return wf
+
+    @workflows.post("/{workflow_id}/save-template")
+    async def save_workflow_as_template(workflow_id: str, body: Dict[str, str], user=Depends(get_current_user)):
+        await _require_admin(user)
+        wf = await db.workflows.find_one({"workflow_id": workflow_id})
+        if not wf:
+            raise HTTPException(404, "Workflow not found")
+        
+        tpl_name = body.get("name") or f"Template from {wf.get('name', 'Untitled')}"
+        tpl_slug = re.sub(r'[^a-z0-9]+', '-', tpl_name.lower()).strip('-')
+        
+        # Ensure slug is unique
+        existing = await db.workflows.find_one({"is_template": True, "template_slug": tpl_slug})
+        if existing:
+            tpl_slug = f"{tpl_slug}-{_gen('')[:4]}"
+            
+        now = _now()
+        doc = {
+            "workflow_id": _gen("wf"),
+            "name": tpl_name,
+            "description": body.get("description", wf.get("description", "")),
+            "status": "published",
+            "version": 1,
+            "nodes": wf.get("nodes", []),
+            "edges": wf.get("edges", []),
+            "triggers": _extract_triggers(wf.get("nodes", [])),
+            "owner_id": user.user_id,
+            "permissions": {},
+            "is_template": True,
+            "template_slug": tpl_slug,
+            "created_at": now, "updated_at": now,
+        }
+        await db.workflows.insert_one(doc)
+        await _audit(db, user, "workflow.save_template", "workflow", doc["workflow_id"], {"name": doc["name"]})
+        return _clean(doc)
 
     @workflows.put("/{workflow_id}")
     async def update_workflow(workflow_id: str, body: WorkflowIn, user=Depends(get_current_user)):
@@ -1384,7 +1597,11 @@ def build_workflow_routers(db, get_current_user):
     @approvals.get("")
     async def list_my_approvals(status_filter: Optional[str] = None, user=Depends(get_current_user)):
         identifiers = [user.user_id, user.email]
-        q: Dict[str, Any] = {"approvers": {"$in": identifiers}}
+        if user.role in ("super_admin", "admin") or getattr(user, "access_override", False):
+            q: Dict[str, Any] = {}
+        else:
+            q: Dict[str, Any] = {"approvers": {"$in": identifiers}}
+            
         if status_filter:
             q["status"] = status_filter
         rows = await db.approvals.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -1406,11 +1623,135 @@ def build_workflow_routers(db, get_current_user):
         if apv.get("status") != "pending":
             raise HTTPException(400, "Approval already finalised")
         identifiers = {user.user_id, user.email}
-        if not (identifiers & set(apv.get("approvers", []))):
-            raise HTTPException(403, "Not an approver on this step")
+        is_approver = bool(identifiers & set(apv.get("approvers", [])))
+
+        # Region/Cluster member override check
+        has_region_access = False
+        if user.role in ("super_admin", "admin") or getattr(user, "access_override", False):
+            has_region_access = True
+        else:
+            u_region = getattr(user, "region", None)
+            u_cluster = getattr(user, "cluster_manager_name", None)
+            apv_region = apv.get("region") or apv.get("target_region")
+            apv_cluster = apv.get("cluster") or apv.get("target_cluster_manager_name")
+
+            if u_region and apv_region and str(u_region).strip().lower() == str(apv_region).strip().lower():
+                has_region_access = True
+            elif u_cluster and apv_cluster and str(u_cluster).strip().lower() == str(apv_cluster).strip().lower():
+                has_region_access = True
+            else:
+                site_name = apv.get("site_name")
+                if site_name:
+                    site = await db.sites.find_one(
+                        {"$or": [{"site_name": site_name}, {"asset_id": site_name}, {"site_code": site_name}]},
+                        {"_id": 0, "region": 1, "cluster_manager_name": 1}
+                    )
+                    if site:
+                        s_cluster = site.get("cluster_manager_name")
+                        s_region = site.get("region")
+                        if (u_cluster and s_cluster and str(u_cluster).strip().lower() == str(s_cluster).strip().lower()) or \
+                           (u_region and s_region and str(u_region).strip().lower() == str(s_region).strip().lower()):
+                            has_region_access = True
+
+        if not is_approver and not has_region_access:
+            raise HTTPException(403, "Not an approver on this step and not in the same region")
+
+        if not is_approver and has_region_access:
+            body.comment = f"[REGION OVERRIDE] {body.comment or ''}".strip()
+
         await _record_decision(db, apv, user.email or user.user_id, body, request)
         await _maybe_resume(db, engine, apv["approval_id"])
         return _clean(await db.approvals.find_one({"approval_id": approval_id}))
+
+    @approvals.get("/submission/{submission_id}")
+    async def get_approval_by_submission(submission_id: str, user=Depends(get_current_user)):
+        # Finds the active or most recent approval for a submission
+        apv = _clean(await db.approvals.find_one({"submission_id": submission_id}, sort=[("created_at", -1)]))
+        if not apv:
+            raise HTTPException(404, "No approval found for this submission")
+        return await _enrich_approval(apv)
+
+    @approvals.post("/{approval_id}/override-decide")
+    async def override_decide(approval_id: str, body: ApprovalAction, request: Request, user=Depends(get_current_user)):
+        apv = _clean(await db.approvals.find_one({"approval_id": approval_id}))
+        if not apv:
+            raise HTTPException(404, "Not found")
+        if apv.get("status") != "pending":
+            raise HTTPException(400, "Approval already finalised")
+        
+        # Check permissions: Super Admin / Admin / access_override OR Same Region / Cluster Member match
+        has_access = False
+        if user.role in ("super_admin", "admin") or getattr(user, "access_override", False):
+            has_access = True
+        else:
+            u_region = getattr(user, "region", None)
+            u_cluster = getattr(user, "cluster_manager_name", None)
+            apv_region = apv.get("region") or apv.get("target_region")
+            apv_cluster = apv.get("cluster") or apv.get("target_cluster_manager_name")
+
+            if u_region and apv_region and str(u_region).strip().lower() == str(apv_region).strip().lower():
+                has_access = True
+            elif u_cluster and apv_cluster and str(u_cluster).strip().lower() == str(apv_cluster).strip().lower():
+                has_access = True
+            else:
+                site_name = apv.get("site_name")
+                if site_name:
+                    site = await db.sites.find_one(
+                        {"$or": [{"site_name": site_name}, {"asset_id": site_name}, {"site_code": site_name}]},
+                        {"_id": 0, "region": 1, "cluster_manager_name": 1}
+                    )
+                    if site:
+                        s_cluster = site.get("cluster_manager_name")
+                        s_region = site.get("region")
+                        if (u_cluster and s_cluster and str(u_cluster).strip().lower() == str(s_cluster).strip().lower()) or \
+                           (u_region and s_region and str(u_region).strip().lower() == str(s_region).strip().lower()):
+                            has_access = True
+
+        if not has_access:
+            raise HTTPException(403, "Not authorized to override this approval for this region")
+
+        approver_name = getattr(user, "name", user.email or user.user_id)
+        override_signature = f"{approver_name} (Override)"
+        body.comment = f"[OVERRIDE] {body.comment or ''}".strip()
+
+        # Update the decisions list with this user's decision, bypassing normal index logic
+        # For simplicity, we just force the approval step to complete with this decision.
+        decision_norm = (body.decision or "").lower()
+        if decision_norm not in ("approve", "reject", "return"):
+            raise HTTPException(400, "Invalid decision")
+        
+        decision_doc = {
+            "approver": override_signature,
+            "decision": decision_norm,
+            "comment": body.comment,
+            "signature": body.signature or None,
+            "at": _now(),
+            "ip": request.client.host if request.client else None,
+        }
+        decisions = list(apv.get("decisions", [])) + [decision_doc]
+        
+        new_status = "approved" if decision_norm == "approve" else "rejected"
+        if decision_norm == "return":
+            new_status = "returned"
+            
+        await db.approvals.update_one(
+            {"approval_id": apv["approval_id"]},
+            {"$set": {"decisions": decisions, "status": new_status, "updated_at": _now()}},
+        )
+
+        # Sync status to the submission record
+        sid = apv.get("submission_id")
+        if sid:
+            col = "pdf_submissions" if apv.get("submission_kind") == "pdf" else "submissions"
+            await db[col].update_one({"submission_id": sid}, {"$set": {"status": new_status}})
+
+        # Clear any pending tokens since the approval is now finalized
+        await db.approval_tokens.delete_many({"approval_id": apv["approval_id"]})
+
+        # Tell engine to resume
+        apv_updated = _clean(await db.approvals.find_one({"approval_id": approval_id}))
+        await _maybe_resume(db, engine, approval_id)
+        return apv_updated
 
     # ---------- Public approval links ----------
 
@@ -1453,6 +1794,19 @@ def build_workflow_routers(db, get_current_user):
     async def list_audit(limit: int = 200, user=Depends(get_current_user)):
         await _require_admin(user)
         rows = await db.audit_logs.find({}, {"_id": 0}).sort("created_at", -1).to_list(min(limit, 1000))
+        # Batch resolve actor_id -> actor_name / actor_email
+        actor_ids = list({r.get("actor_id") for r in rows if r.get("actor_id")})
+        users_by_id = {}
+        if actor_ids:
+            async for u in db.users.find({"user_id": {"$in": actor_ids}}, {"_id": 0, "user_id": 1, "name": 1, "email": 1}):
+                users_by_id[u["user_id"]] = u
+        for r in rows:
+            u = users_by_id.get(r.get("actor_id"))
+            if u:
+                r["actor_name"] = r.get("actor_name") or u.get("name") or u.get("email")
+                r["actor_email"] = r.get("actor_email") or u.get("email")
+            if not r.get("actor_name"):
+                r["actor_name"] = r.get("actor_email") or (r.get("actor_id") if not str(r.get("actor_id")).startswith("usr_") else "System")
         return rows
 
     @audit.post("")
@@ -1460,6 +1814,81 @@ def build_workflow_routers(db, get_current_user):
         await _audit(db, user, body.get("action", "manual"), body.get("target_type", "other"),
                      body.get("target_id"), body.get("details") or {}, ip=request.client.host if request.client else None)
         return {"ok": True}
+
+    @audit.post("/{audit_id}/restore")
+    async def restore_audit(audit_id: str, user=Depends(get_current_user)):
+        await _require_admin(user)
+        log = await db.audit_logs.find_one({"audit_id": audit_id})
+        if not log:
+            raise HTTPException(404, "Audit log not found")
+        
+        action = log.get("action")
+        target_id = log.get("target_id")
+        created_at = log.get("created_at")
+        
+        if not target_id:
+            raise HTTPException(400, "Cannot restore: no target_id in log")
+            
+        if action == "site.update":
+            snapshot = await db.site_versions.find_one(
+                {"site_id": target_id, "saved_at": {"$lte": created_at}},
+                sort=[("saved_at", -1)]
+            )
+            if not snapshot:
+                raise HTTPException(404, "No version snapshot found to restore")
+                
+            old_row = snapshot.get("row")
+            if not old_row:
+                raise HTTPException(400, "Snapshot contains no data")
+                
+            # Perform the restore (update the live row)
+            old_row["updated_at"] = _now()
+            old_row["updated_by"] = getattr(user, "user_id", None)
+            old_row.pop("_id", None)
+            
+            await db.sites.update_one({"site_id": target_id}, {"$set": old_row})
+            
+            # Save a new snapshot for the restore itself
+            await db.site_versions.insert_one({
+                "snapshot_id": _gen("siv"), "site_id": target_id,
+                "version": old_row.get("version", 1), "row": old_row,
+                "saved_at": _now(), "saved_by": getattr(user, "user_id", None),
+            })
+            
+            # Emit restore audit log
+            await _audit(db, user, "site.restore", "master_data", target_id, {"restored_from_audit": audit_id})
+            return {"ok": True, "message": "Site restored"}
+            
+        elif action == "master.update":
+            snapshot = await db.master_versions.find_one(
+                {"row_id": target_id, "saved_at": {"$lte": created_at}},
+                sort=[("saved_at", -1)]
+            )
+            if not snapshot:
+                raise HTTPException(404, "No version snapshot found to restore")
+                
+            old_data = snapshot.get("data")
+            if not old_data:
+                raise HTTPException(400, "Snapshot contains no data")
+                
+            upd = {
+                "data": old_data,
+                "updated_at": _now(),
+                "updated_by": getattr(user, "user_id", None)
+            }
+            await db.master_data.update_one({"row_id": target_id}, {"$set": upd})
+            
+            await db.master_versions.insert_one({
+                "snapshot_id": _gen("msv"), "row_id": target_id, "table": snapshot.get("table"),
+                "version": snapshot.get("version", 1), "data": old_data,
+                "saved_at": _now(), "saved_by": getattr(user, "user_id", None),
+            })
+            
+            await _audit(db, user, "master.restore", "master_data", target_id, {"restored_from_audit": audit_id})
+            return {"ok": True, "message": "Master data restored"}
+            
+        else:
+            raise HTTPException(400, f"Cannot restore action type: {action}")
 
     # ---------- Analytics ----------
 
@@ -1552,10 +1981,13 @@ def build_workflow_routers(db, get_current_user):
 
 async def _audit(db, user, action: str, target_type: str, target_id: Optional[str],
                  details: Dict[str, Any], ip: Optional[str] = None) -> None:
+    uname = getattr(user, "name", None) or getattr(user, "full_name", None)
+    uemail = getattr(user, "email", None)
     await db.audit_logs.insert_one({
         "audit_id": _gen("aud"),
         "actor_id": getattr(user, "user_id", None),
-        "actor_email": getattr(user, "email", None),
+        "actor_name": uname or uemail,
+        "actor_email": uemail,
         "action": action,
         "target_type": target_type,
         "target_id": target_id,
@@ -1602,6 +2034,12 @@ async def _record_decision(db, apv: Dict[str, Any], approver: str,
         {"$set": {"decisions": decisions, "status": new_status,
                   "current_index": new_index, "updated_at": _now()}},
     )
+
+    # Sync status to the submission record
+    sid = apv.get("submission_id")
+    if sid:
+        col = "pdf_submissions" if apv.get("submission_kind") == "pdf" else "submissions"
+        await db[col].update_one({"submission_id": sid}, {"$set": {"status": new_status}})
     if new_status == "pending" and mode == "sequential":
         # send next approver an invite
         next_approver = apv["approvers"][new_index]
@@ -1614,9 +2052,14 @@ async def _record_decision(db, apv: Dict[str, Any], approver: str,
         review_url = f"{base_url}/approve/{token}" if base_url else f"/approve/{token}"
         approve_url = f"{base_url}/api/public/approvals/{token}/approve" if base_url else f"/api/public/approvals/{token}/approve"
         reject_url = f"{base_url}/api/public/approvals/{token}/reject" if base_url else f"/api/public/approvals/{token}/reject"
+        desc_html = apv.get("description", "")
+        if apv.get("body_format") == "Plain Text (Direct Wording)":
+            import html as html_lib
+            desc_html = html_lib.escape(desc_html).replace("\n", "<br>")
+            
         html = _approval_email_html(
             apv.get("subject", "Approval needed"),
-            apv.get("description", ""),
+            desc_html,
             review_url, approve_url, reject_url,
         )
         await _send_email(
@@ -1639,7 +2082,13 @@ def _extract_triggers(nodes: List[Any]) -> List[Dict[str, Any]]:
         if isinstance(n, dict) and n.get("kind") == "trigger":
             cfg = n.get("config", {}) or {}
             event = cfg.get("event") or n.get("type", "").replace("trigger.", "")
-            out.append({"event": event, "filter": cfg.get("filter") or {}, "node_id": n.get("id")})
+            out.append({
+                "event": event, 
+                "filter": cfg.get("filter") or {}, 
+                "node_id": n.get("id"),
+                "site_match_field_id": cfg.get("site_match_field_id"),
+                "site_match_column": cfg.get("site_match_column")
+            })
     return out
 
 
@@ -1781,5 +2230,67 @@ async def seed_workflow_templates(db) -> None:
             "owner_id": "system",
             "permissions": {},
             "is_template": True, "template_slug": tpl["slug"],
-            "created_at": now, "updated_at": now,
         })
+
+# --- Background Scheduler for trigger.schedule ---
+async def _workflow_scheduler_loop(db):
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            # Find published workflows that are not templates
+            cursor = db.workflows.find({"status": "published", "is_template": {"$ne": True}})
+            async for wf in cursor:
+                wf_id = wf.get("workflow_id")
+                triggers = wf.get("triggers", [])
+                for t in triggers:
+                    if t.get("event") == "schedule":
+                        cfg = t.get("config", {})
+                        freq = cfg.get("frequency", "daily")
+                        target_time = cfg.get("time", "")  # HH:MM
+                        
+                        # Very simple match logic based on server local time for simplicity
+                        # Realistically you'd want proper TZ support here, but matching HH:MM string is acceptable for now
+                        now_local = datetime.now()
+                        current_hm = now_local.strftime("%H:%M")
+                        
+                        if current_hm != target_time:
+                            continue
+                            
+                        # It's the right time! Now check frequency conditions
+                        should_run = False
+                        if freq == "daily":
+                            should_run = True
+                        elif freq == "once":
+                            target_date = cfg.get("date", "")
+                            if now_local.strftime("%Y-%m-%d") == target_date:
+                                should_run = True
+                        elif freq == "weekly":
+                            target_dow = str(cfg.get("day_of_week", "Monday"))
+                            if now_local.strftime("%A") == target_dow:
+                                should_run = True
+                        elif freq == "monthly":
+                            target_dom = str(cfg.get("day_of_month", "1"))
+                            if str(now_local.day) == target_dom:
+                                should_run = True
+                                
+                        if should_run:
+                            # Prevent double execution within the same minute
+                            log_key = f"{wf_id}_{now_local.strftime('%Y%m%d%H%M')}"
+                            try:
+                                await db.workflow_schedule_logs.insert_one({"_id": log_key, "executed_at": _now()})
+                                # Fire the workflow
+                                engine = WorkflowEngine(db)
+                                await engine.start(wf, "schedule", {"trigger": "scheduler", "executed_at": now_local.isoformat()})
+                                log.info(f"Scheduled workflow {wf_id} fired.")
+                            except Exception: # DuplicateKeyError
+                                pass # Already fired this minute
+                                
+        except Exception as e:
+            log.exception("Scheduler loop error")
+            
+        # Wait until the start of the next minute
+        now_sec = datetime.now().second
+        await asyncio.sleep(60 - now_sec)
+
+def start_workflow_scheduler(db):
+    asyncio.create_task(_workflow_scheduler_loop(db))

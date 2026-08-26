@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
@@ -14,11 +14,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import {
   Plus, Search, Star, MoreHorizontal, Copy, Archive, Trash2, ExternalLink,
   PieChart, Pencil, Globe, Circle, FileText, FileType2, UploadCloud, User as UserIcon,
+  Share2, CheckCircle2, AlertTriangle, Building2,
 } from "lucide-react";
 import { formatDate } from "@/lib/utils2";
 
@@ -34,9 +36,11 @@ export default function FormsPage() {
   const [chooserOpen, setChooserOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [pdfUploadOpen, setPdfUploadOpen] = useState(false);
+  const [shareTarget, setShareTarget] = useState(null); // { item, type: "pdf" | "form" }
   const [pdfTitle, setPdfTitle] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
   const [pdfUploading, setPdfUploading] = useState(false);
+  const [autoDetect, setAutoDetect] = useState(true);
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const fileInputRef = useRef(null);
@@ -78,6 +82,7 @@ export default function FormsPage() {
       const fd = new FormData();
       fd.append("file", pdfFile);
       if (pdfTitle) fd.append("title", pdfTitle);
+      fd.append("auto_detect", autoDetect ? "true" : "false");
       const r = await api.post("/pdf-forms/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
       toast.success("PDF uploaded");
       setPdfUploadOpen(false); setPdfTitle(""); setPdfFile(null);
@@ -226,6 +231,24 @@ export default function FormsPage() {
                          data-testid="pdf-file-input"
                          onChange={(e) => setPdfFile(e.target.files?.[0] || null)} />
                 </div>
+                
+                <div className="flex items-start space-x-2 mt-4 p-3 bg-blue-50/50 rounded-lg border border-blue-100">
+                  <input 
+                    type="checkbox" 
+                    id="auto-detect" 
+                    checked={autoDetect} 
+                    onChange={(e) => setAutoDetect(e.target.checked)}
+                    className="mt-1"
+                  />
+                  <div>
+                    <label htmlFor="auto-detect" className="text-sm font-medium text-slate-800 cursor-pointer">
+                      Auto-Detect Fields (AI)
+                    </label>
+                    <p className="text-xs text-slate-500 leading-relaxed">
+                      Automatically place fields over placeholders like <code className="bg-white px-1 rounded">{"{{dropdown}}"}</code> or <code className="bg-white px-1 rounded">{"{{signature}}"}</code> in your PDF.
+                    </p>
+                  </div>
+                </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setPdfUploadOpen(false)}>Cancel</Button>
@@ -294,6 +317,7 @@ export default function FormsPage() {
                               <DropdownMenuItem onClick={() => nav(`/pdf-forms/${t.template_id}/build`)}><Pencil className="w-4 h-4 mr-2" /> Edit</DropdownMenuItem>
                             )}
                             <DropdownMenuItem onClick={() => nav(`/pdf-forms/${t.template_id}/submissions`)}><PieChart className="w-4 h-4 mr-2" /> Submissions</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setShareTarget({ item: t, type: "pdf" })}><Share2 className="w-4 h-4 mr-2 text-blue-600" /> Share &amp; Plant Override</DropdownMenuItem>
                             {canEditForms && (
                               <>
                                 <DropdownMenuItem onClick={() => pdfDuplicate(t)}><Copy className="w-4 h-4 mr-2" /> Duplicate</DropdownMenuItem>
@@ -322,12 +346,9 @@ export default function FormsPage() {
                         <Button data-testid={`pdf-subs-${t.template_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/pdf-forms/${t.template_id}/submissions`)}>
                           <PieChart className="w-3.5 h-3.5 mr-1.5" /> Subs
                         </Button>
-                        {t.status === "published" && (
-                          <Button variant="outline" className="h-9 px-3"
-                                  onClick={() => window.open(`/p/${t.slug}`, "_blank")} title="Open public form">
-                            <Globe className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
+                        <Button variant="outline" className="h-9 px-3" onClick={() => setShareTarget({ item: t, type: "pdf" })} title="Share Options & Plant Override">
+                          <Share2 className="w-3.5 h-3.5 text-blue-600" />
+                        </Button>
                       </div>
                     </Card>
                   ))}
@@ -363,6 +384,7 @@ export default function FormsPage() {
                         <DropdownMenuItem onClick={() => nav(`/forms/${f.form_id}/build`)}><Pencil className="w-4 h-4 mr-2" /> Edit</DropdownMenuItem>
                       )}
                       <DropdownMenuItem onClick={() => nav(`/forms/${f.form_id}/submissions`)}><PieChart className="w-4 h-4 mr-2" /> Submissions</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setShareTarget({ item: f, type: "form" })}><Share2 className="w-4 h-4 mr-2 text-blue-600" /> Share &amp; Plant Override</DropdownMenuItem>
                       <DropdownMenuItem onClick={() => toggleFav(f)}><Star className="w-4 h-4 mr-2" /> {f.is_favorite ? "Unfavorite" : "Favorite"}</DropdownMenuItem>
                       {canEditForms && (
                         <>
@@ -403,11 +425,9 @@ export default function FormsPage() {
                   <Button data-testid={`view-subs-${f.form_id}`} variant="outline" className="flex-1 h-9" onClick={() => nav(`/forms/${f.form_id}/submissions`)}>
                     <PieChart className="w-3.5 h-3.5 mr-1.5" /> Subs
                   </Button>
-                  {f.status === "published" && (
-                    <Button variant="outline" className="h-9 px-3" onClick={() => window.open(`/f/${f.slug}`, "_blank")} title="Open public form">
-                      <Globe className="w-3.5 h-3.5" />
-                    </Button>
-                  )}
+                  <Button variant="outline" className="h-9 px-3" onClick={() => setShareTarget({ item: f, type: "form" })} title="Share Options & Plant Override">
+                    <Share2 className="w-3.5 h-3.5 text-blue-600" />
+                  </Button>
                 </div>
               </Card>
             ))}
@@ -417,6 +437,139 @@ export default function FormsPage() {
           </div>
         )}
       </div>
+
+      <ShareFormModal
+        item={shareTarget?.item}
+        type={shareTarget?.type}
+        open={!!shareTarget}
+        onOpenChange={(v) => !v && setShareTarget(null)}
+      />
     </AppLayout>
+  );
+}
+
+/* ---------------- Share & Plant Override Modal ---------------- */
+function ShareFormModal({ item, type, open, onOpenChange }) {
+  const [selectedPlant, setSelectedPlant] = useState("");
+  const [sites, setSites] = useState([]);
+  const [loadingSites, setLoadingSites] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setLoadingSites(true);
+      api.get("/sites")
+        .then((r) => setSites(r.data || []))
+        .catch(() => setSites([]))
+        .finally(() => setLoadingSites(false));
+    } else {
+      setSelectedPlant("");
+    }
+  }, [open]);
+
+  // Check if form has any field mapped to site_name
+  const siteField = useMemo(() => {
+    const fields = item?.fields || [];
+    const SITE_KEYS = ["site_name", "plant_name", "site_code", "asset_id", "site", "plant"];
+    return fields.find(f => {
+      const lbl = (f.label || "").toLowerCase().trim();
+      const name = (f.name || f.id || "").toLowerCase().trim();
+      return SITE_KEYS.includes(lbl) || SITE_KEYS.includes(name) || f.is_site_name === true;
+    });
+  }, [item]);
+
+  const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
+  const rawPath = type === "pdf" ? `/p/${item?.slug || item?.template_id}` : `/f/${item?.slug || item?.form_id}`;
+
+  const shareUrl = useMemo(() => {
+    let url = `${baseUrl}${rawPath}`;
+    if (selectedPlant) {
+      url += `?site_name=${encodeURIComponent(selectedPlant)}`;
+    }
+    return url;
+  }, [baseUrl, rawPath, selectedPlant]);
+
+  const copyLink = () => {
+    navigator.clipboard.writeText(shareUrl);
+    toast.success("Share link copied to clipboard!");
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-slate-900 dark:text-slate-100">
+            <Share2 className="w-5 h-5 text-blue-600" />
+            Share &amp; Plant Options — {item?.title}
+          </DialogTitle>
+          <DialogDescription>
+            Configure public share link and plant binding for this {type === "pdf" ? "PDF Form" : "Standard Form"}.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          {/* Site Field Status Badge */}
+          {siteField ? (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center gap-2.5 text-xs text-emerald-800 dark:text-emerald-200">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <div>
+                <span className="font-bold">Compulsory site_name Field Present:</span> Form contains field <code className="bg-emerald-100 dark:bg-emerald-900 px-1 py-0.5 rounded font-mono font-bold text-emerald-900 dark:text-emerald-100">{siteField.label || siteField.name || siteField.id}</code>.
+              </div>
+            </div>
+          ) : (
+            <div className="p-3 bg-amber-50 dark:bg-amber-950/80 border border-amber-200 dark:border-amber-800 rounded-xl flex items-center gap-2.5 text-xs text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <div>
+                <span className="font-bold">No site_name field in schema:</span> Select a plant below to override and bind form submissions to a specific plant.
+              </div>
+            </div>
+          )}
+
+          {/* Plant Override Section */}
+          <div className="space-y-2 p-3.5 bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                <span>Override Plant for Respective Form</span>
+              </Label>
+              {selectedPlant && (
+                <span className="text-[10px] bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 px-1.5 py-0.5 rounded font-bold">OVERRIDE ACTIVE</span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+              Select a plant to override submission binding for this form link.
+            </p>
+            <div className="pt-1">
+              <SearchableDropdown
+                options={sites.map((s) => ({ label: `${s.site_name || s.site_code} (${s.region || "No Region"})`, value: s.site_name || s.site_code }))}
+                value={selectedPlant}
+                onChange={setSelectedPlant}
+                placeholder="Select Plant / Site to override..."
+                className="h-9 text-xs"
+              />
+            </div>
+          </div>
+
+          {/* Generated Share Link Box */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-bold text-slate-700 dark:text-slate-300">Public Share URL</Label>
+            <div className="flex gap-2">
+              <Input value={shareUrl} readOnly className="text-xs h-9 font-mono bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-100" />
+              <Button size="sm" onClick={copyLink} className="h-9 px-3 bg-blue-600 hover:bg-blue-700 text-white shrink-0">
+                <Copy className="w-3.5 h-3.5 mr-1" /> Copy
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 sm:gap-0">
+          <Button variant="outline" onClick={() => window.open(shareUrl, "_blank")} className="h-9 text-xs">
+            <Globe className="w-3.5 h-3.5 mr-1" /> Open Form
+          </Button>
+          <Button onClick={() => onOpenChange(false)} className="h-9 text-xs bg-slate-900 dark:bg-slate-800 text-white">
+            Done
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
