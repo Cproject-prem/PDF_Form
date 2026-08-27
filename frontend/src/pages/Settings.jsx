@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { formatDate } from "@/lib/utils2";
-import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2, UploadCloud, Settings2, Sparkles, Shield, ShieldCheck, KeyRound, Search, FolderPlus, CornerDownRight, X, FolderTree } from "lucide-react";
+import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2, UploadCloud, Settings2, Sparkles, Shield, ShieldCheck, KeyRound, Search, FolderPlus, CornerDownRight, X, FolderTree, Bot, Package2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
