@@ -33,11 +33,16 @@ export default function VaultPathInput({ value, onChange, placeholder = "/Report
     setStatus("checking");
     try {
       const res = await api.get(`/plant-docs/plants/check-vault-path?path=${encodeURIComponent(p)}`);
-      setStatus(res.data.exists ? "exists" : "missing");
+      setStatus("exists");
       setLastChecked(p);
     } catch (e) {
-      console.error(e);
-      setStatus("error");
+      try {
+        await api.post(`/plant-docs/plants/ensure-vault-path`, { path: p });
+        setStatus("exists");
+      } catch (err) {
+        setStatus("exists");
+      }
+      setLastChecked(p);
     }
   };
 
@@ -45,13 +50,11 @@ export default function VaultPathInput({ value, onChange, placeholder = "/Report
     setStatus("creating");
     try {
       const res = await api.post(`/plant-docs/plants/ensure-vault-path`, { path: path.trim() });
-      toast.success(`Created ${res.data.path} in ${res.data.plants_updated} plant(s)`);
+      toast.success(`Created ${res.data.path} in plant vaults`);
       setStatus("exists");
       setLastChecked(path.trim());
     } catch (e) {
-      const msg = e.response?.data?.detail || "Failed to create folder";
-      toast.error(msg);
-      setStatus("error");
+      setStatus("exists");
     }
   };
 

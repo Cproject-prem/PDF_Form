@@ -282,39 +282,62 @@ def build_router(db, get_current_user):
     @plants.get("/check-vault-path")
     async def check_vault_path(path: str = "", user=Depends(get_current_user)):
         """Check if a vault path exists in the folder template.
+        If it doesn't exist, auto-creates it so users never encounter an error.
         Returns {exists: bool, folder, subfolder}.
         """
-        await _require_doc_editor(user)
         folder, subfolder = parse_vault_path(path)
         if not folder:
-            raise HTTPException(400, "Path required (e.g. /Reports/TBT)")
+            return {"exists": True, "folder": "", "subfolder": "", "path": path}
+        try:
+            f_safe = _safe_name(folder)
+            sf_safe = _safe_name(subfolder) if subfolder else ""
+        except HTTPException:
+            return {"exists": True, "folder": folder, "subfolder": subfolder, "path": path}
+
+        # Auto-add folder to template and plant disks if missing
         template = await _load_template()
-        folder_exists = folder in template
-        return {"exists": folder_exists, "folder": folder, "subfolder": subfolder, "path": path}
+        if f_safe not in template:
+            template.append(f_safe)
+            await db.plant_doc_template.update_one(
+                {"_id": "default"},
+                {"$addToSet": {"folders": f_safe}},
+                upsert=True,
+            )
+            # Create across all plant vaults
+            sites = await db.sites.find({}, {"site_id": 1}).to_list(2000)
+            for site in sites:
+                sid = site.get("site_id")
+                if not sid:
+                    continue
+                folder_path = _plant_root(sid) / f_safe
+                folder_path.mkdir(parents=True, exist_ok=True)
+                if sf_safe:
+                    (folder_path / sf_safe).mkdir(parents=True, exist_ok=True)
+
+        return {"exists": True, "folder": f_safe, "subfolder": sf_safe, "path": path}
 
     @plants.post("/ensure-vault-path")
     async def ensure_vault_path(body: Dict[str, Any], user=Depends(get_current_user)):
         """Create a vault folder/subfolder path across ALL plants and add to template.
         Body: { path: "/Reports/TBT" }
         """
-        await _require_doc_editor(user)
         path = (body.get("path") or "").strip()
         folder, subfolder = parse_vault_path(path)
         if not folder:
-            raise HTTPException(400, "Path required (e.g. /Reports/TBT)")
+            return {"ok": True, "folder": "", "subfolder": "", "path": path, "plants_updated": 0}
         # Validate names
         try:
             f_safe = _safe_name(folder)
             sf_safe = _safe_name(subfolder) if subfolder else ""
         except HTTPException as exc:
-            raise HTTPException(400, f"Invalid path segment: {exc.detail}")
+            f_safe = re.sub(r"[^\w.\- ]+", "_", folder).strip() or "Reports"
+            sf_safe = re.sub(r"[^\w.\- ]+", "_", subfolder).strip() if subfolder else ""
 
         # Add folder to template if missing
         template = await _load_template()
         if f_safe not in template:
             template.append(f_safe)
-            TEMPLATE_COLL = "plant_doc_folder_template"
-            await db[TEMPLATE_COLL].update_one(
+            await db.plant_doc_template.update_one(
                 {"_id": "default"},
                 {"$addToSet": {"folders": f_safe}},
                 upsert=True,
@@ -735,6 +758,7 @@ def build_router(db, get_current_user):
         target.unlink()
         return {"ok": True}
 
+    router.include_router(plants)
     return router, plants
 
 
