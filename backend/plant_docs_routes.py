@@ -158,9 +158,10 @@ def build_router(db, get_current_user):
     async def _get_template_data() -> Dict[str, Any]:
         row = await db.plant_doc_template.find_one({"_id": "default"}, {"_id": 0})
         if not row:
-            return {"folders": list(DEFAULT_TEMPLATE_FOLDERS), "permissions": {}}
+            return {"folders": list(DEFAULT_TEMPLATE_FOLDERS), "subfolders": {}, "permissions": {}}
         return {
             "folders": list(row.get("folders") or []),
+            "subfolders": row.get("subfolders") or {},
             "permissions": row.get("permissions") or {}
         }
 
@@ -211,11 +212,14 @@ def build_router(db, get_current_user):
     async def set_template(body: Dict[str, Any], user=Depends(get_current_user)) -> Dict[str, Any]:
         await _require_super_admin(user)
         folders_raw = body.get("folders") or []
+        subfolders_raw = body.get("subfolders") or {}
         permissions = body.get("permissions") or {}
         if not isinstance(folders_raw, list):
             raise HTTPException(400, "`folders` must be a list of strings")
         if not isinstance(permissions, dict):
             raise HTTPException(400, "`permissions` must be a dictionary")
+        if not isinstance(subfolders_raw, dict):
+            raise HTTPException(400, "`subfolders` must be a dictionary")
             
         folders = []
         seen: set = set()
@@ -225,6 +229,23 @@ def build_router(db, get_current_user):
                 continue
             seen.add(n.lower())
             folders.append(n)
+
+        cleaned_subfolders: Dict[str, List[str]] = {}
+        for f in folders:
+            sf_list = subfolders_raw.get(f) or []
+            if isinstance(sf_list, list):
+                sf_cleaned = []
+                sf_seen = set()
+                for sf in sf_list:
+                    try:
+                        sfn = _safe_name(str(sf))
+                        if sfn.lower() not in sf_seen:
+                            sf_seen.add(sfn.lower())
+                            sf_cleaned.append(sfn)
+                    except Exception:
+                        pass
+                if sf_cleaned:
+                    cleaned_subfolders[f] = sf_cleaned
             
         # Clean up permissions to only include valid roles and valid folders
         valid_roles = {"super_admin", "admin", "vendor_admin", "user", "vendor_user"}
@@ -242,14 +263,17 @@ def build_router(db, get_current_user):
             
         await db.plant_doc_template.update_one(
             {"_id": "default"},
-            {"$set": {"folders": folders, "permissions": cleaned_perms, "updated_at": _now(),
-                      "updated_by": user.user_id}},
+            {"$set": {
+                "folders": folders,
+                "subfolders": cleaned_subfolders,
+                "permissions": cleaned_perms,
+                "updated_at": _now(),
+                "updated_by": user.user_id
+            }},
             upsert=True,
         )
         # Propagate to every existing plant: create any *new* template
-        # folders on disk (idempotent — existing folders untouched, files
-        # preserved).  Folders removed from the template are NOT deleted
-        # because they may contain user files.
+        # folders & subfolders on disk (idempotent)
         propagated = 0
         try:
             async for site in db.sites.find({}, {"_id": 0, "site_id": 1}):
@@ -259,18 +283,24 @@ def build_router(db, get_current_user):
                 root = _plant_root(sid)
                 for f in folders:
                     (root / f).mkdir(parents=True, exist_ok=True)
+                    for sf in cleaned_subfolders.get(f, []):
+                        (root / f / sf).mkdir(parents=True, exist_ok=True)
                 propagated += 1
         except Exception:  # noqa: BLE001
             pass
-        return {"folders": folders, "propagated_to_plants": propagated}
+        return {"folders": folders, "subfolders": cleaned_subfolders, "propagated_to_plants": propagated}
 
     # ---------- Init template folders for a plant ----------
     async def _init_folders(site_id: str) -> List[str]:
-        template = await _load_template()
+        data = await _get_template_data()
+        folders = data.get("folders") or list(DEFAULT_TEMPLATE_FOLDERS)
+        subfolders = data.get("subfolders") or {}
         root = _plant_root(site_id)
-        for f in template:
+        for f in folders:
             (root / f).mkdir(parents=True, exist_ok=True)
-        return template
+            for sf in subfolders.get(f, []):
+                (root / f / sf).mkdir(parents=True, exist_ok=True)
+        return folders
 
     @plants.post("/{site_id}/init-doc-folders")
     async def init_folders(site_id: str, user=Depends(get_current_user)):
@@ -764,15 +794,18 @@ def build_router(db, get_current_user):
 
 async def bootstrap_new_plant(db, site_id: str) -> None:
     """Called from `_upsert_site` right after a new plant row is inserted —
-    auto-provisions the template folders on disk so admins land on a
+    auto-provisions the template folders and subfolders on disk so admins land on a
     pre-organised vault the first time they open the Documents tab.
     Never raises so a folder failure never blocks site creation."""
     try:
         row = await db.plant_doc_template.find_one({"_id": "default"}, {"_id": 0})
         folders = list(row["folders"]) if row and row.get("folders") else list(DEFAULT_TEMPLATE_FOLDERS)
+        subfolders = row.get("subfolders", {}) if row else {}
         root = Path(os.environ.get("LOCAL_PLANT_DOCS_ROOT", PLANT_DOCS_ROOT_DEFAULT)) / site_id
         for f in folders:
             (root / f).mkdir(parents=True, exist_ok=True)
+            for sf in subfolders.get(f, []):
+                (root / f / sf).mkdir(parents=True, exist_ok=True)
     except Exception:
         # Bootstrapping is best-effort — never crash site creation.
         pass

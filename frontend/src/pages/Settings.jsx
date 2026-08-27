@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { formatDate } from "@/lib/utils2";
-import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2, UploadCloud, Settings2, Sparkles, Shield, ShieldCheck, KeyRound, Search } from "lucide-react";
+import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2, UploadCloud, Settings2, Sparkles, Shield, ShieldCheck, KeyRound, Search, FolderPlus, CornerDownRight, X, FolderTree } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -868,15 +869,19 @@ export default function SettingsPage() {
       </div>
     </AppLayout>
   );
+}
 
 /**
- * PlantDocsTemplateCard — super_admin edits the default folder list that
- * gets auto-created for every new plant.  Reads/writes /api/plant-docs/template.
+ * PlantDocsTemplateCard — super_admin edits the default folder and subfolder
+ * hierarchy that gets auto-created for every new plant. Reads/writes /api/plant-docs/template.
  */
 function PlantDocsTemplateCard() {
   const [folders, setFolders] = useState([]);
+  const [subfolders, setSubfolders] = useState({});
   const [permissions, setPermissions] = useState({});
   const [draft, setDraft] = useState("");
+  const [subDrafts, setSubDrafts] = useState({});
+  const [activeSubInput, setActiveSubInput] = useState(null);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [settingsFolder, setSettingsFolder] = useState(null);
@@ -885,35 +890,65 @@ function PlantDocsTemplateCard() {
     api.get("/plant-docs/template")
       .then((r) => {
         setFolders(r.data.folders || []);
+        setSubfolders(r.data.subfolders || {});
         setPermissions(r.data.permissions || {});
       })
-      .catch(() => { setFolders([]); setPermissions({}); })
+      .catch(() => { setFolders([]); setSubfolders({}); setPermissions({}); })
       .finally(() => setLoaded(true));
   }, []);
 
-  const add = () => {
+  const addFolder = () => {
     const n = draft.trim();
     if (!n) return;
     if (folders.includes(n)) { setDraft(""); return; }
     setFolders([...folders, n]);
     setDraft("");
   };
-  const remove = (n) => {
+
+  const removeFolder = (n) => {
     setFolders(folders.filter((x) => x !== n));
     const newPerms = { ...permissions };
     delete newPerms[n];
     setPermissions(newPerms);
+
+    const newSubs = { ...subfolders };
+    delete newSubs[n];
+    setSubfolders(newSubs);
+  };
+
+  const addSubfolder = (folderName) => {
+    const sName = (subDrafts[folderName] || "").trim();
+    if (!sName) return;
+    const current = subfolders[folderName] || [];
+    if (current.includes(sName)) {
+      setSubDrafts({ ...subDrafts, [folderName]: "" });
+      setActiveSubInput(null);
+      return;
+    }
+    setSubfolders({
+      ...subfolders,
+      [folderName]: [...current, sName]
+    });
+    setSubDrafts({ ...subDrafts, [folderName]: "" });
+    setActiveSubInput(null);
+  };
+
+  const removeSubfolder = (folderName, subName) => {
+    setSubfolders({
+      ...subfolders,
+      [folderName]: (subfolders[folderName] || []).filter(x => x !== subName)
+    });
   };
 
   const save = async () => {
     setSaving(true);
     try {
-      const r = await api.put("/plant-docs/template", { folders, permissions });
+      const r = await api.put("/plant-docs/template", { folders, subfolders, permissions });
       const n = r?.data?.propagated_to_plants;
       toast.success(
         typeof n === "number"
-          ? `Folder template saved · applied to ${n} plant${n === 1 ? "" : "s"}`
-          : "Folder template saved"
+          ? `Folder & subfolder template saved · applied to ${n} plant${n === 1 ? "" : "s"}`
+          : "Folder & subfolder template saved"
       );
     } catch (e) { toast.error(e?.response?.data?.detail || "Save failed"); }
     finally { setSaving(false); }
@@ -931,7 +966,6 @@ function PlantDocsTemplateCard() {
     if (!settingsFolder) return;
     const fPerms = permissions[settingsFolder] || {};
     
-    // Initialize if empty to defaults
     if (!fPerms.view) fPerms.view = ["admin", "user", "vendor_admin", "vendor_user", "super_admin"];
     if (!fPerms.edit) fPerms.edit = ["admin", "super_admin"];
 
@@ -954,7 +988,6 @@ function PlantDocsTemplateCard() {
     if (fPerms && fPerms[action] !== undefined) {
       return fPerms[action].includes(role);
     }
-    // Default fallback logic matching backend
     if (action === "view") return true;
     if (action === "edit") return role === "admin" || role === "super_admin";
     return false;
@@ -962,56 +995,143 @@ function PlantDocsTemplateCard() {
 
   if (!loaded) return null;
   return (
-    <Card className="p-5 rounded-2xl border-slate-100 card-soft mt-4 space-y-3 bg-white"
+    <Card className="p-5 rounded-2xl border-slate-100 card-soft mt-4 space-y-4 bg-white"
           data-testid="plant-docs-template-card">
-      <div className="font-heading font-semibold flex items-center gap-2">
-        <Folder className="w-4 h-4 text-blue-500" /> Plant document folders
-      </div>
-      <p className="text-xs text-slate-500 -mt-2">
-        These sub-folders are auto-created for every plant. Saving here also back-fills the new folders on all existing plants (files & extra folders you added manually are never touched).
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {folders.map((f) => (
-          <span key={f}
-                className="inline-flex items-center pl-3 pr-1 py-1 rounded-full bg-blue-50 border border-blue-100 text-blue-700 text-xs shadow-sm">
-            {f}
-            <div className="flex items-center gap-0.5 ml-2 border-l border-blue-200 pl-1">
-              <button onClick={() => setSettingsFolder(f)}
-                      className="w-5 h-5 rounded-md hover:bg-blue-200 flex items-center justify-center text-blue-600 transition-colors"
-                      title="Settings"
-                      data-testid={`tpl-folder-settings-${f}`}>
-                <Settings2 className="w-3 h-3" />
-              </button>
-              <button onClick={() => remove(f)}
-                      className="w-5 h-5 rounded-md hover:bg-red-100 hover:text-red-600 flex items-center justify-center transition-colors"
-                      title="Remove folder"
-                      data-testid={`tpl-folder-del-${f}`}>
-                ×
-              </button>
-            </div>
-          </span>
-        ))}
-        {folders.length === 0 && (
-          <span className="text-xs text-slate-400">No default folders configured.</span>
-        )}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input value={draft} onChange={(e) => setDraft(e.target.value)}
-               placeholder="Add folder name…"
-               className="h-8 text-sm max-w-xs"
-               data-testid="tpl-folder-input"
-               onKeyDown={(e) => e.key === "Enter" && add()} />
-        <Button size="sm" variant="outline" onClick={add}
-                data-testid="tpl-folder-add">
-          <Plus className="w-3.5 h-3.5 mr-1" /> Add
-        </Button>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 ml-auto"
+      <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+        <div>
+          <div className="font-heading font-semibold text-base flex items-center gap-2 text-slate-900">
+            <FolderTree className="w-5 h-5 text-blue-600" /> Plant Document Folder Hierarchy
+          </div>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Configure default folders and subfolders auto-created for every plant. Saving also syncs folders across all existing plants.
+          </p>
+        </div>
+        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 shadow-sm gap-1.5"
                 onClick={save} disabled={saving}
                 data-testid="tpl-folder-save">
-          {saving ? "Saving…" : "Save template"}
+          <FolderPlus className="w-4 h-4" />
+          {saving ? "Saving…" : "Save Template"}
         </Button>
       </div>
 
+      {/* Folders & Subfolders list */}
+      <div className="space-y-2.5">
+        {folders.map((f) => {
+          const sfList = subfolders[f] || [];
+          const isAddingSub = activeSubInput === f;
+
+          return (
+            <div key={f}
+                 className="rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-slate-50/80 p-3 transition-all space-y-2.5">
+              {/* Folder header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Folder className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span className="font-semibold text-sm text-slate-800 tracking-tight">{f}</span>
+                  {sfList.length > 0 ? (
+                    <Badge variant="secondary" className="text-[10px] px-2 py-0 bg-blue-100/70 text-blue-700 font-medium">
+                      {sfList.length} subfolder{sfList.length > 1 ? "s" : ""}
+                    </Badge>
+                  ) : (
+                    <span className="text-[11px] text-slate-400">No subfolders</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Button variant="ghost" size="sm" onClick={() => setSettingsFolder(f)}
+                          className="h-7 text-xs text-slate-600 hover:text-blue-600 gap-1 px-2"
+                          data-testid={`tpl-folder-settings-${f}`}>
+                    <Settings2 className="w-3.5 h-3.5" /> Permissions
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => removeFolder(f)}
+                          className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                          title="Delete folder"
+                          data-testid={`tpl-folder-del-${f}`}>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Subfolders row */}
+              <div className="pl-6 pt-2 border-t border-slate-200/60 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-slate-400 font-medium mr-1 flex items-center gap-1">
+                  <CornerDownRight className="w-3 h-3 text-slate-400" /> Subfolders:
+                </span>
+
+                {sfList.map((sf) => (
+                  <span key={sf}
+                        className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 text-xs shadow-xs group">
+                    <Folder className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span className="font-medium text-[11px]">{sf}</span>
+                    <button onClick={() => removeSubfolder(f, sf)}
+                            className="text-slate-400 hover:text-red-500 rounded p-0.5 transition-colors"
+                            title={`Remove subfolder ${sf}`}
+                            data-testid={`tpl-subfolder-del-${f}-${sf}`}>
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+
+                {isAddingSub ? (
+                  <div className="inline-flex items-center gap-1 bg-white border border-blue-300 rounded-md p-0.5 shadow-xs">
+                    <Input
+                      value={subDrafts[f] || ""}
+                      onChange={(e) => setSubDrafts({ ...subDrafts, [f]: e.target.value })}
+                      placeholder="Subfolder name…"
+                      className="h-6 text-xs w-32 px-1.5 border-0 focus-visible:ring-0"
+                      autoFocus
+                      data-testid={`tpl-subfolder-input-${f}`}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addSubfolder(f);
+                        if (e.key === "Escape") { setActiveSubInput(null); setSubDrafts({ ...subDrafts, [f]: "" }); }
+                      }}
+                    />
+                    <Button size="sm" className="h-6 px-2 text-[11px] bg-blue-600 hover:bg-blue-700 text-white"
+                            onClick={() => addSubfolder(f)}
+                            data-testid={`tpl-subfolder-add-btn-${f}`}>
+                      Add
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-6 px-1 text-slate-400 hover:text-slate-600"
+                            onClick={() => { setActiveSubInput(null); setSubDrafts({ ...subDrafts, [f]: "" }); }}>
+                      <X className="w-3 h-3" />
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => { setActiveSubInput(f); setSubDrafts({ ...subDrafts, [f]: "" }); }}
+                    className="h-6 px-2 text-[11px] border-dashed border-slate-300 text-slate-600 hover:text-blue-600 hover:border-blue-300 bg-white"
+                    data-testid={`tpl-subfolder-open-input-${f}`}
+                  >
+                    <Plus className="w-3 h-3 mr-1" /> Add subfolder
+                  </Button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {folders.length === 0 && (
+          <div className="text-center py-6 border border-dashed border-slate-200 rounded-xl text-slate-400 text-xs">
+            No default folders configured. Add a folder below to get started.
+          </div>
+        )}
+      </div>
+
+      {/* Add New Root Folder bar */}
+      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+        <Input value={draft} onChange={(e) => setDraft(e.target.value)}
+               placeholder="Add root folder name (e.g. Reports, Contracts)…"
+               className="h-9 text-sm max-w-sm"
+               data-testid="tpl-folder-input"
+               onKeyDown={(e) => e.key === "Enter" && addFolder()} />
+        <Button size="sm" variant="outline" onClick={addFolder}
+                data-testid="tpl-folder-add" className="h-9">
+          <Plus className="w-3.5 h-3.5 mr-1" /> Add Folder
+        </Button>
+      </div>
+
+      {/* Permissions Dialog */}
       <Dialog open={!!settingsFolder} onOpenChange={(o) => !o && setSettingsFolder(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -1056,7 +1176,7 @@ function PlantDocsTemplateCard() {
           </div>
           <DialogFooter className="sm:justify-between border-t border-slate-100 pt-4 mt-2">
             <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded-md self-center">
-              Remember to "Save template" to apply these changes.
+              Remember to "Save Template" on the settings page to apply changes.
             </span>
             <Button type="button" onClick={() => setSettingsFolder(null)}>Done</Button>
           </DialogFooter>
@@ -1064,8 +1184,6 @@ function PlantDocsTemplateCard() {
       </Dialog>
     </Card>
   );
-}
-
 }
 
 /**
