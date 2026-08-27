@@ -1541,7 +1541,6 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         expired = []
         def check_exp(val, label):
             if not val:
-                expired.append(label)
                 return
             try:
                 s = str(val)[:10]
@@ -1549,7 +1548,7 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
                 if d < today:
                     expired.append(label)
             except Exception:
-                expired.append(label)
+                pass
 
         check_exp(row.get("medical_expiry_date"), "Medical")
         check_exp(row.get("safety_belt_expiry_date"), "Safety Belt")

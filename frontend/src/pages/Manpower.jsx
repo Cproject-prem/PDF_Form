@@ -119,14 +119,21 @@ export default function Manpower() {
     const expired = [];
 
     const isExpired = (dateStr) => {
-      if (!dateStr) return true; // Missing is treated as expired
+      if (!dateStr) return false;
       const d = new Date(dateStr);
-      return d < today;
+      return !isNaN(d.getTime()) && d < today;
     };
 
     if (isExpired(mp.medical_expiry_date)) expired.push("Medical");
     if (isExpired(mp.safety_belt_expiry_date)) expired.push("Safety Belt");
     if (isExpired(mp.height_work_expiry_date)) expired.push("Height Work");
+    if (isExpired(mp.extension_rope_expiry_date)) expired.push("Extension Rope");
+    if (isExpired(mp.ppe_register_expiry_date)) expired.push("PPE Register");
+
+    const st = (mp.status || "").toLowerCase();
+    if (st === "inactive" || st === "disabled" || st === "rejected") {
+      return { status: "Ineligible", remark: st.charAt(0).toUpperCase() + st.slice(1) };
+    }
 
     if (expired.length === 0) {
       return { status: "Eligible", remark: "" };

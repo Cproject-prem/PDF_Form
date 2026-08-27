@@ -83,6 +83,9 @@ def _row(doc: Dict[str, Any]) -> Dict[str, Any]:
         "medical_expiry_date": doc.get("medical_expiry_date"),
         "safety_belt_expiry_date": doc.get("safety_belt_expiry_date"),
         "height_work_expiry_date": doc.get("height_work_expiry_date"),
+        "extension_rope_expiry_date": doc.get("extension_rope_expiry_date"),
+        "ppe_register_expiry_date": doc.get("ppe_register_expiry_date"),
+        "medical_test_date": doc.get("medical_test_date"),
     }
 
 
@@ -148,6 +151,9 @@ def build_manpower_router(main_db, get_current_user):
             "id": 1, "manpower_id": 1, "full_name": 1, "designation": 1, "status": 1,
             "company_name": 1, "work_state": 1, "location": 1, "city": 1,
             "phone": 1, "blood_group": 1, "documents": 1, "vendor_id": 1,
+            "medical_expiry_date": 1, "safety_belt_expiry_date": 1, "height_work_expiry_date": 1,
+            "extension_rope_expiry_date": 1, "ppe_register_expiry_date": 1,
+            "medical_test_date": 1,
         }).sort("manpower_id", 1).limit(limit)
 
         rows = [_row(d) async for d in cursor]
