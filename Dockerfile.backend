@@ -15,15 +15,13 @@ WORKDIR /app/backend
 
 # --- system deps: mongo tools + fonts for PDF rendering ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl gnupg ca-certificates \
+        curl ca-certificates \
         libjpeg-dev zlib1g-dev \
         fonts-dejavu-core \
-    && mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /etc/apt/keyrings/mongodb-7.0.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/mongodb-7.0.gpg] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" > /etc/apt/sources.list.d/mongodb-org-7.0.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        mongodb-database-tools \
-    && apt-get purge -y --auto-remove curl gnupg \
+    && curl -fsSL https://fastdl.mongodb.org/tools/db/mongodb-database-tools-debian12-x86_64-100.10.0.deb -o /tmp/tools.deb \
+    && dpkg -i /tmp/tools.deb \
+    && rm -f /tmp/tools.deb \
+    && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
 
 # --- python deps ---

@@ -7,20 +7,16 @@ FROM node:20-alpine AS build
 WORKDIR /app/frontend
 
 # Install deps first for cache friendliness.
-COPY frontend/package.json frontend/yarn.lock ./
-RUN yarn install --frozen-lockfile --network-timeout 600000
+COPY frontend/package*.json ./
+RUN npm install --legacy-peer-deps
 
 # Copy source and build.
 COPY frontend/ .
 
-# The REACT_APP_BACKEND_URL is baked at build time; pass it via
-# `--build-arg REACT_APP_BACKEND_URL=https://your.domain`.  When empty the
-# frontend uses same-origin relative paths — which is what the docker
-# compose setup does (nginx sits in front).
 ARG REACT_APP_BACKEND_URL=""
 ENV REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL}
 
-RUN yarn build
+RUN npm run build
 
 # ----- Stage 2 -----
 FROM nginx:1.27-alpine AS runtime
