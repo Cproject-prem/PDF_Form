@@ -1749,11 +1749,23 @@ function FormRetentionPolicyCard() {
     return p ? p.label : d + ' days';
   };
 
+  const toggleMaster = async (newVal) => {
+    setMasterEnabled(newVal);
+    try {
+      await api.put('/retention/global', { enabled: newVal, default_days: defaultDays, apply_to_all: false });
+      toast.success(newVal ? "PDF Retention turned ON" : "PDF Retention turned OFF (all files kept forever)");
+      setOverview(prev => prev ? { ...prev, master_enabled: newVal } : prev);
+    } catch (e) {
+      setMasterEnabled(!newVal);
+      toast.error(getErrorMessage(e, 'Failed to update retention status'));
+    }
+  };
+
   const saveGlobal = async (applyAll = false) => {
     setSavingGlobal(true);
     try {
       await api.put('/retention/global', { enabled: masterEnabled, default_days: defaultDays, apply_to_all: applyAll });
-      toast.success(applyAll ? 'Default retention applied to all forms' : 'Global retention settings saved');
+      toast.success(applyAll ? `Default retention applied to all forms (${daysLabel(defaultDays)})` : 'Global retention settings saved');
       loadData();
     } catch (e) { toast.error(getErrorMessage(e, 'Failed to save')); }
     finally { setSavingGlobal(false); }
@@ -1762,6 +1774,8 @@ function FormRetentionPolicyCard() {
   const runDryRun = async () => {
     setRunningCleanup(true);
     try {
+      // Ensure current settings are saved before dry run
+      await api.put('/retention/global', { enabled: masterEnabled, default_days: defaultDays, apply_to_all: false });
       const r = await api.post('/retention/cleanup?dry_run=true');
       setDryRunResult(r.data);
       setShowDryRunModal(true);
@@ -1776,6 +1790,8 @@ function FormRetentionPolicyCard() {
     )) return;
     setRunningCleanup(true);
     try {
+      // Ensure current settings are saved before running cleanup
+      await api.put('/retention/global', { enabled: masterEnabled, default_days: defaultDays, apply_to_all: false });
       const r = await api.post('/retention/cleanup?dry_run=false');
       const d = r.data;
       toast.success(
@@ -1848,7 +1864,7 @@ function FormRetentionPolicyCard() {
               </p>
             </div>
           </div>
-          <Switch checked={masterEnabled} onCheckedChange={v => setMasterEnabled(v)} className="shrink-0 mt-1" />
+          <Switch checked={masterEnabled} onCheckedChange={toggleMaster} className="shrink-0 mt-1" />
         </div>
 
         <div className="border-t dark:border-slate-700 pt-4 mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
