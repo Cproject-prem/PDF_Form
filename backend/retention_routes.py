@@ -130,7 +130,7 @@ def _get_effective_days(form_retention: Dict[str, Any], global_default: int) -> 
 
 def build_retention_router(db, get_current_user):
 
-    router = APIRouter(prefix="/api/retention", tags=["Retention"])
+    router = APIRouter(prefix="/retention", tags=["Retention"])
 
     async def _get_global_retention() -> Dict[str, Any]:
         s = await db.settings.find_one({"_id": "global"}, {"_id": 0, "pdf_retention": 1}) or {}
