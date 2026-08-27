@@ -2149,6 +2149,7 @@ class SettingsIn(BaseModel):
     primary_color: str = "#2563EB"
     bg_image_url: str = ""
     login_bg_url: str = ""
+    error_video_url: str = ""
     google_client_id: str = ""
     google_client_secret: str = ""
     enable_google_login: bool = True
@@ -2272,6 +2273,7 @@ async def public_branding():
         "ai_bot_name":         ai_name,
         "ai_bot_logo_url":     doc.get("ai_bot_logo_url") or "",
         "ai_bot_gif_url":      doc.get("ai_bot_gif_url")  or "",
+        "error_video_url":     doc.get("error_video_url") or "",
     }
 
 
@@ -2321,7 +2323,12 @@ async def upload_background(
     fname = f"bg-{target}-{uuid.uuid4().hex[:12]}.{ext}"
     (_BRANDING_DIR / fname).write_bytes(data)
     url = f"/api/public/branding/logo/{fname}"
-    field_name = "login_bg_url" if target == "login" else "bg_image_url"
+    if target == "login":
+        field_name = "login_bg_url"
+    elif target == "error":
+        field_name = "error_video_url"
+    else:
+        field_name = "bg_image_url"
     await db.settings.update_one(
         {"_id": "global"}, {"$set": {field_name: url}}, upsert=True,
     )

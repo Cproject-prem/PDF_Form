@@ -35,12 +35,14 @@ import SiteMasterPage from "@/pages/SiteMaster";
 import MasterDataPage from "@/pages/MasterData";
 import SchedulePage from "@/pages/Schedule";
 import InventoryPage from "@/pages/Inventory";
+import LoadingScreen from "@/components/common/LoadingScreen";
+import AppErrorBoundary from "@/components/common/ErrorBoundary";
 import "@/App.css";
 
 function Protected({ children, roles }) {
   const { user, loading } = useAuth();
   const location = useLocation();
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-400">Loading…</div>;
+  if (loading) return <LoadingScreen message="Loading workspace…" />;
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
   if (roles && !roles.includes(user.role) && !user.access_override) return <Navigate to="/dashboard" replace />;
   return children;
@@ -120,8 +122,10 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Router />
-        <Toaster richColors position="top-right" />
+        <AppErrorBoundary>
+          <Router />
+          <Toaster richColors position="top-right" />
+        </AppErrorBoundary>
       </AuthProvider>
     </BrowserRouter>
   );

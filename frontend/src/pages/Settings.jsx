@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { formatDate } from "@/lib/utils2";
-import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2, UploadCloud, Settings2, Sparkles, Shield, ShieldCheck, KeyRound, Search, FolderPlus, CornerDownRight, X, FolderTree, Bot, Package2 } from "lucide-react";
+import { Upload, Folder, Plus, Archive, DownloadCloud, RotateCcw, Trash2, UploadCloud, Settings2, Sparkles, Shield, ShieldCheck, KeyRound, Search, FolderPlus, CornerDownRight, X, FolderTree, Bot, Package2, AlertTriangle } from "lucide-react";
+import LoadingScreen from "@/components/common/LoadingScreen";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -70,6 +71,7 @@ export default function SettingsPage() {
   const [uploadingAiGif, setUploadingAiGif] = useState(false);
   const [uploadingLoginBg, setUploadingLoginBg] = useState(false);
   const [uploadingAppBg, setUploadingAppBg] = useState(false);
+  const [uploadingErrorVideo, setUploadingErrorVideo] = useState(false);
 
   const uploadAiAvatar = async (file, target) => {
     if (!file) return;
@@ -133,6 +135,7 @@ export default function SettingsPage() {
   const uploadBackground = async (file, target) => {
     if (!file) return;
     if (target === "login") setUploadingLoginBg(true);
+    else if (target === "error") setUploadingErrorVideo(true);
     else setUploadingAppBg(true);
     try {
       const form = new FormData();
@@ -141,19 +144,20 @@ export default function SettingsPage() {
       const r = await api.post("/settings/background", form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      const field = target === "login" ? "login_bg_url" : "bg_image_url";
+      const field = target === "login" ? "login_bg_url" : (target === "error" ? "error_video_url" : "bg_image_url");
       setData((d) => ({ ...d, [field]: r.data.url }));
       reloadBranding && reloadBranding();
-      toast.success(`${target === "login" ? "Login page background" : "App background"} uploaded`);
+      toast.success(`${target === "login" ? "Login page background" : (target === "error" ? "Error page video" : "App background")} uploaded`);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Upload failed");
     } finally {
       if (target === "login") setUploadingLoginBg(false);
+      else if (target === "error") setUploadingErrorVideo(false);
       else setUploadingAppBg(false);
     }
   };
 
-  if (loading || !data) return <AppLayout><div className="text-slate-400">Loading…</div></AppLayout>;
+  if (loading || !data) return <AppLayout><LoadingScreen message="Loading settings…" /></AppLayout>;
 
   const updSmtp = (patch) => setData({ ...data, smtp: { ...data.smtp, ...patch } });
   const updWa = (patch) => setData({ ...data, whatsapp: { ...data.whatsapp, ...patch } });
@@ -369,6 +373,74 @@ export default function SettingsPage() {
                   onChange={(e) => setData({ ...data, bg_image_url: e.target.value })}
                   placeholder="https://example.com/app-bg.mp4 or app-bg.gif"
                 />
+              </div>
+            </div>
+          </div>
+
+          {/* Error Page Video / Animation */}
+          <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2 mb-1">
+              <AlertTriangle className="w-4 h-4 text-amber-500" />
+              <Label className="font-semibold text-slate-800 dark:text-slate-100">
+                Error Page Video & Animation
+              </Label>
+              <Badge variant="secondary" className="text-[10px] bg-red-100 dark:bg-red-950/80 text-red-700 dark:text-red-300 font-bold px-2 py-0 border border-red-200 dark:border-red-900">
+                Crash Protection
+              </Badge>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+              Displayed whenever a component or page crashes, instead of showing a blank screen. Supports MP4, WebM, GIF, WebP, PNG.
+            </p>
+            <div className="flex items-start gap-4">
+              {renderBgPreview(data.error_video_url, "Error screen preview")}
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center gap-2">
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-900 transition">
+                    <Upload className="w-3.5 h-3.5" />
+                    {uploadingErrorVideo ? "Uploading…" : "Upload Error Video/GIF"}
+                    <input
+                      type="file"
+                      accept="image/*,.gif,video/*,.mp4,.webm,.mov,.ogg,.m4v"
+                      className="hidden"
+                      onChange={(e) => uploadBackground(e.target.files?.[0], "error")}
+                    />
+                  </label>
+                  {data.error_video_url && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setData({ ...data, error_video_url: "" })}
+                      className="text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
+                    >Remove</Button>
+                  )}
+                </div>
+                <Input
+                  value={data.error_video_url || ""}
+                  onChange={(e) => setData({ ...data, error_video_url: e.target.value })}
+                  placeholder="https://example.com/error-animation.gif or error-robot.mp4"
+                  className="text-xs border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
+                />
+
+                {/* Preset Error GIFs */}
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+                  <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block mb-1">Quick Error Presets:</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { name: "Robot Cable Fixer", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcGZrdmpzazF4enY5Y2p6ZGt6cGNxY2Q5Yzg1c2Fmb3YyOHpxMms0dyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7TKSjRrfIPjeiVyM/giphy.gif" },
+                      { name: "Maintenance Bot", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExeGJ3cmVsZGRtM2JzMHd3dnJ5ZzVzYml1bjMxc3lhODd6bzMxbGFsNSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/26EPe2Cq7n9q90qnm/giphy.gif" },
+                      { name: "Glitch Sparkle Orb", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM3ZhcXlzc2N1ODRreGV0bHRoMnRhMnprMnA2d2tpaTZ1eDlvdXBwaSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/l378c04F2fjeZ7vG0/giphy.gif" }
+                    ].map((preset) => (
+                      <button
+                        key={preset.name}
+                        type="button"
+                        onClick={() => setData({ ...data, error_video_url: preset.url })}
+                        className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/70 hover:text-blue-700 dark:hover:text-blue-300 text-slate-600 dark:text-slate-300 rounded-md text-[11px] font-medium border border-slate-200 dark:border-slate-700 transition-colors"
+                      >
+                        + {preset.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
