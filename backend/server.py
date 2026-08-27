@@ -1641,9 +1641,45 @@ async def delete_submission(submission_id: str, user: User = Depends(get_current
     sub = await db.submissions.find_one({"submission_id": submission_id}, {"_id": 0})
     if not sub:
         raise HTTPException(404, "Not found")
-    await _get_form_for_user(sub["form_id"], user)
+    form = await _get_form_for_user(sub["form_id"], user)
     if not await _submission_in_user_scope(user, sub):
         raise HTTPException(403, "You do not have permission to delete this submission")
+
+    # Delete corresponding file(s) from Plant Document vault
+    try:
+        from plant_docs_routes import delete_internal_plant_doc, parse_vault_path, delete_plant_docs_by_pattern
+        from filename_resolver import resolve_filename as _rf, _pick, _pick_by_label
+
+        site_identifier = _pick(sub.get("values") or {}, ["site_code", "site_id", "asset_id", "plant_code", "plantId", "asset_code", "site"])
+        if not site_identifier:
+            site_identifier = _pick_by_label(form.get("fields", []), sub.get("values") or {})
+
+        site_id = None
+        fname = None
+        if site_identifier:
+            site_doc = await db.sites.find_one({"$or": [
+                {"site_id": site_identifier},
+                {"site_code": site_identifier},
+                {"asset_id": site_identifier},
+                {"site_name": {"$regex": f"^{re.escape(site_identifier)}", "$options": "i"}},
+            ]}, {"_id": 0})
+            if site_doc:
+                site_id = site_doc.get("site_id")
+                fname = _rf(form.get("filename_template"), form=form, submission=sub)
+                if not fname.lower().endswith(".pdf"):
+                    fname += ".pdf"
+                vault_path = (form.get("settings") or {}).get("doc_vault_path") or "/Form"
+                folder, subfolder = parse_vault_path(vault_path)
+                if not folder:
+                    folder = "Form"
+                delete_internal_plant_doc(site_id, folder, fname, subfolder_name=subfolder)
+
+        if fname:
+            delete_plant_docs_by_pattern(fname, site_id=site_id)
+        delete_plant_docs_by_pattern(submission_id, site_id=site_id)
+    except Exception as _e:
+        logger.warning(f"Failed to auto-delete Form PDF from vault on submission delete: {_e}")
+
     await db.submissions.delete_one({"submission_id": submission_id})
     return {"ok": True}
 

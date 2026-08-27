@@ -539,7 +539,7 @@ def build_router(db, get_current_user):
             raise HTTPException(403, f"{which} is approved and locked")
         if blk.get("status") == "submitted" and not is_admin_or_more:
             raise HTTPException(403, f"{which} is pending approval — unlock first")
-        files = list(blk.get("evidence_files") or [])
+        target_f = next((f for f in files if f.get("file_id") == file_id), None)
         new_files = [f for f in files if f.get("file_id") != file_id]
         if len(new_files) == len(files):
             raise HTTPException(404, "Attachment not found")
@@ -548,6 +548,18 @@ def build_router(db, get_current_user):
         for p in cyc_dir.glob(f"{file_id}.*"):
             try: p.unlink()
             except OSError: pass
+
+        # Also delete the synced copy from Plant Docs Vault
+        try:
+            from plant_docs_routes import delete_plant_docs_by_pattern
+            site_id = cyc.get("site_id")
+            delete_plant_docs_by_pattern(file_id, site_id=site_id)
+            if target_f and target_f.get("filename"):
+                delete_plant_docs_by_pattern(target_f["filename"], site_id=site_id)
+        except Exception as _e:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(f"Failed to delete attachment from plant vault: {_e}")
+
         blk["evidence_files"] = new_files
         await db.site_cycles.update_one(
             {"cycle_id": cycle_id},

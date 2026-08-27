@@ -143,6 +143,71 @@ def save_internal_plant_doc(
     return str(target_path)
 
 
+def delete_internal_plant_doc(
+    site_id: str,
+    folder_name: str,
+    file_name: str,
+    subfolder_name: str = "",
+) -> bool:
+    """Programmatically delete a file from the plant's document vault."""
+    if not site_id or not file_name:
+        return False
+    try:
+        f_name = _safe_name(folder_name)
+        target_dir = _plant_root(site_id) / f_name
+        if subfolder_name:
+            target_dir = target_dir / _safe_name(subfolder_name)
+        safe_file_name = _sanitize_filename(file_name)
+        target_path = target_dir / safe_file_name
+        if target_path.exists() and target_path.is_file():
+            target_path.unlink(missing_ok=True)
+            logger.info(f"Deleted internal plant doc: {target_path}")
+            return True
+    except Exception as e:
+        logger.warning(f"Failed to delete internal plant doc '{file_name}' for site '{site_id}': {e}")
+    return False
+
+
+def delete_plant_docs_by_pattern(
+    pattern: str,
+    site_id: Optional[str] = None,
+    folder_name: Optional[str] = None,
+) -> int:
+    """Search for and delete any plant document files matching a filename or substring pattern.
+    If site_id is provided, searches only that plant's document folder; otherwise searches all plants.
+    Returns the count of deleted files.
+    """
+    if not pattern:
+        return 0
+    deleted = 0
+    try:
+        root = Path(os.environ.get("LOCAL_PLANT_DOCS_ROOT", PLANT_DOCS_ROOT_DEFAULT))
+        if not root.exists():
+            return 0
+        search_root = (root / site_id) if site_id else root
+        if not search_root.exists():
+            return 0
+
+        clean_pat = pattern.strip().lower()
+        if not clean_pat:
+            return 0
+
+        for p in search_root.rglob("*"):
+            if p.is_file():
+                p_name_lower = p.name.lower()
+                # Exact match or contains pattern (e.g. submission_id or file_id or exact filename)
+                if clean_pat == p_name_lower or clean_pat in p_name_lower:
+                    try:
+                        p.unlink(missing_ok=True)
+                        deleted += 1
+                        logger.info(f"Deleted plant doc matching pattern '{pattern}': {p}")
+                    except Exception as ex:
+                        logger.warning(f"Error unlinking plant doc {p}: {ex}")
+    except Exception as e:
+        logger.warning(f"Error in delete_plant_docs_by_pattern for '{pattern}': {e}")
+    return deleted
+
+
 def parse_vault_path(path: str):
     """Split '/Folder/Subfolder' into (folder, subfolder). Returns (folder, '') for root paths."""
     parts = (path or "").strip().lstrip("/").split("/", 1)
