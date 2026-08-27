@@ -149,9 +149,6 @@ export default function LoginPage() {
           <p className="text-center text-sm text-slate-500 mt-6">
             New here? <Link to="/register" data-testid="register-link" className="text-blue-600 hover:underline font-semibold">Create an account</Link>
           </p>
-          <div className="mt-5 p-3 rounded-xl bg-slate-50 border border-slate-100 text-xs text-slate-500 text-center">
-            <span className="font-semibold text-slate-700">Demo:</span> admin@example.com / Admin@12345
-          </div>
         </div>
       </main>
 
