@@ -60,12 +60,27 @@ export default function PdfBuilderPage() {
 
   // ---------- save & history -----------------------------------------------
   const save = useCallback(async (next) => {
+    if (!next || !next.template_id) return;
     setSaving(true);
     try {
       const r = await api.put(`/pdf-forms/${id}`, {
-        title: next.title, description: next.description, fields: next.fields,
-        settings: next.settings || {}, status: next.status, pages: next.pages || [],
+        title: next.title || "Untitled PDF Form",
+        description: next.description || "",
+        fields: next.fields || [],
+        settings: next.settings || {},
+        status: next.status || "draft",
+        pages: next.pages || [],
         version: next.version || 1,
+        filename_template: next.filename_template,
+        doc_vault_path: next.doc_vault_path,
+        assigned_site_ids: next.assigned_site_ids || [],
+        assigned_vendor_ids: next.assigned_vendor_ids || [],
+        assigned_vendor_user_ids: next.assigned_vendor_user_ids || [],
+        assigned_admin_ids: next.assigned_admin_ids || [],
+        assigned_member_ids: next.assigned_member_ids || [],
+        assigned_department_ids: next.assigned_department_ids || [],
+        assigned_team_ids: next.assigned_team_ids || [],
+        assigned_cluster_managers: next.assigned_cluster_managers || [],
       });
       setTpl((prev) => ({ ...prev, ...r.data }));
     } catch (e) {
@@ -78,15 +93,19 @@ export default function PdfBuilderPage() {
     setFuture([]);
   };
 
-  const update = (next, { commit = true, record = true } = {}) => {
+  const update = (nextOrPatch, { commit = true, record = true } = {}) => {
     setTpl((prev) => {
-      if (record && prev) pushHistory({ fields: prev.fields, title: prev.title });
+      if (!prev) return prev;
+      const next = typeof nextOrPatch === "function"
+        ? nextOrPatch(prev)
+        : { ...prev, ...nextOrPatch };
+      if (record && prev.fields) pushHistory({ fields: prev.fields, title: prev.title });
+      if (commit) {
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        saveTimer.current = setTimeout(() => save(next), 600);
+      }
       return next;
     });
-    if (commit) {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => save(next), 600);
-    }
   };
 
   const undo = () => {

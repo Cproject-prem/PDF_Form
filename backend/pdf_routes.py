@@ -137,6 +137,8 @@ class PDFTemplateIn(BaseModel):
     assigned_cluster_managers: List[str] = Field(default_factory=list)
     # Optional per-template filename template — see /app/backend/filename_resolver.py.
     filename_template: Optional[str] = ""
+    # Optional auto-save document vault path (e.g. /Reports/TBT)
+    doc_vault_path: Optional[str] = ""
 
 
 class PDFTemplate(PDFTemplateIn):
@@ -158,6 +160,7 @@ class PDFTemplatePatch(BaseModel):
     title: Optional[str] = None
     settings: Optional[Dict[str, Any]] = None
     filename_template: Optional[str] = None
+    doc_vault_path: Optional[str] = None
 
 
 class PDFSubmissionIn(BaseModel):
@@ -908,6 +911,16 @@ def build_pdf_router(db, get_current_user, get_optional_user,
             if f.get("type") not in PDF_FIELD_TYPES:
                 raise HTTPException(400, f"Invalid field type: {f.get('type')}")
         updates["updated_at"] = _now()
+        # protect pages from being wiped out
+        if not updates.get("pages") and existing.get("pages"):
+            updates["pages"] = existing["pages"]
+        elif not updates.get("pages"):
+            storage = existing.get("storage_filename")
+            if storage and (PDF_DIR / storage).exists():
+                try:
+                    updates["pages"] = [p.model_dump() for p in _read_pdf_pages(PDF_DIR / storage)]
+                except Exception:
+                    pass
         # bump version if fields changed
         if updates.get("fields") != existing.get("fields"):
             updates["version"] = int(existing.get("version", 1)) + 1
