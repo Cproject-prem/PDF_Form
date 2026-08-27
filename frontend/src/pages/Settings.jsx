@@ -995,18 +995,18 @@ function PlantDocsTemplateCard() {
 
   if (!loaded) return null;
   return (
-    <Card className="p-5 rounded-2xl border-slate-100 card-soft mt-4 space-y-4 bg-white"
+    <Card className="p-5 rounded-2xl border border-slate-200 dark:border-slate-800 card-soft mt-4 space-y-4 bg-white dark:bg-slate-900/90 text-slate-900 dark:text-white"
           data-testid="plant-docs-template-card">
-      <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+      <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
         <div>
-          <div className="font-heading font-semibold text-base flex items-center gap-2 text-slate-900">
-            <FolderTree className="w-5 h-5 text-blue-600" /> Plant Document Folder Hierarchy
+          <div className="font-heading font-semibold text-base flex items-center gap-2 text-slate-900 dark:text-white">
+            <FolderTree className="w-5 h-5 text-blue-500" /> Plant Document Folder Hierarchy
           </div>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             Configure default folders and subfolders auto-created for every plant. Saving also syncs folders across all existing plants.
           </p>
         </div>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 shadow-sm gap-1.5"
+        <Button size="sm" className="bg-blue-600 hover:bg-blue-500 text-white shadow-sm gap-1.5"
                 onClick={save} disabled={saving}
                 data-testid="tpl-folder-save">
           <FolderPlus className="w-4 h-4" />
@@ -1022,28 +1022,28 @@ function PlantDocsTemplateCard() {
 
           return (
             <div key={f}
-                 className="rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-slate-50/80 p-3 transition-all space-y-2.5">
+                 className="rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 hover:bg-slate-100/70 dark:hover:bg-slate-950/90 p-3.5 transition-all space-y-2.5">
               {/* Folder header */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Folder className="w-4 h-4 text-blue-600 shrink-0" />
-                  <span className="font-semibold text-sm text-slate-800 tracking-tight">{f}</span>
+                  <Folder className="w-4 h-4 text-blue-500 shrink-0" />
+                  <span className="font-semibold text-sm text-slate-800 dark:text-slate-100 tracking-tight">{f}</span>
                   {sfList.length > 0 ? (
-                    <Badge variant="secondary" className="text-[10px] px-2 py-0 bg-blue-100/70 text-blue-700 font-medium">
+                    <Badge variant="secondary" className="text-[10px] px-2 py-0 bg-blue-100/70 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800/60 font-medium">
                       {sfList.length} subfolder{sfList.length > 1 ? "s" : ""}
                     </Badge>
                   ) : (
-                    <span className="text-[11px] text-slate-400">No subfolders</span>
+                    <span className="text-[11px] text-slate-400 dark:text-slate-400">No subfolders</span>
                   )}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Button variant="ghost" size="sm" onClick={() => setSettingsFolder(f)}
-                          className="h-7 text-xs text-slate-600 hover:text-blue-600 gap-1 px-2"
+                          className="h-7 text-xs text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-200/60 dark:hover:bg-slate-800 gap-1 px-2"
                           data-testid={`tpl-folder-settings-${f}`}>
                     <Settings2 className="w-3.5 h-3.5" /> Permissions
                   </Button>
                   <Button variant="ghost" size="sm" onClick={() => removeFolder(f)}
-                          className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                          className="h-7 w-7 p-0 text-slate-400 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg"
                           title="Delete folder"
                           data-testid={`tpl-folder-del-${f}`}>
                     <Trash2 className="w-3.5 h-3.5" />
@@ -1052,18 +1052,18 @@ function PlantDocsTemplateCard() {
               </div>
 
               {/* Subfolders row */}
-              <div className="pl-6 pt-2 border-t border-slate-200/60 flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] text-slate-400 font-medium mr-1 flex items-center gap-1">
+              <div className="pl-6 pt-2 border-t border-slate-200/60 dark:border-slate-800 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mr-1 flex items-center gap-1">
                   <CornerDownRight className="w-3 h-3 text-slate-400" /> Subfolders:
                 </span>
 
                 {sfList.map((sf) => (
                   <span key={sf}
-                        className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 text-xs shadow-xs group">
+                        className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-0.5 rounded-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-xs shadow-xs group">
                     <Folder className="w-3 h-3 text-amber-500 shrink-0" />
                     <span className="font-medium text-[11px]">{sf}</span>
                     <button onClick={() => removeSubfolder(f, sf)}
-                            className="text-slate-400 hover:text-red-500 rounded p-0.5 transition-colors"
+                            className="text-slate-400 hover:text-red-500 dark:text-slate-400 dark:hover:text-red-400 rounded p-0.5 transition-colors"
                             title={`Remove subfolder ${sf}`}
                             data-testid={`tpl-subfolder-del-${f}-${sf}`}>
                       <X className="w-3 h-3" />
@@ -1072,12 +1072,12 @@ function PlantDocsTemplateCard() {
                 ))}
 
                 {isAddingSub ? (
-                  <div className="inline-flex items-center gap-1 bg-white border border-blue-300 rounded-md p-0.5 shadow-xs">
+                  <div className="inline-flex items-center gap-1 bg-white dark:bg-slate-900 border border-blue-400 dark:border-blue-500 rounded-md p-0.5 shadow-xs">
                     <Input
                       value={subDrafts[f] || ""}
                       onChange={(e) => setSubDrafts({ ...subDrafts, [f]: e.target.value })}
                       placeholder="Subfolder name…"
-                      className="h-6 text-xs w-32 px-1.5 border-0 focus-visible:ring-0"
+                      className="h-6 text-xs w-32 px-1.5 border-0 focus-visible:ring-0 bg-transparent text-slate-900 dark:text-white placeholder:text-slate-400"
                       autoFocus
                       data-testid={`tpl-subfolder-input-${f}`}
                       onKeyDown={(e) => {
@@ -1085,12 +1085,12 @@ function PlantDocsTemplateCard() {
                         if (e.key === "Escape") { setActiveSubInput(null); setSubDrafts({ ...subDrafts, [f]: "" }); }
                       }}
                     />
-                    <Button size="sm" className="h-6 px-2 text-[11px] bg-blue-600 hover:bg-blue-700 text-white"
+                    <Button size="sm" className="h-6 px-2 text-[11px] bg-blue-600 hover:bg-blue-500 text-white"
                             onClick={() => addSubfolder(f)}
                             data-testid={`tpl-subfolder-add-btn-${f}`}>
                       Add
                     </Button>
-                    <Button size="sm" variant="ghost" className="h-6 px-1 text-slate-400 hover:text-slate-600"
+                    <Button size="sm" variant="ghost" className="h-6 px-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                             onClick={() => { setActiveSubInput(null); setSubDrafts({ ...subDrafts, [f]: "" }); }}>
                       <X className="w-3 h-3" />
                     </Button>
@@ -1100,7 +1100,7 @@ function PlantDocsTemplateCard() {
                     size="sm"
                     variant="outline"
                     onClick={() => { setActiveSubInput(f); setSubDrafts({ ...subDrafts, [f]: "" }); }}
-                    className="h-6 px-2 text-[11px] border-dashed border-slate-300 text-slate-600 hover:text-blue-600 hover:border-blue-300 bg-white"
+                    className="h-6 px-2 text-[11px] border-dashed border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:border-blue-400 dark:hover:border-blue-500 bg-white dark:bg-slate-900"
                     data-testid={`tpl-subfolder-open-input-${f}`}
                   >
                     <Plus className="w-3 h-3 mr-1" /> Add subfolder
@@ -1112,46 +1112,46 @@ function PlantDocsTemplateCard() {
         })}
 
         {folders.length === 0 && (
-          <div className="text-center py-6 border border-dashed border-slate-200 rounded-xl text-slate-400 text-xs">
+          <div className="text-center py-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 text-xs bg-slate-50/40 dark:bg-slate-950/40">
             No default folders configured. Add a folder below to get started.
           </div>
         )}
       </div>
 
       {/* Add New Root Folder bar */}
-      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+      <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
         <Input value={draft} onChange={(e) => setDraft(e.target.value)}
                placeholder="Add root folder name (e.g. Reports, Contracts)…"
-               className="h-9 text-sm max-w-sm"
+               className="h-9 text-sm max-w-sm border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white placeholder:text-slate-400"
                data-testid="tpl-folder-input"
                onKeyDown={(e) => e.key === "Enter" && addFolder()} />
         <Button size="sm" variant="outline" onClick={addFolder}
-                data-testid="tpl-folder-add" className="h-9">
+                data-testid="tpl-folder-add" className="h-9 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800">
           <Plus className="w-3.5 h-3.5 mr-1" /> Add Folder
         </Button>
       </div>
 
       {/* Permissions Dialog */}
       <Dialog open={!!settingsFolder} onOpenChange={(o) => !o && setSettingsFolder(null)}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-lg">
+            <DialogTitle className="flex items-center gap-2 text-lg text-slate-900 dark:text-white">
               <Settings2 className="w-5 h-5 text-slate-400" />
-              Permissions: <span className="font-mono text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md text-base">{settingsFolder}</span>
+              Permissions: <span className="font-mono text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 px-2 py-0.5 rounded-md text-base">{settingsFolder}</span>
             </DialogTitle>
           </DialogHeader>
           <div className="py-2 space-y-4">
-            <p className="text-sm text-slate-500 mb-4">
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
               Select which roles can view this folder, and which roles can upload/edit files inside it.
             </p>
-            <div className="grid grid-cols-[1fr_60px_60px] gap-3 text-sm font-medium border-b border-slate-100 pb-2">
+            <div className="grid grid-cols-[1fr_60px_60px] gap-3 text-sm font-medium border-b border-slate-100 dark:border-slate-800 pb-2 text-slate-600 dark:text-slate-300">
               <div>Role</div>
               <div className="text-center">View</div>
               <div className="text-center">Edit</div>
             </div>
             <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
               {roles.map(role => (
-                <div key={role.id} className="grid grid-cols-[1fr_60px_60px] gap-3 items-center hover:bg-slate-50 p-1.5 -mx-1.5 rounded-lg transition-colors">
+                <div key={role.id} className="grid grid-cols-[1fr_60px_60px] gap-3 items-center hover:bg-slate-50 dark:hover:bg-slate-800/60 p-1.5 -mx-1.5 rounded-lg transition-colors text-slate-700 dark:text-slate-200">
                   <div className="text-sm">
                     {role.label}
                     {role.id === "super_admin" && <span className="block text-[10px] text-slate-400">Can't be disabled</span>}
@@ -1174,8 +1174,8 @@ function PlantDocsTemplateCard() {
               ))}
             </div>
           </div>
-          <DialogFooter className="sm:justify-between border-t border-slate-100 pt-4 mt-2">
-            <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded-md self-center">
+          <DialogFooter className="sm:justify-between border-t border-slate-100 dark:border-slate-800 pt-4 mt-2">
+            <span className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-900/60 px-2 py-1 rounded-md self-center">
               Remember to "Save Template" on the settings page to apply changes.
             </span>
             <Button type="button" onClick={() => setSettingsFolder(null)}>Done</Button>
@@ -1319,55 +1319,55 @@ function BackupRestoreCard() {
   };
 
   return (
-    <Card className="p-5 rounded-2xl border-slate-100 card-soft mt-4 space-y-4 bg-white"
+    <Card className="p-5 rounded-2xl border border-slate-200 dark:border-slate-800 card-soft mt-4 space-y-4 bg-white dark:bg-slate-900/90 text-slate-900 dark:text-white"
           data-testid="backup-restore-card">
-      <div className="font-heading font-semibold flex items-center gap-2">
+      <div className="font-heading font-semibold flex items-center gap-2 text-slate-900 dark:text-white">
         <Archive className="w-4 h-4 text-blue-500" /> Backup &amp; Restore (RAR Format)
       </div>
-      <p className="text-xs text-slate-500 -mt-2">
+      <p className="text-xs text-slate-500 dark:text-slate-400 -mt-2">
         Snapshots are generated as password-protected <b>.rar</b> archives containing MongoDB + uploaded files. Retained for {cfg.retention_days} days.
       </p>
 
       {/* Auto backup */}
-      <div className="flex flex-wrap items-end gap-3 border border-slate-100 rounded-xl p-3 bg-slate-50/60">
+      <div className="flex flex-wrap items-end gap-3 border border-slate-200 dark:border-slate-800 rounded-xl p-3.5 bg-slate-50/70 dark:bg-slate-950/60">
         <label className="flex items-center gap-2 cursor-pointer text-sm">
           <input type="checkbox" checked={!!cfg.enabled}
                  data-testid="backup-auto-toggle"
                  onChange={(e) => saveCfg({ enabled: e.target.checked })}
-                 className="w-4 h-4 accent-blue-600" />
-          <span className="font-medium text-slate-700">Automatic daily backup (.rar)</span>
+                 className="w-4 h-4 accent-blue-600 rounded" />
+          <span className="font-medium text-slate-700 dark:text-slate-200">Automatic daily backup (.rar)</span>
         </label>
         <div className="ml-4">
-          <div className="text-[11px] text-slate-500 mb-0.5">Time (UTC)</div>
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 mb-0.5">Time (UTC)</div>
           <div className="flex items-center gap-1">
             <Input type="number" min="0" max="23"
                    value={cfg.hour_utc}
                    data-testid="backup-hour"
                    onChange={(e) => saveCfg({ hour_utc: Number(e.target.value) })}
-                   className="h-8 w-16 text-sm" />
+                   className="h-8 w-16 text-sm border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white" />
             <span className="text-slate-400">:</span>
             <Input type="number" min="0" max="59"
                    value={cfg.minute_utc}
                    data-testid="backup-minute"
                    onChange={(e) => saveCfg({ minute_utc: Number(e.target.value) })}
-                   className="h-8 w-16 text-sm" />
+                   className="h-8 w-16 text-sm border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white" />
           </div>
         </div>
         <div className="ml-auto">
-          <div className="text-[11px] text-slate-500 mb-0.5">Last run</div>
-          <div className="text-xs text-slate-600">
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 mb-0.5">Last run</div>
+          <div className="text-xs text-slate-700 dark:text-slate-300 font-medium">
             {cfg.last_run_at ? formatDate(cfg.last_run_at) : "—"}
           </div>
         </div>
         <Button size="sm" onClick={backupNow} disabled={busy}
                 data-testid="backup-now"
-                className="bg-blue-600 hover:bg-blue-700">
+                className="bg-blue-600 hover:bg-blue-500 text-white">
           <Archive className="w-3.5 h-3.5 mr-1" /> {busy ? "Working…" : "Backup now (.rar)"}
         </Button>
         <Button size="sm" variant="outline" onClick={downloadMigrationBundle}
                 disabled={busy}
                 data-testid="backup-migration-bundle"
-                className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                className="border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 bg-white dark:bg-slate-900"
                 title="Create a fresh encrypted RAR snapshot and download it right away.">
           <DownloadCloud className="w-3.5 h-3.5 mr-1" /> Migration bundle (.rar)
         </Button>
@@ -1375,7 +1375,7 @@ function BackupRestoreCard() {
                 disabled={busy}
                 onClick={() => fileInputRef.current?.click()}
                 data-testid="backup-upload-restore"
-                className="border-amber-300 text-amber-700 hover:bg-amber-50"
+                className="border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40 bg-white dark:bg-slate-900"
                 title="Restore the whole app from a .rar backup file on your computer.">
           <UploadCloud className="w-3.5 h-3.5 mr-1" /> Restore from file…
         </Button>
@@ -1391,36 +1391,36 @@ function BackupRestoreCard() {
 
       {/* Snapshots list */}
       <div>
-        <div className="text-xs font-semibold text-slate-600 mb-1.5">
+        <div className="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">
           Snapshots <span className="text-slate-400 font-normal">({snaps.length})</span>
         </div>
         {snaps.length === 0 ? (
-          <div className="text-xs text-slate-400 py-6 text-center border border-dashed border-slate-200 rounded-lg">
+          <div className="text-xs text-slate-400 dark:text-slate-400 py-6 text-center border border-dashed border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/40 dark:bg-slate-950/40">
             No snapshots yet — click "Backup now" to create one.
           </div>
         ) : (
-          <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg">
+          <div className="divide-y divide-slate-100 dark:divide-slate-800 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-white dark:bg-slate-950/40">
             {snaps.map((s) => (
-              <div key={s.name} className="flex items-center gap-3 p-2.5 hover:bg-slate-50"
+              <div key={s.name} className="flex items-center gap-3 p-3 hover:bg-slate-50/80 dark:hover:bg-slate-800/60 transition-colors"
                    data-testid={`snap-${s.name}`}>
                 <Archive className="w-4 h-4 text-slate-400 shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm text-slate-800 truncate">{s.name}</div>
-                  <div className="text-[10px] text-slate-400">
+                  <div className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{s.name}</div>
+                  <div className="text-[10px] text-slate-500 dark:text-slate-400">
                     {formatBytesLocal(s.size_bytes)} · {formatDate(s.created_at)}
                   </div>
                 </div>
-                <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]"
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px] text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-100 dark:hover:bg-slate-800"
                         onClick={() => download(s.name)} title="Download">
                   <DownloadCloud className="w-3.5 h-3.5 mr-1" /> Download
                 </Button>
-                <Button size="sm" variant="outline" className="h-7 px-2 text-[11px] border-amber-200 text-amber-700 hover:bg-amber-50"
+                <Button size="sm" variant="outline" className="h-7 px-2 text-[11px] border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/50 bg-white dark:bg-slate-900"
                         onClick={() => restore(s.name)}
                         data-testid={`restore-${s.name}`}
                         title="Restore this snapshot">
                   <RotateCcw className="w-3.5 h-3.5 mr-1" /> Restore
                 </Button>
-                <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
+                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
                         onClick={() => del(s.name)}
                         data-testid={`del-${s.name}`}
                         title="Delete">
@@ -1444,53 +1444,50 @@ function formatBytesLocal(n) {
 }
 
 function EmergencyOverrideCard() {
-  const [users, setUsers] = useState([]);
-  const [q, setQ] = useState("");
+  const [adminUsers, setAdminUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState("");
 
   const load = () => {
     setLoading(true);
-    api.get("/users")
-      .then((r) => setUsers(r.data))
-      .catch(() => setUsers([]))
+    api
+      .get("/users")
+      .then((r) => setAdminUsers(r.data || []))
+      .catch(() => setAdminUsers([]))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
-  const toggleOverride = async (u) => {
-    const nextVal = !u.access_override;
+  const toggleOverride = async (user) => {
+    const next = !user.access_override;
     try {
-      await api.put(`/users/${u.user_id}`, {
-        ...u,
-        access_override: nextVal
-      });
-      toast.success(`Access override ${nextVal ? "ENABLED" : "DISABLED"} for ${u.name || u.email}`);
+      await api.put(`/users/${user.user_id}/access-override`, { access_override: next });
+      toast.success(`${user.name || user.email}: Override ${next ? "ENABLED" : "DISABLED"}`);
       load();
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Update failed");
+      toast.error(e?.response?.data?.detail || "Failed to update override");
     }
   };
 
-  const adminUsers = users.filter((u) =>
-    u.role?.toLowerCase() === "admin" || u.role?.toLowerCase() === "super_admin"
-  );
-
-  const filtered = adminUsers.filter((u) =>
-    !q || `${u.name || ""} ${u.email || ""} ${u.role || ""}`.toLowerCase().includes(q.toLowerCase())
+  const filtered = adminUsers.filter(
+    (u) =>
+      !q || `${u.name || ""} ${u.email || ""} ${u.role || ""}`.toLowerCase().includes(q.toLowerCase())
   );
 
   const overrideUsers = adminUsers.filter((u) => u.access_override);
 
   return (
-    <Card className="p-6 rounded-2xl border-slate-100 card-soft space-y-4">
+    <Card className="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 card-soft space-y-4 bg-white dark:bg-slate-900/90 text-slate-900 dark:text-white">
       <div>
-        <h2 className="text-lg font-heading font-semibold text-slate-900 flex items-center gap-2">
-          <KeyRound className="w-5 h-5 text-amber-600" />
+        <h2 className="text-lg font-heading font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+          <KeyRound className="w-5 h-5 text-amber-500" />
           Emergency Access Override Management
         </h2>
-        <p className="text-xs text-slate-500 mt-0.5">
-          Users flagged with <code className="bg-slate-100 px-1 rounded font-mono text-amber-700">access_override = true</code> bypass all region/vendor filters and gain Super Admin access.
+        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+          Users flagged with <code className="bg-slate-100 dark:bg-slate-800 px-1 rounded font-mono text-amber-700 dark:text-amber-400">access_override = true</code> bypass all region/vendor filters and gain Super Admin access.
         </p>
       </div>
 
@@ -1501,10 +1498,10 @@ function EmergencyOverrideCard() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search users by name, email, or role…"
-            className="pl-9 h-9 text-xs"
+            className="pl-9 h-9 text-xs border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white placeholder:text-slate-400"
           />
         </div>
-        <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
+        <span className="text-xs font-medium text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-2.5 py-1 rounded-full border border-amber-200 dark:border-amber-800">
           {overrideUsers.length} active override{overrideUsers.length !== 1 && "s"}
         </span>
       </div>
@@ -1512,25 +1509,25 @@ function EmergencyOverrideCard() {
       {loading ? (
         <div className="text-xs text-slate-400 py-4">Loading user overrides…</div>
       ) : (
-        <div className="max-h-60 overflow-y-auto border border-slate-100 rounded-xl divide-y divide-slate-100">
+        <div className="max-h-60 overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-xl divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-950/40">
           {filtered.length === 0 ? (
             <div className="p-6 text-center text-xs text-slate-400">No matching users found</div>
           ) : (
             filtered.map((u) => (
-              <div key={u.user_id} className="flex items-center justify-between p-3 text-xs hover:bg-slate-50">
+              <div key={u.user_id} className="flex items-center justify-between p-3 text-xs hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
                 <div>
-                  <div className="font-semibold text-slate-800 flex items-center gap-1.5">
+                  <div className="font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
                     {u.name || u.email}
                     {u.access_override && (
-                      <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
+                      <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 text-[10px] font-bold border border-amber-200 dark:border-amber-800">
                         OVERRIDE ACTIVE
                       </span>
                     )}
                   </div>
-                  <div className="text-[11px] text-slate-500">{u.email} · <span className="capitalize">{u.role}</span></div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400">{u.email} · <span className="capitalize">{u.role}</span></div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-slate-500 font-medium">Override</span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">Override</span>
                   <Switch
                     checked={!!u.access_override}
                     onCheckedChange={() => toggleOverride(u)}
@@ -1544,4 +1541,3 @@ function EmergencyOverrideCard() {
     </Card>
   );
 }
-
