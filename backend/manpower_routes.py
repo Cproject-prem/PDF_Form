@@ -94,12 +94,19 @@ def build_manpower_router(main_db, get_current_user):
     "empty" payloads so the frontend can render without crashing."""
     router = APIRouter(prefix="/manpower", tags=["manpower"])
 
-    # Get a handle to the manpower DB (same client, different name).
+    # Get a handle to the manpower DB (separate Mongo instance or sibling on same client).
     mp_db_name = _env("MANPOWER_DB_NAME", "cmes_mp_db")
     mp_coll_name = _env("MANPOWER_COLLECTION", "manpower")
-    # motor Database has .client → AsyncIOMotorClient
-    _client = getattr(main_db, "client", None)
-    mp_db = _client[mp_db_name] if _client is not None else None
+    mp_mongo_url = _env("MANPOWER_MONGO_URL", "")
+
+    if mp_mongo_url:
+        import motor.motor_asyncio
+        mp_client = motor.motor_asyncio.AsyncIOMotorClient(mp_mongo_url)
+        mp_db = mp_client[mp_db_name]
+    else:
+        _client = getattr(main_db, "client", None)
+        mp_db = _client[mp_db_name] if _client is not None else None
+
     coll = mp_db[mp_coll_name] if mp_db is not None else None
 
     @router.get("")

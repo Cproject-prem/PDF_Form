@@ -197,11 +197,19 @@ def _manpower_coll(db):
     or None if the integration is disabled or the client isn't available."""
     if not _mp_enabled():
         return None
+    mp_mongo_url = (os.environ.get("MANPOWER_MONGO_URL") or "").strip().strip('"').strip("'")
+    db_name = (os.environ.get("MANPOWER_DB_NAME", "cmes_mp_db") or "").strip().strip('"').strip("'")
+    coll_name = (os.environ.get("MANPOWER_COLLECTION", "manpower") or "").strip().strip('"').strip("'")
+    if mp_mongo_url:
+        import motor.motor_asyncio
+        mp_client = getattr(_manpower_coll, "_cached_client", None)
+        if mp_client is None:
+            mp_client = motor.motor_asyncio.AsyncIOMotorClient(mp_mongo_url)
+            _manpower_coll._cached_client = mp_client
+        return mp_client[db_name][coll_name]
     client = getattr(db, "client", None)
     if client is None:
         return None
-    db_name = (os.environ.get("MANPOWER_DB_NAME", "cmes_mp_db") or "").strip().strip('"').strip("'")
-    coll_name = (os.environ.get("MANPOWER_COLLECTION", "manpower") or "").strip().strip('"').strip("'")
     return client[db_name][coll_name]
 
 
