@@ -530,13 +530,13 @@ def menu_for(user) -> List[Dict[str, str]]:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "workflow-analytics", "approvals",
                       "plants", "schedule", "site-master", "vendors",
-                      "master-data", "manpower", "inventory", "reports", "audit-logs",
+                      "master-data", "manpower", "inventory", "ai-training", "reports", "audit-logs",
                       "users", "smtp", "welcome-email", "settings"])
     if role == ADMIN:
         return _menu(["dashboard", "forms", "pdf-forms", "submissions",
                       "workflows", "approvals",
                       "plants", "schedule", "site-master", "vendors",
-                      "master-data", "manpower", "inventory", "users", "welcome-email", "reports"])
+                      "master-data", "manpower", "inventory", "ai-training", "users", "welcome-email", "reports"])
     if role == VENDOR_ADMIN:
         return _menu(["manpower", "forms", "pdf-forms", "submissions", "plants", "schedule", "vendors"])
     if role == VENDOR_USER:
@@ -561,6 +561,7 @@ _MENU_DEFS = {
     "reports":            {"label": "Reports",             "path": "/reports",             "group": "data"},
     "manpower":           {"label": "Manpower",            "path": "/manpower",            "group": "data"},
     "inventory":          {"label": "Inventory Management","path": "/inventory",           "group": "data"},
+    "ai-training":        {"label": "AI Training",         "path": "/ai-training",         "group": "admin"},
     "team":               {"label": "Team",                "path": "/team",                "group": "team"},
     "users":              {"label": "Users",               "path": "/users",               "group": "admin"},
     "audit-logs":         {"label": "Audit Logs",          "path": "/audit-logs",          "group": "admin"},

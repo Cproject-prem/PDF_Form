@@ -489,6 +489,32 @@ export default function AiTrainingPage() {
     { id: "settings", label: "AI Settings", icon: Sliders },
   ];
 
+  if (branding?.enable_ai === false) {
+    return (
+      <AppLayout>
+        <div className="max-w-xl mx-auto mt-16 p-8 text-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-sm space-y-4">
+          <div className="w-16 h-16 rounded-2xl bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-900/60 flex items-center justify-center mx-auto text-amber-600 dark:text-amber-400">
+            <Bot className="w-8 h-8" />
+          </div>
+          <h2 className="text-xl font-heading font-bold text-slate-900 dark:text-white">
+            AI Module Disabled
+          </h2>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            The AI Training and Assistant module is currently turned off in workspace settings.
+          </p>
+          <div className="pt-2">
+            <a
+              href="/settings"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-sm transition"
+            >
+              Go to Settings → Module Controls
+            </a>
+          </div>
+        </div>
+      </AppLayout>
+    );
+  }
+
   return (
     <AppLayout>
       <div className="flex-1 flex flex-col h-[calc(100vh-64px)] overflow-hidden bg-slate-100">

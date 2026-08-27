@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { api } from "@/lib/api";
 import { Bot, Send, X, Sparkles, RefreshCw } from "lucide-react";
@@ -40,6 +40,8 @@ export default function AiChatbotWidget() {
       chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, isTyping, isOpen]);
+
+  if (branding?.enable_ai === false) return null;
 
   const sendMessage = async (e) => {
     e?.preventDefault();

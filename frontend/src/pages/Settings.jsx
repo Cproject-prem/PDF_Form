@@ -168,7 +168,11 @@ export default function SettingsPage() {
         <Tabs defaultValue="general" className="mt-6">
           <TabsList className="mb-4 flex-wrap">
             <TabsTrigger value="general">General & Branding</TabsTrigger>
-            <TabsTrigger value="ai">AI Assistant & Chatbot</TabsTrigger>
+            {data.enable_ai !== false && (
+              <TabsTrigger value="ai" className="flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-500" /> AI Assistant & Chatbot
+              </TabsTrigger>
+            )}
             <TabsTrigger value="rbac">RBAC & Roles</TabsTrigger>
             <TabsTrigger value="notifications">Notifications & API</TabsTrigger>
             <TabsTrigger value="advanced">Backup & Advanced</TabsTrigger>
@@ -371,60 +375,121 @@ export default function SettingsPage() {
         </Card>
 
         {/* ─── Feature & Module Controls ─── */}
-        <Card className="p-6 rounded-2xl border-slate-100 card-soft space-y-4">
+        <Card className="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 card-soft space-y-4 bg-white dark:bg-slate-900/90 text-slate-900 dark:text-white">
           <div>
-            <h2 className="text-lg font-heading font-semibold">Module & Feature Controls</h2>
-            <p className="text-xs text-slate-500 mt-0.5">
+            <h2 className="text-lg font-heading font-semibold text-slate-900 dark:text-white">Module & Feature Controls</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               Enable or disable optional system modules across the portal.
             </p>
           </div>
 
-          <div className="flex items-center justify-between p-4 rounded-xl bg-slate-50 border border-slate-100">
-            <div>
-              <Label className="font-semibold text-slate-800 text-sm">Inventory Management Module</Label>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Show or hide the Inventory page, equipment tracking, and inter-plant movement registry for all users.
-              </p>
+          <div className="space-y-3">
+            {/* AI Module Switch */}
+            <div className="flex items-center justify-between p-4 rounded-xl bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <Bot className="w-4 h-4 text-indigo-500" />
+                  <Label className="font-semibold text-slate-800 dark:text-slate-100 text-sm">AI Assistant & Chatbot Module</Label>
+                  <Badge variant="secondary" className={`text-[10px] px-2 py-0.5 ${data.enable_ai !== false ? "bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800" : "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400"}`}>
+                    {data.enable_ai !== false ? "Active" : "Disabled"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Show or hide the floating AI Assistant chatbot widget, AI training tools, and automated form assistant across the workspace.
+                </p>
+              </div>
+              <Switch
+                checked={data.enable_ai !== false}
+                onCheckedChange={(v) => setData({ ...data, enable_ai: v })}
+                data-testid="toggle-enable-ai"
+              />
             </div>
-            <Switch
-              checked={!!data.enable_inventory}
-              onCheckedChange={(v) => setData({ ...data, enable_inventory: v })}
-              data-testid="toggle-enable-inventory"
-            />
+
+            {/* Inventory Switch */}
+            <div className="flex items-center justify-between p-4 rounded-xl bg-slate-50/70 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <Package2 className="w-4 h-4 text-blue-500" />
+                  <Label className="font-semibold text-slate-800 dark:text-slate-100 text-sm">Inventory Management Module</Label>
+                  <Badge variant="secondary" className={`text-[10px] px-2 py-0.5 ${data.enable_inventory ? "bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800" : "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400"}`}>
+                    {data.enable_inventory ? "Active" : "Disabled"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Show or hide the Inventory page, equipment tracking, and inter-plant movement registry for all users.
+                </p>
+              </div>
+              <Switch
+                checked={!!data.enable_inventory}
+                onCheckedChange={(v) => setData({ ...data, enable_inventory: v })}
+                data-testid="toggle-enable-inventory"
+              />
+            </div>
           </div>
         </Card>
         </TabsContent>
 
         {/* ─── AI Assistant & Chatbot Branding Tab ─── */}
         <TabsContent value="ai" className="space-y-6">
-          <Card className="p-6 rounded-2xl border-slate-100 card-soft space-y-6">
+          {/* Master Enable/Disable Card */}
+          <Card className="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 card-soft space-y-4 bg-white dark:bg-slate-900/90 text-slate-900 dark:text-white">
+            <div className="flex items-center justify-between">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-indigo-500" />
+                  <h2 className="text-lg font-heading font-semibold text-slate-900 dark:text-white">
+                    AI Assistant Master Toggle
+                  </h2>
+                  <Badge variant="secondary" className={`text-xs px-2.5 py-0.5 ${data.enable_ai !== false ? "bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800" : "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400"}`}>
+                    {data.enable_ai !== false ? "AI Enabled" : "AI Disabled"}
+                  </Badge>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Master switch to show or hide the AI Chatbot drawer, floating bot trigger, and automated Copilot across the portal.
+                </p>
+              </div>
+              <Switch
+                checked={data.enable_ai !== false}
+                onCheckedChange={(v) => setData({ ...data, enable_ai: v })}
+                data-testid="toggle-ai-master"
+              />
+            </div>
+            {data.enable_ai === false && (
+              <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300 text-xs flex items-center gap-2">
+                <Bot className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>AI Module is currently <b>Disabled</b>. The floating chatbot and AI assistants will be hidden from all users after saving.</span>
+              </div>
+            )}
+          </Card>
+
+          <Card className="p-6 rounded-2xl border border-slate-200 dark:border-slate-800 card-soft space-y-6 bg-white dark:bg-slate-900/90 text-slate-900 dark:text-white">
             <div>
-              <h2 className="text-lg font-heading font-semibold flex items-center gap-2 text-slate-900">
-                <Settings2 className="w-5 h-5 text-indigo-600" />
+              <h2 className="text-lg font-heading font-semibold flex items-center gap-2 text-slate-900 dark:text-white">
+                <Settings2 className="w-5 h-5 text-indigo-500" />
                 AI Assistant Name & Chatbot GIF Branding
               </h2>
-              <p className="text-xs text-slate-500 mt-1">
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                 Customize the AI Assistant's name, brand logo, and animated Chatbot GIF shown in the AI chat playground, floating assistant drawer, and diagnostic tools.
               </p>
             </div>
 
             {/* AI Assistant Name */}
             <div>
-              <Label className="font-semibold text-slate-800">AI Assistant Name</Label>
-              <p className="text-xs text-slate-500 mb-2">Display name for the AI bot across chat bubbles, headers, and notifications.</p>
+              <Label className="font-semibold text-slate-800 dark:text-slate-100">AI Assistant Name</Label>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Display name for the AI bot across chat bubbles, headers, and notifications.</p>
               <Input
                 value={data.ai_bot_name || "FormForge AI"}
                 onChange={(e) => setData({ ...data, ai_bot_name: e.target.value })}
                 placeholder="e.g. FormForge AI, SunBot, PlantAdvisor"
-                className="max-w-md"
+                className="max-w-md border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
                 data-testid="settings-ai-bot-name"
               />
             </div>
 
             {/* AI Bot Static Logo */}
             <div>
-              <Label className="font-semibold text-slate-800">AI Bot Logo Image</Label>
-              <p className="text-xs text-slate-500 mb-2">Static logo or icon for AI assistant avatar bubbles.</p>
+              <Label className="font-semibold text-slate-800 dark:text-slate-100">AI Bot Logo Image</Label>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Static logo or icon for AI assistant avatar bubbles.</p>
               <div className="flex items-start gap-4">
                 {data.ai_bot_logo_url ? (
                   <img
@@ -432,18 +497,18 @@ export default function SettingsPage() {
                       ? data.ai_bot_logo_url
                       : `${process.env.REACT_APP_BACKEND_URL || ""}${data.ai_bot_logo_url}`}
                     alt="AI Bot Logo"
-                    className="w-16 h-16 rounded-2xl object-cover border-2 border-indigo-100 bg-indigo-50 p-1 shadow-sm shrink-0"
+                    className="w-16 h-16 rounded-2xl object-cover border-2 border-indigo-100 dark:border-indigo-900 bg-indigo-50 dark:bg-indigo-950/50 p-1 shadow-sm shrink-0"
                     data-testid="settings-ai-logo-preview"
                   />
                 ) : (
-                  <div className="w-16 h-16 rounded-2xl border-2 border-dashed border-indigo-200 bg-indigo-50/50 flex items-center justify-center text-indigo-400 font-bold text-xs shrink-0">
+                  <div className="w-16 h-16 rounded-2xl border-2 border-dashed border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-950/30 flex items-center justify-center text-indigo-400 font-bold text-xs shrink-0">
                     AI Logo
                   </div>
                 )}
                 <div className="flex-1 space-y-2 max-w-md">
                   <div className="flex items-center gap-2">
-                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50 transition">
-                      <Upload className="w-3.5 h-3.5 text-indigo-600" />
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-700 dark:text-slate-200 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-900 transition">
+                      <Upload className="w-3.5 h-3.5 text-indigo-500" />
                       {uploadingAiLogo ? "Uploading..." : "Upload Logo"}
                       <input
                         type="file"
@@ -457,7 +522,7 @@ export default function SettingsPage() {
                         variant="ghost"
                         size="sm"
                         onClick={() => setData({ ...data, ai_bot_logo_url: "" })}
-                        className="text-xs text-red-600 hover:bg-red-50"
+                        className="text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
                       >Remove</Button>
                     )}
                   </div>
@@ -465,7 +530,7 @@ export default function SettingsPage() {
                     value={data.ai_bot_logo_url || ""}
                     onChange={(e) => setData({ ...data, ai_bot_logo_url: e.target.value })}
                     placeholder="https://example.com/ai-bot-logo.png"
-                    className="text-xs"
+                    className="text-xs border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
                     data-testid="settings-ai-logo-url"
                   />
                 </div>
@@ -474,11 +539,11 @@ export default function SettingsPage() {
 
             {/* Chatbot Animated GIF */}
             <div>
-              <Label className="font-semibold text-slate-800 flex items-center gap-2">
+              <Label className="font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                 <span>Chatbot Animated GIF</span>
-                <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">Animated</span>
+                <span className="text-[10px] bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 font-bold px-2 py-0.5 rounded-full border border-indigo-200 dark:border-indigo-800">Animated</span>
               </Label>
-              <p className="text-xs text-slate-500 mb-2">Animated GIF avatar played when the chatbot is thinking, answering, or resting in the chat drawer.</p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Animated GIF avatar played when the chatbot is thinking, answering, or resting in the chat drawer.</p>
               <div className="flex items-start gap-4">
                 {data.ai_bot_gif_url ? (
                   <img
@@ -486,18 +551,18 @@ export default function SettingsPage() {
                       ? data.ai_bot_gif_url
                       : `${process.env.REACT_APP_BACKEND_URL || ""}${data.ai_bot_gif_url}`}
                     alt="Chatbot GIF"
-                    className="w-20 h-20 rounded-2xl object-cover border-2 border-indigo-200 bg-slate-900 p-1 shadow-md shrink-0"
+                    className="w-20 h-20 rounded-2xl object-cover border-2 border-indigo-200 dark:border-indigo-800 bg-slate-900 p-1 shadow-md shrink-0"
                     data-testid="settings-ai-gif-preview"
                   />
                 ) : (
-                  <div className="w-20 h-20 rounded-2xl border-2 border-dashed border-indigo-300 bg-slate-900 flex flex-col items-center justify-center text-indigo-300 text-[10px] text-center p-1 font-mono shrink-0 shadow-inner">
+                  <div className="w-20 h-20 rounded-2xl border-2 border-dashed border-indigo-300 dark:border-indigo-800 bg-slate-900 flex flex-col items-center justify-center text-indigo-300 text-[10px] text-center p-1 font-mono shrink-0 shadow-inner">
                     <span className="text-lg">🤖</span>
                     <span>Bot GIF</span>
                   </div>
                 )}
                 <div className="flex-1 space-y-2 max-w-md">
                   <div className="flex items-center gap-2">
-                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-50 border border-indigo-200 text-indigo-700 cursor-pointer hover:bg-indigo-100 transition">
+                    <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition">
                       <Upload className="w-3.5 h-3.5" />
                       {uploadingAiGif ? "Uploading GIF..." : "Upload Chatbot GIF"}
                       <input
@@ -512,7 +577,7 @@ export default function SettingsPage() {
                         variant="ghost"
                         size="sm"
                         onClick={() => setData({ ...data, ai_bot_gif_url: "" })}
-                        className="text-xs text-red-600 hover:bg-red-50"
+                        className="text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
                       >Clear GIF</Button>
                     )}
                   </div>
@@ -520,13 +585,13 @@ export default function SettingsPage() {
                     value={data.ai_bot_gif_url || ""}
                     onChange={(e) => setData({ ...data, ai_bot_gif_url: e.target.value })}
                     placeholder="https://example.com/chatbot-animated.gif"
-                    className="text-xs"
+                    className="text-xs border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white"
                     data-testid="settings-ai-gif-url"
                   />
 
                   {/* Preset GIF suggestions */}
-                  <div className="pt-2 border-t border-slate-100">
-                    <span className="text-[11px] font-semibold text-slate-600 block mb-1">Quick Sample Presets:</span>
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 block mb-1">Quick Sample Presets:</span>
                     <div className="flex flex-wrap gap-1.5">
                       {[
                         { name: "Neural Pulsing Bot", url: "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcGZrdmpzazF4enY5Y2p6ZGt6cGNxY2Q5Yzg1c2Fmb3YyOHpxMms0dyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/3o7TKSjRrfIPjeiVyM/giphy.gif" },
@@ -537,7 +602,7 @@ export default function SettingsPage() {
                           key={preset.name}
                           type="button"
                           onClick={() => setData({ ...data, ai_bot_gif_url: preset.url })}
-                          className="px-2.5 py-1 bg-slate-100 hover:bg-indigo-50 hover:text-indigo-700 text-slate-600 rounded-md text-[11px] font-medium border border-slate-200 transition-colors"
+                          className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/70 hover:text-indigo-700 dark:hover:text-indigo-300 text-slate-600 dark:text-slate-300 rounded-md text-[11px] font-medium border border-slate-200 dark:border-slate-700 transition-colors"
                         >
                           + {preset.name}
                         </button>

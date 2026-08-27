@@ -711,11 +711,15 @@ async def auth_menu(user: User = Depends(get_current_user)):
     importlib.reload(permissions)
     items = permissions.menu_for(user)
     
-    # Check if inventory module is enabled in global settings
-    sett = await db.settings.find_one({"_id": "global"}, {"enable_inventory": 1})
+    # Check if inventory and AI modules are enabled in global settings
+    sett = await db.settings.find_one({"_id": "global"}, {"enable_inventory": 1, "enable_ai": 1})
     inventory_enabled = bool(sett and sett.get("enable_inventory"))
+    ai_enabled = bool(sett.get("enable_ai", True)) if sett else True
+    
     if not inventory_enabled:
         items = [i for i in items if i.get("key") != "inventory"]
+    if not ai_enabled:
+        items = [i for i in items if i.get("key") not in ("ai-training", "ai")]
 
     # Only include groups that actually have at least one visible item
     used = {i.get("group") for i in items}
@@ -726,6 +730,7 @@ async def auth_menu(user: User = Depends(get_current_user)):
         "capabilities": permissions.capabilities_for(user),
         "role": permissions.normalize_role(user.role),
         "inventory_enabled": inventory_enabled,
+        "ai_enabled": ai_enabled,
     }
 
 
@@ -2148,6 +2153,7 @@ class SettingsIn(BaseModel):
     google_client_secret: str = ""
     enable_google_login: bool = True
     enable_inventory: bool = False
+    enable_ai: bool = True
     ai_bot_name: str = "FormForge AI"
     ai_bot_logo_url: str = ""
     ai_bot_gif_url: str = ""
@@ -2261,6 +2267,8 @@ async def public_branding():
         "login_bg_url":        doc.get("login_bg_url")     or "",
         "google_client_id":    google_cid,
         "enable_google_login": doc.get("enable_google_login", True),
+        "enable_inventory":    doc.get("enable_inventory", False),
+        "enable_ai":           doc.get("enable_ai", True),
         "ai_bot_name":         ai_name,
         "ai_bot_logo_url":     doc.get("ai_bot_logo_url") or "",
         "ai_bot_gif_url":      doc.get("ai_bot_gif_url")  or "",

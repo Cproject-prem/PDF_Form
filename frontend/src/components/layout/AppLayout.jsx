@@ -471,7 +471,7 @@ export default function AppLayout({ children, fullWidth = false }) {
           )}
         </div>
       </main>
-      <AiChatbotWidget />
+      {branding?.enable_ai !== false && <AiChatbotWidget />}
     </div>
   );
 }
