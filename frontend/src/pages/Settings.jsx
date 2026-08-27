@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
-import { api } from "@/lib/api";
+import { api, getErrorMessage } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -47,7 +47,7 @@ export default function SettingsPage() {
       setData(r.data);
       toast.success("Settings saved");
       reloadBranding && reloadBranding();
-    } catch (e) { void e; toast.error("Save failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Save failed")); }
     finally { setSaving(false); }
   };
 
@@ -63,7 +63,7 @@ export default function SettingsPage() {
       reloadBranding && reloadBranding();
       toast.success("Logo uploaded");
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Upload failed");
+      toast.error(getErrorMessage(e, "Upload failed"));
     } finally { setUploadingLogo(false); }
   };
 
@@ -89,7 +89,7 @@ export default function SettingsPage() {
       reloadBranding && reloadBranding();
       toast.success(`${target === "gif" ? "Chatbot GIF" : "AI Bot Logo"} uploaded`);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Upload failed");
+      toast.error(getErrorMessage(e, "Upload failed"));
     } finally {
       if (target === "gif") setUploadingAiGif(false);
       else setUploadingAiLogo(false);
@@ -149,7 +149,7 @@ export default function SettingsPage() {
       reloadBranding && reloadBranding();
       toast.success(`${target === "login" ? "Login page background" : (target === "error" ? "Error page video" : "App background")} uploaded`);
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Upload failed");
+      toast.error(getErrorMessage(e, "Upload failed"));
     } finally {
       if (target === "login") setUploadingLoginBg(false);
       else if (target === "error") setUploadingErrorVideo(false);
@@ -1087,7 +1087,7 @@ function PlantDocsTemplateCard() {
           ? `Folder & subfolder template saved · applied to ${n} plant${n === 1 ? "" : "s"}`
           : "Folder & subfolder template saved"
       );
-    } catch (e) { toast.error(e?.response?.data?.detail || "Save failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Save failed")); }
     finally { setSaving(false); }
   };
 
@@ -1323,6 +1323,7 @@ function PlantDocsTemplateCard() {
   );
 }
 
+
 /**
  * BackupRestoreCard — Settings pane where super_admin drives the Backup &
  * Restore feature (auto-schedule toggle + manual snapshot / restore /
@@ -1347,7 +1348,7 @@ function BackupRestoreCard() {
       const r = await api.put("/backup-config", { ...cfg, ...patch });
       setCfg(r.data);
       toast.success("Schedule updated");
-    } catch (e) { toast.error(e?.response?.data?.detail || "Save failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Save failed")); }
   };
 
   const backupNow = async () => {
@@ -1358,7 +1359,7 @@ function BackupRestoreCard() {
       await api.post("/backups", { password: customPass });
       toast.success("Encrypted RAR backup snapshot created successfully");
       load();
-    } catch (e) { toast.error(e?.response?.data?.detail || "Backup failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Backup failed")); }
     finally { setBusy(false); }
   };
 
@@ -1382,7 +1383,7 @@ function BackupRestoreCard() {
       URL.revokeObjectURL(url);
       toast.success("Encrypted RAR migration bundle downloaded");
       load();
-    } catch (e) { toast.error(e?.response?.data?.detail || "Download failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Download failed")); }
     finally { setBusy(false); }
   };
 
@@ -1394,7 +1395,7 @@ function BackupRestoreCard() {
     try {
       await api.post(`/backups/${encodeURIComponent(name)}/restore`, { password: pass });
       toast.success("RAR backup restored successfully — please reload page");
-    } catch (e) { toast.error(e?.response?.data?.detail || "Restore failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Restore failed")); }
     finally { setBusy(false); }
   };
 
@@ -1430,7 +1431,7 @@ function BackupRestoreCard() {
       toast.success("Restored from uploaded RAR file successfully — please reload page");
       load();
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Restore failed");
+      toast.error(getErrorMessage(err, "Restore failed"));
     } finally {
       setBusy(false);
     }
@@ -1441,7 +1442,7 @@ function BackupRestoreCard() {
     try {
       await api.delete(`/backups/${encodeURIComponent(name)}`);
       load();
-    } catch (e) { toast.error(e?.response?.data?.detail || "Delete failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Delete failed")); }
   };
 
   const download = async (name) => {
@@ -1452,7 +1453,7 @@ function BackupRestoreCard() {
       a.href = url; a.download = name;
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
-    } catch (e) { toast.error(e?.response?.data?.detail || "Download failed"); }
+    } catch (e) { toast.error(getErrorMessage(e, "Download failed")); }
   };
 
   return (
@@ -1605,7 +1606,7 @@ function EmergencyOverrideCard() {
       toast.success(`${user.name || user.email}: Override ${next ? "ENABLED" : "DISABLED"}`);
       load();
     } catch (e) {
-      toast.error(e?.response?.data?.detail || "Failed to update override");
+      toast.error(getErrorMessage(e, "Failed to update override"));
     }
   };
 
