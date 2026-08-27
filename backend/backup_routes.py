@@ -321,10 +321,24 @@ def _restore_from_path_sync(src: Path, password: Optional[str] = None) -> Dict[s
                 _src = uploads_src / _sub
                 if not _src.exists():
                     continue
-                if _dst.exists():
-                    shutil.rmtree(_dst)
-                _dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(_src, _dst)
+                _dst.mkdir(parents=True, exist_ok=True)
+                for item in _dst.iterdir():
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+                    except Exception:
+                        pass
+                for item in _src.iterdir():
+                    dst_item = _dst / item.name
+                    try:
+                        if item.is_dir():
+                            shutil.copytree(item, dst_item)
+                        else:
+                            shutil.copy2(item, dst_item)
+                    except Exception:
+                        pass
 
     return {"restored_at": _now().isoformat(), "source": src.name}
 
