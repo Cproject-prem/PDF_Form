@@ -180,6 +180,9 @@ export default function SettingsPage() {
             <TabsTrigger value="rbac">RBAC & Roles</TabsTrigger>
             <TabsTrigger value="notifications">Notifications & API</TabsTrigger>
             <TabsTrigger value="advanced">Backup & Advanced</TabsTrigger>
+            <TabsTrigger value="retention" className="flex items-center gap-1.5">
+              <Trash2 className="w-3.5 h-3.5 text-orange-500" /> Form PDF Retention
+            </TabsTrigger>
           </TabsList>
           
           <TabsContent value="general" className="space-y-6">
@@ -996,6 +999,10 @@ export default function SettingsPage() {
           <PlantDocsTemplateCard />
           <BackupRestoreCard />
         </TabsContent>
+
+        <TabsContent value="retention" className="space-y-6">
+          <FormRetentionPolicyCard />
+        </TabsContent>
         </Tabs>
 
         <div className="mt-6 flex justify-end">
@@ -1677,5 +1684,455 @@ function EmergencyOverrideCard() {
         </div>
       )}
     </Card>
+  );
+}
+
+// =============================================================================
+// FormRetentionPolicyCard - PDF File Lifecycle Management
+// MongoDB submission data is NEVER deleted by this system.
+// Only cached completed PDF files on disk are purged to save storage.
+// =============================================================================
+function FormRetentionPolicyCard() {
+  const [overview, setOverview] = React.useState(null);
+  const [forms, setForms] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [masterEnabled, setMasterEnabled] = React.useState(false);
+  const [defaultDays, setDefaultDays] = React.useState(180);
+  const [savingGlobal, setSavingGlobal] = React.useState(false);
+  const [runningCleanup, setRunningCleanup] = React.useState(false);
+  const [dryRunResult, setDryRunResult] = React.useState(null);
+  const [showDryRunModal, setShowDryRunModal] = React.useState(false);
+  const [searchQ, setSearchQ] = React.useState('');
+  const [filterType, setFilterType] = React.useState('all');
+  const [savingFormId, setSavingFormId] = React.useState(null);
+
+  const RETENTION_PRESETS = [
+    { label: '1 Month',  days: 30   },
+    { label: '3 Months', days: 90   },
+    { label: '6 Months', days: 180  },
+    { label: '1 Year',   days: 365  },
+    { label: '2 Years',  days: 730  },
+    { label: '3 Years',  days: 1095 },
+    { label: '5 Years',  days: 1825 },
+  ];
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const [ovRes, fmRes] = await Promise.all([
+        api.get('/retention/overview'),
+        api.get('/retention/forms'),
+      ]);
+      const ov = ovRes.data;
+      setOverview(ov);
+      setMasterEnabled(ov.master_enabled);
+      setDefaultDays(ov.default_days || 180);
+      setForms(fmRes.data || []);
+    } catch (e) {
+      toast.error(getErrorMessage(e, 'Failed to load retention data'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => { loadData(); }, []);
+
+  const fmtBytes = (b) => {
+    if (!b || b === 0) return '0 B';
+    const k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(b) / Math.log(k));
+    return (b / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+  };
+
+  const daysLabel = (d) => {
+    const p = RETENTION_PRESETS.find(x => x.days === d);
+    return p ? p.label : d + ' days';
+  };
+
+  const saveGlobal = async (applyAll = false) => {
+    setSavingGlobal(true);
+    try {
+      await api.put('/retention/global', { enabled: masterEnabled, default_days: defaultDays, apply_to_all: applyAll });
+      toast.success(applyAll ? 'Default retention applied to all forms' : 'Global retention settings saved');
+      loadData();
+    } catch (e) { toast.error(getErrorMessage(e, 'Failed to save')); }
+    finally { setSavingGlobal(false); }
+  };
+
+  const runDryRun = async () => {
+    setRunningCleanup(true);
+    try {
+      const r = await api.post('/retention/cleanup?dry_run=true');
+      setDryRunResult(r.data);
+      setShowDryRunModal(true);
+    } catch (e) { toast.error(getErrorMessage(e, 'Preview failed')); }
+    finally { setRunningCleanup(false); }
+  };
+
+  const runCleanup = async () => {
+    if (!window.confirm(
+      'This will permanently delete expired PDF files from disk.\n\n' +
+      'All submission data in MongoDB is preserved and PDFs can be regenerated anytime. Continue?'
+    )) return;
+    setRunningCleanup(true);
+    try {
+      const r = await api.post('/retention/cleanup?dry_run=false');
+      const d = r.data;
+      toast.success(
+        'Cleanup done: deleted ' + d.files_deleted + ' file(s), freed ' + fmtBytes(d.bytes_freed) +
+        (d.errors.length ? ' (' + d.errors.length + ' errors)' : '')
+      );
+      loadData();
+    } catch (e) { toast.error(getErrorMessage(e, 'Cleanup failed')); }
+    finally { setRunningCleanup(false); }
+  };
+
+  const saveFormRetention = async (formId, enabled, days) => {
+    setSavingFormId(formId);
+    try {
+      const r = await api.put('/retention/forms/' + formId, { enabled, days });
+      setForms(prev => prev.map(f => f.form_id === formId ? { ...f, retention: r.data.retention } : f));
+      toast.success('Retention policy saved');
+    } catch (e) { toast.error(getErrorMessage(e, 'Failed to save')); }
+    finally { setSavingFormId(null); }
+  };
+
+  const filtered = forms.filter(f =>
+    (!searchQ || f.title.toLowerCase().includes(searchQ.toLowerCase())) &&
+    (filterType === 'all' || f.form_type === filterType)
+  );
+
+  if (loading) return (
+    <Card className="p-6 dark:bg-slate-900">
+      <div className="animate-pulse space-y-4">
+        <div className="h-5 bg-slate-200 dark:bg-slate-700 rounded w-1/3" />
+        <div className="h-4 bg-slate-200 dark:bg-slate-700 rounded w-2/3" />
+        <div className="h-32 bg-slate-200 dark:bg-slate-700 rounded" />
+      </div>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-6">
+
+      {/* ── Master Control Card ── */}
+      <Card className="p-6 dark:bg-slate-900 dark:border-slate-700">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <Trash2 className="w-5 h-5 text-orange-500" />
+              <h3 className="font-semibold text-slate-900 dark:text-white text-base">
+                Automated PDF File Lifecycle Management
+              </h3>
+              <Badge className={masterEnabled
+                ? "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400"
+                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"}>
+                {masterEnabled ? "ACTIVE" : "OFF \u2014 Files Kept Forever"}
+              </Badge>
+            </div>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">
+              Auto-delete cached{" "}
+              <strong className="text-slate-700 dark:text-slate-300">completed PDF files</strong>{" "}
+              from disk after a set period. All submission data in MongoDB is{" "}
+              <strong className="text-green-600 dark:text-green-400">permanently preserved</strong>
+              {" "}\u2014 PDFs regenerate on-demand at any time, even years later.
+              Schedule vs Actual and all other records are{" "}
+              <strong className="text-slate-700 dark:text-slate-300">never auto-deleted</strong>.
+            </p>
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800">
+              <AlertTriangle className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+              <p className="text-xs text-blue-700 dark:text-blue-300">
+                <strong>On-Demand Regeneration:</strong> If a submission&apos;s PDF file was purged, the system instantly
+                recreates it using the original form template + field values stored in MongoDB. The result is
+                identical to the original.
+              </p>
+            </div>
+          </div>
+          <Switch checked={masterEnabled} onCheckedChange={v => setMasterEnabled(v)} className="shrink-0 mt-1" />
+        </div>
+
+        <div className="border-t dark:border-slate-700 pt-4 mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4 items-end">
+          <div>
+            <Label className="text-sm dark:text-slate-300">Default Retention Period</Label>
+            <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">Used for forms without an individual policy</p>
+            <Select
+              value={RETENTION_PRESETS.find(p => p.days === defaultDays) ? String(defaultDays) : 'custom'}
+              onValueChange={v => { if (v !== 'custom') setDefaultDays(Number(v)); }}
+            >
+              <SelectTrigger className="dark:bg-slate-800 dark:border-slate-600 dark:text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RETENTION_PRESETS.map(p => (
+                  <SelectItem key={p.days} value={String(p.days)}>{p.label}</SelectItem>
+                ))}
+                <SelectItem value="custom">Custom</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm dark:text-slate-300">Custom Days</Label>
+            <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">Or enter exact number of days</p>
+            <Input
+              type="number" min={1} value={defaultDays}
+              onChange={e => setDefaultDays(Math.max(1, Number(e.target.value)))}
+              className="dark:bg-slate-800 dark:border-slate-600 dark:text-white"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t dark:border-slate-700">
+          <Button onClick={() => saveGlobal(false)} disabled={savingGlobal} className="bg-blue-600 hover:bg-blue-700 text-white text-sm">
+            {savingGlobal ? "Saving\u2026" : "Save Global Settings"}
+          </Button>
+          <Button variant="outline" onClick={() => saveGlobal(true)} disabled={savingGlobal}
+            className="text-sm dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800">
+            Apply Default to All Forms
+          </Button>
+        </div>
+      </Card>
+
+      {/* ── Storage Overview Stats ── */}
+      {overview && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+          {[
+            { label: "Forms & Templates",    value: (overview.total_forms || 0) + (overview.total_pdf_templates || 0), icon: "📋" },
+            { label: "Submissions in MongoDB", value: (overview.total_submissions || 0).toLocaleString(), icon: "\uD83D\uDEE1\uFE0F", sub: "Permanently preserved" },
+            { label: "PDF Files on Disk",    value: overview.total_pdf_files_on_disk || 0, icon: "📄" },
+            { label: "Disk Storage Used",    value: fmtBytes(overview.total_pdf_bytes_on_disk || 0), icon: "\uD83D\uDCBE" },
+            { label: "Purged (Regenerable)", value: overview.total_purged_count || 0, icon: "\u267B\uFE0F", sub: "File deleted, data intact" },
+          ].map(s => (
+            <Card key={s.label} className="p-4 dark:bg-slate-900 dark:border-slate-700">
+              <div className="text-2xl mb-1">{s.icon}</div>
+              <div className="text-xl font-bold text-slate-900 dark:text-white">{s.value}</div>
+              <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{s.label}</div>
+              {s.sub && <div className="text-[10px] text-green-600 dark:text-green-400 mt-0.5">{s.sub}</div>}
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* ── Cleanup Actions Bar ── */}
+      <Card className="p-4 dark:bg-slate-900 dark:border-slate-700">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Manual Cleanup:</span>
+          <Button variant="outline" size="sm" onClick={runDryRun} disabled={runningCleanup}
+            className="text-blue-600 border-blue-300 hover:bg-blue-50 dark:text-blue-400 dark:border-blue-700 dark:hover:bg-blue-950/40">
+            {runningCleanup ? "Scanning\u2026" : "\uD83D\uDD0D Preview (Dry Run)"}
+          </Button>
+          <Button size="sm" onClick={runCleanup} disabled={runningCleanup || !masterEnabled}
+            className="bg-orange-600 hover:bg-orange-700 text-white disabled:opacity-50">
+            {runningCleanup ? "Running\u2026" : "\uD83D\uDDD1\uFE0F Run Cleanup Now"}
+          </Button>
+          {!masterEnabled && (
+            <span className="text-xs text-slate-400 dark:text-slate-500 italic">
+              Enable master toggle to run live cleanup
+            </span>
+          )}
+          <div className="ml-auto">
+            <Button variant="ghost" size="sm" onClick={loadData}
+              className="text-xs text-slate-400 dark:text-slate-500">
+              \u21BB Refresh
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {/* ── Per-Form Retention Table ── */}
+      <Card className="dark:bg-slate-900 dark:border-slate-700">
+        <div className="p-4 border-b dark:border-slate-700 flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+          <div className="flex-1">
+            <h4 className="font-semibold text-slate-800 dark:text-white text-sm">Per-Form Retention Policies</h4>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Configure or override the retention period for each individual form or PDF template.
+            </p>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Input placeholder="Search forms\u2026" value={searchQ} onChange={e => setSearchQ(e.target.value)}
+              className="w-44 h-8 text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white" />
+            <Select value={filterType} onValueChange={setFilterType}>
+              <SelectTrigger className="w-36 h-8 text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="pdf_template">PDF Templates</SelectItem>
+                <SelectItem value="standard_form">Standard Forms</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="dark:border-slate-700">
+                <TableHead className="dark:text-slate-400 text-xs">Form / Template</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs">Type</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs text-center">Submissions</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs text-center">PDFs on Disk</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs text-center">Purged</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs text-center">Disk Size</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs text-center">Auto-Delete</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs">Retention Period</TableHead>
+                <TableHead className="dark:text-slate-400 text-xs text-center">Save</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="text-center py-8 text-slate-400 dark:text-slate-500 text-sm">
+                    {forms.length === 0 ? "No forms or PDF templates found" : "No forms match your search"}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filtered.map(form => (
+                  <FormRetentionRow
+                    key={form.form_id}
+                    form={form}
+                    presets={RETENTION_PRESETS}
+                    daysLabel={daysLabel}
+                    fmtBytes={fmtBytes}
+                    saving={savingFormId === form.form_id}
+                    onSave={saveFormRetention}
+                  />
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </Card>
+
+      {/* ── Dry-Run Preview Modal ── */}
+      <Dialog open={showDryRunModal} onOpenChange={setShowDryRunModal}>
+        <DialogContent className="max-w-md dark:bg-slate-900 dark:border-slate-700">
+          <DialogHeader>
+            <DialogTitle className="dark:text-white">\uD83D\uDD0D Cleanup Preview (Dry Run)</DialogTitle>
+          </DialogHeader>
+          {dryRunResult && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { label: "Forms Scanned",   value: dryRunResult.forms_scanned },
+                  { label: "Files Eligible",  value: dryRunResult.files_eligible },
+                  { label: "Storage to Free", value: fmtBytes(dryRunResult.bytes_eligible) },
+                  { label: "Errors Found",    value: dryRunResult.errors.length },
+                ].map(s => (
+                  <div key={s.label} className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800 border dark:border-slate-700">
+                    <div className="text-lg font-bold text-slate-900 dark:text-white">{s.value}</div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">{s.label}</div>
+                  </div>
+                ))}
+              </div>
+              {dryRunResult.errors.length > 0 && (
+                <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800">
+                  {dryRunResult.errors.slice(0, 3).map((er, i) => (
+                    <p key={i} className="text-xs text-red-600 dark:text-red-300">{er}</p>
+                  ))}
+                </div>
+              )}
+              <div className="p-3 rounded-lg bg-green-50 dark:bg-green-950/40 border border-green-200 dark:border-green-800">
+                <p className="text-xs text-green-700 dark:text-green-300">
+                  <strong>No files deleted.</strong> This was a preview only.
+                  All {dryRunResult.files_eligible} eligible PDF file(s) remain safe.
+                  Submission data in MongoDB is preserved regardless.
+                </p>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDryRunModal(false)}
+              className="dark:border-slate-600 dark:text-slate-300">
+              Close
+            </Button>
+            <Button className="bg-orange-600 hover:bg-orange-700 text-white" disabled={!masterEnabled}
+              onClick={() => { setShowDryRunModal(false); runCleanup(); }}>
+              Run Live Cleanup
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// Individual editable row in the retention table
+function FormRetentionRow({ form, presets, daysLabel, fmtBytes, saving, onSave }) {
+  const initDays = form.retention && form.retention.days ? form.retention.days : 180;
+  const initEnabled = form.retention ? (form.retention.enabled || false) : false;
+  const [enabled, setEnabled] = React.useState(initEnabled);
+  const [days, setDays] = React.useState(initDays);
+  const [isCustom, setIsCustom] = React.useState(!presets.some(p => p.days === initDays));
+
+  const dirty = enabled !== initEnabled || days !== initDays;
+  const presetVal = isCustom ? 'custom' : (presets.find(p => p.days === days) ? String(days) : 'custom');
+
+  const handlePreset = (v) => {
+    if (v === 'custom') { setIsCustom(true); }
+    else { setIsCustom(false); setDays(Number(v)); }
+  };
+
+  return (
+    <TableRow className="dark:border-slate-700 hover:dark:bg-slate-800/50">
+      <TableCell className="font-medium text-slate-800 dark:text-slate-200 text-sm max-w-[180px]">
+        <div className="truncate" title={form.title}>{form.title}</div>
+        <div className="text-[10px] text-slate-400 dark:text-slate-500">{form.form_id.slice(0, 14)}\u2026</div>
+      </TableCell>
+      <TableCell>
+        <Badge className={form.form_type === 'pdf_template'
+          ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 text-[10px]'
+          : 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 text-[10px]'}>
+          {form.form_type === 'pdf_template' ? 'PDF Template' : 'Standard Form'}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-center text-sm dark:text-slate-300">{form.submission_count}</TableCell>
+      <TableCell className="text-center text-sm dark:text-slate-300">{form.physical_pdf_count}</TableCell>
+      <TableCell className="text-center">
+        {form.purged_count > 0
+          ? <Badge className="bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300 text-[10px]">{form.purged_count} \u267B\uFE0F</Badge>
+          : <span className="text-slate-400 text-xs">\u2014</span>}
+      </TableCell>
+      <TableCell className="text-center text-xs dark:text-slate-300">{fmtBytes(form.physical_pdf_size_bytes)}</TableCell>
+      <TableCell className="text-center">
+        <Switch checked={enabled} onCheckedChange={v => setEnabled(v)} className="scale-90" />
+      </TableCell>
+      <TableCell>
+        <div className="flex gap-1 items-center">
+          <Select value={presetVal} onValueChange={handlePreset}>
+            <SelectTrigger className="w-28 h-7 text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {presets.map(p => (
+                <SelectItem key={p.days} value={String(p.days)} className="text-xs">{p.label}</SelectItem>
+              ))}
+              <SelectItem value="custom" className="text-xs">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+          {isCustom && (
+            <Input
+              type="number" min={1} value={days}
+              onChange={e => setDays(Math.max(1, Number(e.target.value)))}
+              className="w-20 h-7 text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white"
+              placeholder="days"
+            />
+          )}
+        </div>
+        {enabled && (
+          <div className="text-[10px] text-orange-500 dark:text-orange-400 mt-1">
+            Purge after {daysLabel(days)}
+          </div>
+        )}
+      </TableCell>
+      <TableCell className="text-center">
+        <Button
+          size="sm"
+          disabled={!dirty || saving}
+          onClick={() => onSave(form.form_id, enabled, days)}
+          className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-40"
+        >
+          {saving ? '\u2026' : 'Save'}
+        </Button>
+      </TableCell>
+    </TableRow>
   );
 }

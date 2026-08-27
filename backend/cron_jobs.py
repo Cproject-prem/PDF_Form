@@ -163,3 +163,46 @@ async def _execute_missed_schedule_job(db, now_local, notifications):
 
 def start_missed_schedules_cron(db):
     return asyncio.create_task(_missed_schedules_loop(db))
+
+
+# ─────────────────────────────────────── PDF Retention Lifecycle Cron ──────
+
+async def _pdf_retention_loop(db):
+    """
+    Background task that runs once per day at 02:00 local time to automatically
+    purge expired completed PDF files from disk according to each form's
+    retention policy.
+
+    MongoDB submission data is NEVER deleted — only the static .pdf file.
+    On-demand PDF regeneration remains available for all submissions.
+    """
+    while True:
+        try:
+            now_local = datetime.now()
+            # Run once daily at 02:00
+            if now_local.strftime("%H:%M") == "02:00":
+                run_key = f"pdf_retention_{now_local.strftime('%Y-%m-%d')}"
+                existing = await db.cron_logs.find_one({"_id": run_key})
+                if not existing:
+                    await db.cron_logs.insert_one({"_id": run_key, "ran_at": now_local.isoformat()})
+                    try:
+                        from retention_routes import _execute_retention_cleanup
+                        result = await _execute_retention_cleanup(db, dry_run=False)
+                        log.info(
+                            f"PDF Retention cron: scanned={result.forms_scanned} "
+                            f"deleted={result.files_deleted} "
+                            f"freed={result.bytes_freed / 1024 / 1024:.2f}MB "
+                            f"errors={len(result.errors)}"
+                        )
+                        if result.errors:
+                            for err in result.errors[:5]:
+                                log.warning(f"Retention error: {err}")
+                    except Exception as e:
+                        log.exception(f"PDF retention cleanup failed: {e}")
+        except Exception as e:
+            log.exception(f"PDF retention cron loop error: {e}")
+        await asyncio.sleep(60)
+
+
+def start_pdf_retention_cron(db):
+    return asyncio.create_task(_pdf_retention_loop(db))

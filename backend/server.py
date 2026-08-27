@@ -2158,6 +2158,8 @@ class SettingsIn(BaseModel):
     ai_bot_name: str = "FormForge AI"
     ai_bot_logo_url: str = ""
     ai_bot_gif_url: str = ""
+    enable_pdf_retention: bool = False
+    pdf_retention_default_days: int = 180
     smtp: SmtpIn = SmtpIn()
     whatsapp: WhatsAppIn = WhatsAppIn()
     notifications: NotificationCronIn = NotificationCronIn()
@@ -2539,14 +2541,19 @@ from inventory_routes import build_inventory_router
 api.include_router(build_inventory_router(db, get_current_user))
 
 
+# ---------- PDF Retention Lifecycle ----------
+from retention_routes import build_retention_router as _build_retention_router
+api.include_router(_build_retention_router(db, get_current_user))
+
 @app.on_event("startup")
 async def _kick_backup_scheduler():
     # Runs alongside the FastAPI event loop. Safe no-op if scheduler is off.
     _start_backup_scheduler(db)
     from workflow_routes import start_workflow_scheduler
     start_workflow_scheduler(db)
-    from cron_jobs import start_missed_schedules_cron
+    from cron_jobs import start_missed_schedules_cron, start_pdf_retention_cron
     start_missed_schedules_cron(db)
+    start_pdf_retention_cron(db)
 
 # Mount router
 app.include_router(api)
