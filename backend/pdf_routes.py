@@ -331,6 +331,17 @@ def _safe_filename(orig: str) -> str:
     return name[:120] or "file"
 
 
+def _resolve_pdf_name(tpl: Optional[Dict[str, Any]], sub: Optional[Dict[str, Any]] = None) -> str:
+    if sub and sub.get("completed_filename"):
+        return _safe_filename(sub["completed_filename"])
+    if tpl and tpl.get("title"):
+        stem = re.sub(r"[^\w.\-]+", "_", tpl["title"].strip()).strip("_") or "completed"
+        return f"{stem}.pdf"
+    if tpl and tpl.get("original_filename"):
+        return _safe_filename(tpl["original_filename"])
+    return "completed.pdf"
+
+
 # --------------------------------------------------------------------- PDF generation
 def _hex_to_rgb(hex_color: str) -> tuple:
     h = hex_color.lstrip("#")

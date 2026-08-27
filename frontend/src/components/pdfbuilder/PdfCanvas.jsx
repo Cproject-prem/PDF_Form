@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
-import { authPdfFile } from "@/lib/pdfWorker";
+import { usePdfFile } from "@/lib/pdfWorker";
 import { Rnd } from "react-rnd";
 import { getPdfFieldMeta, resolveOptionBoxes } from "@/lib/pdfFieldTypes";
 
@@ -31,19 +31,22 @@ export default function PdfCanvas({
 }) {
   const [numPages, setNumPages] = useState(pages?.length || 0);
   const containerRef = useRef(null);
-  const file = useMemo(() => authPdfFile(fileUrl), [fileUrl]);
+  const { file, loading: pdfLoading, error: pdfError } = usePdfFile(fileUrl);
 
   return (
     <div ref={containerRef} className="w-full h-full min-h-[500px] max-h-[calc(100vh-160px)] overflow-y-auto bg-slate-100 nice-scroll"
          data-testid="pdf-canvas-scroll"
          onClick={() => onSelect && onSelect(null)}>
       <div className="py-8 flex flex-col items-center gap-8">
-        <Document
-          file={file}
-          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-          onLoadError={(e) => console.error("PDF load error", e)}
-          loading={<div className="text-slate-400 text-sm">Loading PDF…</div>}
-        >
+        {pdfLoading && <div className="text-slate-400 text-sm py-12">Loading PDF…</div>}
+        {pdfError && <div className="text-rose-500 text-sm py-12">Failed to load PDF file.</div>}
+        {file && (
+          <Document
+            file={file}
+            onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+            onLoadError={(e) => console.error("PDF load error", e)}
+            loading={<div className="text-slate-400 text-sm">Loading PDF…</div>}
+          >
           {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
             <PdfPageView
               key={pageNum}
@@ -63,6 +66,7 @@ export default function PdfCanvas({
             />
           ))}
         </Document>
+        )}
       </div>
     </div>
   );

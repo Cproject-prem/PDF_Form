@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
-import { authPdfFile } from "@/lib/pdfWorker";
+import { usePdfFile } from "@/lib/pdfWorker";
 import SignaturePadField from "@/components/pdfbuilder/SignaturePadField";
 import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
@@ -21,7 +21,7 @@ import {
 export default function PdfFiller({ fileUrl, fields, values, onChange }) {
   const [numPages, setNumPages] = useState(0);
   const set = (id, v) => onChange({ ...values, [id]: v });
-  const file = useMemo(() => authPdfFile(fileUrl), [fileUrl]);
+  const { file, loading: pdfLoading, error: pdfError } = usePdfFile(fileUrl);
 
   // helpers for conditional logic
   const visibleFields = fields.filter((f) => isVisible(f, values));
@@ -29,14 +29,18 @@ export default function PdfFiller({ fileUrl, fields, values, onChange }) {
   return (
     <div className="overflow-auto bg-slate-100 nice-scroll">
       <div className="py-6 flex flex-col items-center gap-6">
-        <Document file={file} onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-                  loading={<div className="text-slate-400 text-sm">Loading PDF…</div>}>
-          {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
-            <FillerPage key={p} pageNum={p}
-                        fields={visibleFields.filter((f) => Number(f.page) === p)}
-                        values={values} set={set} />
-          ))}
-        </Document>
+        {pdfLoading && <div className="text-slate-400 text-sm py-8">Loading PDF…</div>}
+        {pdfError && <div className="text-rose-500 text-sm py-8">Failed to load PDF file.</div>}
+        {file && (
+          <Document file={file} onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+                    loading={<div className="text-slate-400 text-sm">Loading PDF…</div>}>
+            {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
+              <FillerPage key={p} pageNum={p}
+                          fields={visibleFields.filter((f) => Number(f.page) === p)}
+                          values={values} set={set} />
+            ))}
+          </Document>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page } from "react-pdf";
-import { authPdfFile } from "@/lib/pdfWorker";
+import { usePdfFile } from "@/lib/pdfWorker";
 import { api, API } from "@/lib/api";
 import { Upload, FileType2, X, PenLine, RotateCcw, Check } from "lucide-react";
 import { toast } from "sonner";
@@ -19,28 +19,32 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 export default function PdfOverlayFill({
   fileUrl, fields, values, onChange, disabled = false,
 }) {
-  const file = useMemo(() => authPdfFile(fileUrl), [fileUrl]);
+  const { file, loading: pdfLoading, error: pdfError } = usePdfFile(fileUrl);
   const [numPages, setNumPages] = useState(0);
 
   return (
     <div className="bg-slate-100 rounded-xl overflow-y-auto max-h-[calc(100vh-220px)] min-h-[450px] border border-slate-200 shadow-inner p-4 nice-scroll" data-testid="pdf-overlay-fill">
       <div className="py-4 flex flex-col items-center gap-6">
-        <Document
-          file={file}
-          onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-          loading={<div className="text-slate-400 text-sm py-8">Loading PDF…</div>}
-        >
-          {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
-            <PdfPageWithOverlay
-              key={pageNum}
-              pageNum={pageNum}
-              fields={fields.filter((f) => Number(f.page) === pageNum)}
-              values={values}
-              onChange={onChange}
-              disabled={disabled}
-            />
-          ))}
-        </Document>
+        {pdfLoading && <div className="text-slate-400 text-sm py-8">Loading PDF…</div>}
+        {pdfError && <div className="text-rose-500 text-sm py-8">Failed to load PDF file.</div>}
+        {file && (
+          <Document
+            file={file}
+            onLoadSuccess={({ numPages: n }) => setNumPages(n)}
+            loading={<div className="text-slate-400 text-sm py-8">Loading PDF…</div>}
+          >
+            {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
+              <PdfPageWithOverlay
+                key={pageNum}
+                pageNum={pageNum}
+                fields={fields.filter((f) => Number(f.page) === pageNum)}
+                values={values}
+                onChange={onChange}
+                disabled={disabled}
+              />
+            ))}
+          </Document>
+        )}
       </div>
     </div>
   );
