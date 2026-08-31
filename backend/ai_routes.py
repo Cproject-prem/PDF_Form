@@ -210,6 +210,15 @@ def build_ai_router(db, get_current_user):
         system_role: Optional[str] = "You are FormForge AI Assistant."
         is_active: Optional[bool] = True
 
+    class MongoDBPullRequest(BaseModel):
+        collection: str                           # MongoDB collection name to pull from
+        field_map: Optional[Dict[str, str]] = {}  # { "mongo_field": "training_field" }
+        filter_query: Optional[Dict[str, Any]] = {}
+        limit: Optional[int] = 100
+        target: str = "training_cases"            # "training_cases" | "knowledge_chunks" | "structured_knowledge"
+        collection_id: Optional[str] = None       # RAG collection ID (for knowledge_chunks)
+        auto_import: Optional[bool] = False       # True = import now, False = preview only
+
     # ----------------- 1. AI System Health & Circuit Status -----------------
 
     @router.get("/status")
@@ -1102,7 +1111,7 @@ def build_ai_router(db, get_current_user):
                 }
             else:
                 return {
-                    "reply": ollama_res.get("reply", "AI service is currently unavailable."),
+                "reply": ollama_res.get("reply", "AI service is currently unavailable."),
                     "ai_available": False
                 }
         except Exception as e:
@@ -1123,5 +1132,240 @@ def build_ai_router(db, get_current_user):
                 "reply": "AI feature is temporarily unavailable due to upstream connectivity. Core FormForge functionality is unaffected.",
                 "ai_available": False
             }
+
+    # ----------------- 10. MongoDB Data Pull for AI Training -----------------
+
+    # Whitelisted collections that are safe to pull from for AI training
+    PULLABLE_COLLECTIONS = [
+        "submissions",
+        "pdf_submissions",
+        "schedule_actuals",
+        "manpower",
+        "plant_documents",
+        "knowledge_documents",
+        "knowledge_chunks",
+        "structured_knowledge",
+        "training_cases",
+        "audit_logs",
+        "forms",
+    ]
+
+    @router.get("/mongo/collections")
+    async def list_pullable_collections(user=Depends(get_current_user)):
+        """Returns list of available MongoDB collections with record counts."""
+        require_admin(user)
+        result = []
+        for coll_name in PULLABLE_COLLECTIONS:
+            try:
+                count = await db[coll_name].count_documents({})
+                sample = await db[coll_name].find_one({})
+                sample_fields = list(sample.keys()) if sample else []
+                # Remove internal mongo fields from sample
+                sample_fields = [f for f in sample_fields if not f.startswith("_")]
+                result.append({
+                    "collection": coll_name,
+                    "count": count,
+                    "sample_fields": sample_fields[:15],
+                    "available": count > 0
+                })
+            except Exception:
+                result.append({
+                    "collection": coll_name,
+                    "count": 0,
+                    "sample_fields": [],
+                    "available": False
+                })
+        return result
+
+    @router.post("/mongo/preview")
+    async def preview_mongo_pull(req: MongoDBPullRequest, user=Depends(get_current_user)):
+        """Preview records from a MongoDB collection before importing as AI training data."""
+        require_admin(user)
+        if req.collection not in PULLABLE_COLLECTIONS:
+            raise HTTPException(status_code=400, detail=f"Collection '{req.collection}' is not in the whitelist for AI training pulls.")
+
+        limit = min(req.limit or 20, 200)
+        try:
+            cursor = db[req.collection].find(req.filter_query or {}).limit(limit)
+            records = await cursor.to_list(length=limit)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to query collection: {str(e)}")
+
+        # Serialize ObjectIds
+        serialized = []
+        for rec in records:
+            row = {}
+            for k, v in rec.items():
+                row[k] = str(v) if hasattr(v, "__str__") and not isinstance(v, (str, int, float, bool, list, dict)) else v
+            serialized.append(row)
+
+        # Build preview of what fields would map to training target
+        field_map = req.field_map or {}
+        preview_mapped = []
+        for rec in serialized:
+            mapped = {}
+            if field_map:
+                for src_field, dst_field in field_map.items():
+                    mapped[dst_field] = rec.get(src_field, "")
+            else:
+                # Auto-map: pick text-like fields
+                for k, v in rec.items():
+                    if isinstance(v, str) and len(v) > 3:
+                        mapped[k] = v
+            preview_mapped.append(mapped)
+
+        return {
+            "collection": req.collection,
+            "target": req.target,
+            "total_preview": len(serialized),
+            "records": serialized[:10],   # Show first 10 raw records
+            "mapped_preview": preview_mapped[:10],  # Show first 10 mapped records
+            "field_map": field_map
+        }
+
+    @router.post("/mongo/import")
+    async def import_mongo_to_training(req: MongoDBPullRequest, user=Depends(get_current_user)):
+        """Import MongoDB records directly into AI training — training cases, knowledge chunks, or structured knowledge."""
+        require_admin(user)
+        if req.collection not in PULLABLE_COLLECTIONS:
+            raise HTTPException(status_code=400, detail=f"Collection '{req.collection}' is not in the whitelist.")
+
+        limit = min(req.limit or 100, 500)
+        try:
+            cursor = db[req.collection].find(req.filter_query or {}).limit(limit)
+            records = await cursor.to_list(length=limit)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to query collection: {str(e)}")
+
+        field_map = req.field_map or {}
+        imported = 0
+        skipped = 0
+        errors = []
+        now = datetime.utcnow()
+        performed_by = getattr(user, "email", "system")
+
+        for rec in records:
+            # Serialize ObjectIds
+            clean = {}
+            for k, v in rec.items():
+                clean[k] = str(v) if hasattr(v, "__str__") and not isinstance(v, (str, int, float, bool, list, dict)) else v
+
+            try:
+                if req.target == "training_cases":
+                    # Map fields or auto-generate
+                    question = (
+                        clean.get(field_map.get("question", ""), "") or
+                        clean.get("question", "") or
+                        clean.get("title", "") or
+                        clean.get("description", "") or
+                        f"Record from {req.collection}: {str(clean)[:200]}"
+                    )
+                    actual_cause = (
+                        clean.get(field_map.get("actual_cause", ""), "") or
+                        clean.get("actual_cause", "") or
+                        clean.get("remarks", "") or
+                        clean.get("notes", "") or
+                        "Imported from MongoDB"
+                    )
+                    action = (
+                        clean.get(field_map.get("action", ""), "") or
+                        clean.get("action", "") or
+                        clean.get("corrective_action", "") or
+                        "See original record"
+                    )
+                    count = await db.training_cases.count_documents({})
+                    case_doc = {
+                        "case_code": f"CASE-{count + imported + 1:05d}",
+                        "question": question[:500],
+                        "conditions": {"source_collection": req.collection, "source_id": clean.get("_id", "")},
+                        "ai_diagnosis": clean.get(field_map.get("ai_diagnosis", ""), "") or clean.get("status", "Imported"),
+                        "actual_cause": actual_cause[:500],
+                        "action": action[:500],
+                        "result": clean.get(field_map.get("result", ""), "") or "Imported from MongoDB",
+                        "status": "Draft",
+                        "technician_confirmed": False,
+                        "expert_approved": False,
+                        "created_by": performed_by,
+                        "source": {"collection": req.collection, "record_id": clean.get("_id", "")},
+                        "created_at": now
+                    }
+                    await db.training_cases.insert_one(case_doc)
+                    imported += 1
+
+                elif req.target == "knowledge_chunks":
+                    # Convert record to text chunk
+                    text_fields = []
+                    if field_map:
+                        for src, _ in field_map.items():
+                            val = clean.get(src, "")
+                            if isinstance(val, str) and val.strip():
+                                text_fields.append(val)
+                    else:
+                        # Auto-collect all string fields
+                        for k, v in clean.items():
+                            if isinstance(v, str) and len(v) > 5 and k not in ("_id", "created_at", "updated_at"):
+                                text_fields.append(f"{k}: {v}")
+
+                    if not text_fields:
+                        skipped += 1
+                        continue
+
+                    text_content = "\n".join(text_fields)[:2000]
+                    chunk_doc = {
+                        "collection_id": req.collection_id or "",
+                        "folder_id": None,
+                        "content": text_content,
+                        "page_number": 1,
+                        "status": "indexed",
+                        "source": {"collection": req.collection, "record_id": clean.get("_id", "")},
+                        "created_by": performed_by,
+                        "created_at": now
+                    }
+                    await db.knowledge_chunks.insert_one(chunk_doc)
+                    imported += 1
+
+                elif req.target == "structured_knowledge":
+                    sk_doc = {
+                        "equipment": clean.get(field_map.get("equipment", ""), "") or clean.get("equipment", "") or clean.get("site_name", f"Source: {req.collection}"),
+                        "alarm": clean.get(field_map.get("alarm", ""), "") or clean.get("alarm", "") or clean.get("issue", "Imported Record"),
+                        "possible_causes": [clean.get(field_map.get("possible_causes", ""), "") or clean.get("possible_causes", "") or "See source record"],
+                        "checks": [clean.get(field_map.get("checks", ""), "") or clean.get("checks", "") or "Verify original data"],
+                        "corrective_actions": [clean.get(field_map.get("corrective_actions", ""), "") or clean.get("corrective_actions", "") or "Review and update"],
+                        "domain": clean.get("domain", "Imported"),
+                        "status": "Draft",
+                        "source": {"collection": req.collection, "record_id": clean.get("_id", "")},
+                        "created_by": performed_by,
+                        "created_at": now,
+                        "updated_at": now
+                    }
+                    await db.structured_knowledge.insert_one(sk_doc)
+                    imported += 1
+                else:
+                    skipped += 1
+
+            except Exception as ex:
+                errors.append(str(ex))
+                skipped += 1
+
+        await db.audit_logs.insert_one({
+            "event": "ai_mongo_pull",
+            "action": f"import_to_{req.target}",
+            "performed_by": performed_by,
+            "collection": req.collection,
+            "imported": imported,
+            "skipped": skipped,
+            "target": req.target,
+            "created_at": now
+        })
+
+        return {
+            "success": True,
+            "collection": req.collection,
+            "target": req.target,
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors[:5] if errors else [],
+            "message": f"Successfully imported {imported} records from '{req.collection}' into {req.target}."
+        }
 
     return router

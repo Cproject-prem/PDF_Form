@@ -9,7 +9,8 @@ import {
   Gauge, History, Sliders, Search, Plus, ThumbsUp, ThumbsDown,
   Activity, ShieldAlert, Check, ChevronRight, X, Zap, Loader2,
   Scissors, Database, Play, ArrowRight, FolderPlus, Folder,
-  FolderOpen, Move, Eye, CheckCircle, AlertCircle, RotateCcw, Filter
+  FolderOpen, Move, Eye, CheckCircle, AlertCircle, RotateCcw, Filter,
+  Download, GitMerge, ChevronDown, ToggleLeft, ToggleRight, Table2
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -135,6 +136,23 @@ export default function AiTrainingPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // MongoDB Data Pull State
+  const [mongoCollections, setMongoCollections] = useState([]);
+  const [mongoLoadingCollections, setMongoLoadingCollections] = useState(false);
+  const [mongoPullConfig, setMongoPullConfig] = useState({
+    collection: "",
+    target: "training_cases",
+    limit: 50,
+    filter_query: "{}",
+    collection_id: "",
+    field_map: {}
+  });
+  const [mongoPullFieldMapRaw, setMongoPullFieldMapRaw] = useState("");
+  const [mongoPreviewData, setMongoPreviewData] = useState(null);
+  const [mongoPreviewLoading, setMongoPreviewLoading] = useState(false);
+  const [mongoImportResult, setMongoImportResult] = useState(null);
+  const [mongoImporting, setMongoImporting] = useState(false);
 
   useEffect(() => {
     fetchAllData();
@@ -458,6 +476,73 @@ export default function AiTrainingPage() {
     }
   };
 
+  // ── MONGODB DATA PULL HANDLERS ──
+  const fetchMongoCollections = async () => {
+    setMongoLoadingCollections(true);
+    try {
+      const res = await api.get("/ai/mongo/collections");
+      setMongoCollections(res.data || []);
+    } catch (err) {
+      toast.error("Failed to load MongoDB collections");
+    } finally {
+      setMongoLoadingCollections(false);
+    }
+  };
+
+  const handleMongoPreview = async () => {
+    if (!mongoPullConfig.collection) return toast.error("Select a collection first");
+    setMongoPreviewLoading(true);
+    setMongoPreviewData(null);
+    setMongoImportResult(null);
+    try {
+      let parsedFilter = {};
+      try { parsedFilter = JSON.parse(mongoPullConfig.filter_query || "{}"); } catch { parsedFilter = {}; }
+      let parsedFieldMap = {};
+      try { parsedFieldMap = JSON.parse(mongoPullFieldMapRaw || "{}"); } catch { parsedFieldMap = {}; }
+      const res = await api.post("/ai/mongo/preview", {
+        collection: mongoPullConfig.collection,
+        target: mongoPullConfig.target,
+        limit: mongoPullConfig.limit,
+        filter_query: parsedFilter,
+        field_map: parsedFieldMap,
+        collection_id: mongoPullConfig.collection_id || null
+      });
+      setMongoPreviewData(res.data);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Preview failed");
+    } finally {
+      setMongoPreviewLoading(false);
+    }
+  };
+
+  const handleMongoImport = async () => {
+    if (!mongoPullConfig.collection) return toast.error("Select a collection first");
+    setMongoImporting(true);
+    setMongoImportResult(null);
+    try {
+      let parsedFilter = {};
+      try { parsedFilter = JSON.parse(mongoPullConfig.filter_query || "{}"); } catch { parsedFilter = {}; }
+      let parsedFieldMap = {};
+      try { parsedFieldMap = JSON.parse(mongoPullFieldMapRaw || "{}"); } catch { parsedFieldMap = {}; }
+      const res = await api.post("/ai/mongo/import", {
+        collection: mongoPullConfig.collection,
+        target: mongoPullConfig.target,
+        limit: mongoPullConfig.limit,
+        filter_query: parsedFilter,
+        field_map: parsedFieldMap,
+        collection_id: mongoPullConfig.collection_id || null,
+        auto_import: true
+      });
+      setMongoImportResult(res.data);
+      toast.success(`Imported ${res.data.imported} records into ${mongoPullConfig.target.replace("_", " ")}!`);
+      fetchAllData();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Import failed");
+    } finally {
+      setMongoImporting(false);
+    }
+  };
+
   // Folder Navigation Computations
   const currentFolder = useMemo(() => folders.find(f => f._id === currentFolderId), [folders, currentFolderId]);
   const subFolders = useMemo(() => folders.filter(f => (f.parent_id || null) === currentFolderId), [folders, currentFolderId]);
@@ -481,6 +566,7 @@ export default function AiTrainingPage() {
     { id: "structured", label: "Structured Knowledge", icon: Table, badge: structuredKnowledgeList.length },
     { id: "cases", label: "Training Cases", icon: CheckCircle2, badge: trainingCasesList.length },
     { id: "feedback", label: "Feedback & Corrections", icon: MessageSquareQuote, badge: feedbackList.length },
+    { id: "mongo-pull", label: "MongoDB Data Pull", icon: Database },
     { id: "test-rag", label: "Test RAG Diagnostics", icon: Sparkles },
     { id: "evaluation", label: "Evaluation", icon: Gauge },
     { id: "models", label: "Models", icon: Cpu },
@@ -939,6 +1025,250 @@ export default function AiTrainingPage() {
                       )}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+
+          {/* TAB: MONGODB DATA PULL */}
+          {activeTab === "mongo-pull" && (
+            <div className="space-y-6 max-w-6xl">
+              <div className="flex items-start justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    <Database className="w-5 h-5 text-indigo-600" /> MongoDB Data Pull for AI Training
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Pull records from any FormForge MongoDB collection and import them directly into Training Cases, Knowledge Chunks, or Structured Knowledge.
+                  </p>
+                </div>
+                <button
+                  onClick={fetchMongoCollections}
+                  className="flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition"
+                >
+                  {mongoLoadingCollections ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCcw className="w-4 h-4" />}
+                  Load Collections
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+                {/* LEFT: Collection List */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 bg-slate-50">
+                    <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">Available Collections</span>
+                  </div>
+                  {mongoCollections.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-slate-400">
+                      <Database className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                      Click "Load Collections" to scan MongoDB
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {mongoCollections.map((coll) => (
+                        <button
+                          key={coll.collection}
+                          onClick={() => setMongoPullConfig(c => ({ ...c, collection: coll.collection }))}
+                          className={`w-full flex items-center justify-between px-4 py-3 text-left transition ${
+                            mongoPullConfig.collection === coll.collection
+                              ? "bg-indigo-50 border-l-2 border-indigo-500"
+                              : "hover:bg-slate-50"
+                          }`}
+                        >
+                          <div>
+                            <div className="text-xs font-semibold text-slate-800">{coll.collection}</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              {coll.sample_fields.slice(0, 4).join(", ")}
+                            </div>
+                          </div>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            coll.available ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-400"
+                          }`}>
+                            {coll.count.toLocaleString()}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* RIGHT: Configuration Panel */}
+                <div className="lg:col-span-2 space-y-4">
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+                    <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                      <GitMerge className="w-4 h-4 text-indigo-500" /> Pull Configuration
+                    </h3>
+
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      {/* Collection */}
+                      <div>
+                        <label className="font-semibold text-slate-600 mb-1 block">Source Collection</label>
+                        <div className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 font-mono text-slate-800 min-h-[36px]">
+                          {mongoPullConfig.collection || <span className="text-slate-400">— select from list —</span>}
+                        </div>
+                      </div>
+
+                      {/* Target */}
+                      <div>
+                        <label className="font-semibold text-slate-600 mb-1 block">Import Target</label>
+                        <select
+                          value={mongoPullConfig.target}
+                          onChange={e => setMongoPullConfig(c => ({ ...c, target: e.target.value }))}
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs bg-white"
+                        >
+                          <option value="training_cases">Training Cases</option>
+                          <option value="knowledge_chunks">Knowledge Chunks (RAG)</option>
+                          <option value="structured_knowledge">Structured Knowledge</option>
+                        </select>
+                      </div>
+
+                      {/* Limit */}
+                      <div>
+                        <label className="font-semibold text-slate-600 mb-1 block">Record Limit</label>
+                        <input
+                          type="number"
+                          min={1} max={500}
+                          value={mongoPullConfig.limit}
+                          onChange={e => setMongoPullConfig(c => ({ ...c, limit: parseInt(e.target.value) || 50 }))}
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs"
+                        />
+                      </div>
+
+                      {/* RAG Collection ID (conditional) */}
+                      {mongoPullConfig.target === "knowledge_chunks" && (
+                        <div>
+                          <label className="font-semibold text-slate-600 mb-1 block">RAG Collection ID (optional)</label>
+                          <select
+                            value={mongoPullConfig.collection_id}
+                            onChange={e => setMongoPullConfig(c => ({ ...c, collection_id: e.target.value }))}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs bg-white"
+                          >
+                            <option value="">— None / Default —</option>
+                            {collections.map(col => (
+                              <option key={col._id} value={col._id}>{col.display_name || col.internal_name}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Filter Query */}
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600 mb-1 block">MongoDB Filter Query (JSON)</label>
+                      <textarea
+                        rows={2}
+                        value={mongoPullConfig.filter_query}
+                        onChange={e => setMongoPullConfig(c => ({ ...c, filter_query: e.target.value }))}
+                        placeholder='{"status": "approved"} or {} for all'
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-mono resize-none"
+                      />
+                    </div>
+
+                    {/* Field Map */}
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600 mb-1 block">
+                        Field Mapping (JSON) — optional
+                        <span className="ml-2 text-slate-400 font-normal">e.g. {`{"description":"question","remarks":"actual_cause"}`}</span>
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={mongoPullFieldMapRaw}
+                        onChange={e => setMongoPullFieldMapRaw(e.target.value)}
+                        placeholder='{"mongo_field": "training_field"} — leave empty for auto-mapping'
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 text-xs font-mono resize-none"
+                      />
+                      <div className="mt-1 text-[10px] text-slate-400">
+                        Auto-mapping: all string fields are used if left empty. For training_cases: question, actual_cause, action, result, ai_diagnosis
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="flex items-center gap-3 pt-1">
+                      <button
+                        onClick={handleMongoPreview}
+                        disabled={!mongoPullConfig.collection || mongoPreviewLoading}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition disabled:opacity-50"
+                      >
+                        {mongoPreviewLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
+                        Preview Records
+                      </button>
+                      <button
+                        onClick={handleMongoImport}
+                        disabled={!mongoPullConfig.collection || mongoImporting}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition disabled:opacity-50 shadow-sm"
+                      >
+                        {mongoImporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                        Import to {mongoPullConfig.target.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Import Result Banner */}
+                  {mongoImportResult && (
+                    <div className={`p-4 rounded-2xl border text-xs flex items-start gap-3 ${
+                      mongoImportResult.imported > 0
+                        ? "bg-emerald-50 border-emerald-200 text-emerald-800"
+                        : "bg-amber-50 border-amber-200 text-amber-800"
+                    }`}>
+                      <CheckCircle className={`w-5 h-5 shrink-0 mt-0.5 ${mongoImportResult.imported > 0 ? "text-emerald-500" : "text-amber-500"}`} />
+                      <div>
+                        <div className="font-bold mb-1">{mongoImportResult.message}</div>
+                        <div className="flex gap-4 text-[11px]">
+                          <span>✅ Imported: <strong>{mongoImportResult.imported}</strong></span>
+                          <span>⏭ Skipped: <strong>{mongoImportResult.skipped}</strong></span>
+                          <span>Target: <strong>{mongoImportResult.target?.replace(/_/g, " ")}</strong></span>
+                        </div>
+                        {mongoImportResult.errors?.length > 0 && (
+                          <div className="mt-2 text-red-700 font-mono text-[10px]">{mongoImportResult.errors.join(", ")}</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Preview Panel */}
+                  {mongoPreviewData && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="px-4 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-700">
+                          Preview — {mongoPreviewData.total_preview} records from <code className="text-indigo-600">{mongoPreviewData.collection}</code>
+                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-semibold">
+                          → {mongoPreviewData.target?.replace(/_/g, " ")}
+                        </span>
+                      </div>
+
+                      {/* Mapped Preview */}
+                      <div className="p-4">
+                        <div className="text-[11px] font-semibold text-slate-500 mb-2">Mapped Fields Preview (first 5 records):</div>
+                        <div className="space-y-2">
+                          {(mongoPreviewData.mapped_preview || []).slice(0, 5).map((row, i) => (
+                            <div key={i} className="bg-slate-50 rounded-xl p-3 border border-slate-100 text-[11px]">
+                              <div className="font-semibold text-slate-500 mb-1">Record #{i + 1}</div>
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                                {Object.entries(row).slice(0, 6).map(([k, v]) => (
+                                  <div key={k} className="flex gap-1 min-w-0">
+                                    <span className="font-semibold text-indigo-700 shrink-0">{k}:</span>
+                                    <span className="text-slate-600 truncate">{String(v).slice(0, 80)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Raw Records Collapsible */}
+                        <details className="mt-4">
+                          <summary className="text-[11px] font-semibold text-slate-500 cursor-pointer hover:text-indigo-600 flex items-center gap-1">
+                            <ChevronDown className="w-3.5 h-3.5" /> View Raw Records (JSON)
+                          </summary>
+                          <pre className="mt-2 p-3 bg-slate-900 text-green-400 rounded-xl text-[10px] overflow-auto max-h-48 font-mono">
+                            {JSON.stringify(mongoPreviewData.records?.slice(0, 3), null, 2)}
+                          </pre>
+                        </details>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
