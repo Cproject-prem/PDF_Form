@@ -3,7 +3,8 @@ FormForge Solar Support Engineer AI — Advanced PDF Ingestion & Semantic Chunki
 ========================================================================================
 Implements page-aware PDF extraction, running header/footer cleaning, table preservation,
 heading/section detection, semantic chunking (target size + overlap), automatic OEM metadata
-extraction, chunk-type classification, and deterministic/Qdrant indexing.
+extraction, chunk-type classification, and deterministic/Qdrant indexing conforming to
+Section 10 and Section 11 of the Master Specification.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import pypdf
 
 logger = logging.getLogger("solar-pdf-ingestion")
 
-# Configurable Chunking Parameters
+# Configurable Chunking Parameters (Section 11)
 DEFAULT_CHUNK_SIZE = int(os.environ.get("RAG_CHUNK_SIZE", "700"))
 DEFAULT_CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "120"))
 
@@ -58,7 +59,6 @@ def classify_chunk_type(text: str, default_type: str = "general") -> str:
     """Classifies the semantic chunk type based on domain keywords and table patterns."""
     t_lower = text.lower()
     
-    # Check for alarm table patterns (contains error/alarm codes and remedies)
     if ("error" in t_lower or "alarm" in t_lower or "fault" in t_lower) and any(w in t_lower for w in ["cause", "remedy", "action", "code", "solution"]):
         return "alarm_table"
         
@@ -94,22 +94,18 @@ def clean_page_text(raw_text: str) -> str:
         if not l_str:
             continue
             
-        # Strip generic scanner / watermark text
         if re.match(r"^Scanned with .*Scanner$", l_str, re.IGNORECASE):
             continue
             
-        # Strip lone page numbers (e.g. "- 12 -" or "Page 45 of 120" or just "45")
         if re.match(r"^[-—\s]*(?:page\s*)?\d+(?:\s*(?:of|\/)\s*\d+)?[-—\s]*$", l_str, re.IGNORECASE):
             continue
             
-        # Strip generic OEM contact footer unless it has fault or technical data
         if any(h in l_str.lower() for h in ["all rights reserved", "copyright ©", "www.ginverter.com", "www.sungrowpower.com", "www.huawei.com/solar"]) and len(l_str) < 80:
             continue
             
         cleaned_lines.append(line)
         
     result = "\n".join(cleaned_lines)
-    # Normalize multiple blank lines
     result = re.sub(r"\n{3,}", "\n\n", result)
     return result.strip()
 
@@ -204,7 +200,6 @@ def extract_document_oem_metadata(filename: str, first_pages_text: str) -> Dict[
         model = "SolarEdge Synergy 66.6K-120K"
         power_kw = "66.6-120"
         
-    # Document Type
     doc_type = "user_manual"
     if "service" in combined or "maintenance" in combined:
         doc_type = "service_manual"
@@ -222,12 +217,13 @@ def extract_document_oem_metadata(filename: str, first_pages_text: str) -> Dict[
         "power_kw": power_kw,
         "equipment_type": "inverter",
         "document_type": doc_type,
-        "verification_status": "OEM_VERIFIED" if mfg != "Unknown" else "NEEDS_REVIEW"
+        "document_revision": "v1.0",
+        "verification_status": "OEM_DOCUMENT" if mfg != "Unknown" else "EXTRACTED_NEEDS_REVIEW"
     }
 
 
 # ============================================================================
-# 4. Page-Aware Semantic Chunking Engine
+# 4. Page-Aware Semantic Chunking Engine (Section 10 & 11)
 # ============================================================================
 
 def process_pdf_pages_to_semantic_chunks(
@@ -237,7 +233,7 @@ def process_pdf_pages_to_semantic_chunks(
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
 ) -> List[Dict[str, Any]]:
     """Converts a sequence of page dictionaries [{page: 1, text: "..."}] into
-    highly structured, page-aware semantic chunks preserving tables and headings.
+    highly structured, page-aware semantic chunks adhering to Section 10 & 11.
     """
     chunks = []
     current_section = "General Overview"
@@ -248,6 +244,7 @@ def process_pdf_pages_to_semantic_chunks(
     model = doc_meta.get("model", "Unknown")
     doc_name = doc_meta.get("document_name", "Manual.pdf")
     doc_id = doc_meta.get("document_id", "DOC-001")
+    doc_rev = doc_meta.get("document_revision", "v1.0")
     
     for p in pages:
         p_num = p.get("page", 1)
@@ -257,16 +254,13 @@ def process_pdf_pages_to_semantic_chunks(
         if not cleaned_text or len(cleaned_text.strip()) < 30:
             continue
             
-        # Check if page introduces a new major section
         new_sec, sec_type = detect_section_header(cleaned_text)
         if new_sec:
             current_section = new_sec
             if sec_type:
                 current_chunk_type = sec_type
                 
-        # Split page into logical paragraphs / table blocks
         paragraphs = re.split(r"\n\s*\n", cleaned_text)
-        
         page_buffer = []
         page_buffer_words = 0
         
@@ -278,44 +272,44 @@ def process_pdf_pages_to_semantic_chunks(
             para_words = para_str.split()
             para_word_count = len(para_words)
             
-            # Check if paragraph itself is an alarm table or troubleshooting block
-            para_type = classify_chunk_type(para_str, current_chunk_type)
-            
             if page_buffer_words + para_word_count > chunk_size and page_buffer_words > 0:
-                # Flush current buffer as a chunk
                 chunk_text = "\n\n".join(page_buffer)
                 final_type = classify_chunk_type(chunk_text, current_chunk_type)
                 
-                # Format chunk ID with clean OEM prefix
                 oem_prefix = (mfg[:3].upper() if mfg != "Unknown" else "SOL")
                 chunk_uid = f"{oem_prefix}-{doc_meta.get('model_family', 'MOD')[:4].upper()}-{chunk_counter:06d}"
                 
                 chunks.append({
-                    "knowledge_id": chunk_uid,
                     "chunk_id": chunk_uid,
                     "document_id": doc_id,
-                    "document_name": doc_name,
                     "manufacturer": mfg,
                     "model": model,
                     "model_family": doc_meta.get("model_family", "Unknown"),
-                    "power_kw": doc_meta.get("power_kw", "Unknown"),
                     "equipment_type": doc_meta.get("equipment_type", "inverter"),
+                    "power_rating_kw": doc_meta.get("power_kw"),
+                    "power_kw": doc_meta.get("power_kw", "Unknown"),
                     "document_type": doc_meta.get("document_type", "user_manual"),
+                    "document_name": doc_name,
+                    "document_revision": doc_rev,
                     "page": p_num,
                     "page_number": p_num,
                     "section": current_section,
                     "subsection": para_str[:60].replace("\n", " ") if len(para_str) > 60 else "",
-                    "chunk_index": chunk_counter,
                     "chunk_type": final_type,
-                    "content": chunk_text,
+                    "chunk_index": chunk_counter,
                     "text": chunk_text,
-                    "verification_status": doc_meta.get("verification_status", "OEM_VERIFIED"),
+                    "content": chunk_text,
+                    "knowledge_type": "DOCUMENT_EVIDENCE",
+                    "verification_status": "OEM_DOCUMENT" if mfg != "Unknown" else "EXTRACTED_NEEDS_REVIEW",
+                    "source": {
+                        "file": doc_name,
+                        "page": p_num
+                    },
                     "status": "indexed",
                     "created_at": datetime.utcnow()
                 })
                 chunk_counter += 1
                 
-                # Start new buffer with overlap
                 overlap_text = " ".join(page_buffer[-1].split()[-chunk_overlap:]) if page_buffer else ""
                 page_buffer = [overlap_text, para_str] if overlap_text else [para_str]
                 page_buffer_words = len(overlap_text.split()) + para_word_count
@@ -323,7 +317,6 @@ def process_pdf_pages_to_semantic_chunks(
                 page_buffer.append(para_str)
                 page_buffer_words += para_word_count
                 
-        # Flush remaining page buffer
         if page_buffer:
             chunk_text = "\n\n".join(page_buffer)
             final_type = classify_chunk_type(chunk_text, current_chunk_type)
@@ -331,25 +324,31 @@ def process_pdf_pages_to_semantic_chunks(
             chunk_uid = f"{oem_prefix}-{doc_meta.get('model_family', 'MOD')[:4].upper()}-{chunk_counter:06d}"
             
             chunks.append({
-                "knowledge_id": chunk_uid,
                 "chunk_id": chunk_uid,
                 "document_id": doc_id,
-                "document_name": doc_name,
                 "manufacturer": mfg,
                 "model": model,
                 "model_family": doc_meta.get("model_family", "Unknown"),
-                "power_kw": doc_meta.get("power_kw", "Unknown"),
                 "equipment_type": doc_meta.get("equipment_type", "inverter"),
+                "power_rating_kw": doc_meta.get("power_kw"),
+                "power_kw": doc_meta.get("power_kw", "Unknown"),
                 "document_type": doc_meta.get("document_type", "user_manual"),
+                "document_name": doc_name,
+                "document_revision": doc_rev,
                 "page": p_num,
                 "page_number": p_num,
                 "section": current_section,
                 "subsection": "",
-                "chunk_index": chunk_counter,
                 "chunk_type": final_type,
-                "content": chunk_text,
+                "chunk_index": chunk_counter,
                 "text": chunk_text,
-                "verification_status": doc_meta.get("verification_status", "OEM_VERIFIED"),
+                "content": chunk_text,
+                "knowledge_type": "DOCUMENT_EVIDENCE",
+                "verification_status": "OEM_DOCUMENT" if mfg != "Unknown" else "EXTRACTED_NEEDS_REVIEW",
+                "source": {
+                    "file": doc_name,
+                    "page": p_num
+                },
                 "status": "indexed",
                 "created_at": datetime.utcnow()
             })
