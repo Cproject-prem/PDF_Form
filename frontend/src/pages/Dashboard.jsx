@@ -120,7 +120,20 @@ export default function DashboardPage() {
                     <li key={a.submission_id} className="py-3 flex items-center gap-4">
                       <div className="w-9 h-9 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center"><MessagesSquare className="w-4 h-4" /></div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm text-slate-800 truncate">New submission to <span className="font-semibold">{a.form_title}</span></div>
+                        <div className="text-sm text-slate-800 truncate">
+                          {a.site_name ? (
+                            <>
+                              <span className="font-semibold text-slate-900">{a.site_name}</span>
+                              <span className="text-slate-400 font-normal mx-1.5">·</span>
+                              <span className="text-slate-600">{a.form_title}</span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-slate-600">New submission to </span>
+                              <span className="font-semibold text-slate-900">{a.form_title}</span>
+                            </>
+                          )}
+                        </div>
                         <div className="text-xs text-slate-500">{formatDate(a.created_at)}</div>
                       </div>
                       <span className={`text-xs font-medium px-2 py-1 rounded-full ${

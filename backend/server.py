@@ -2101,9 +2101,80 @@ async def dashboard_stats(user: User = Depends(get_current_user)):
                 {**pdf_sub_q, "created_at": {"$gte": day.isoformat(), "$lt": next_day.isoformat()}}))
         series.append({"date": day.strftime("%b %d"), "count": c})
 
-    # recent activity (union of both, sorted, top 8) ---------------------------
+    # recent activity (union of both, sorted, top 8 with site name resolution) ----
     std_recent = await db.submissions.find(std_q, {"_id": 0}).sort("created_at", -1).limit(8).to_list(8)
     pdf_recent = await db.pdf_submissions.find(pdf_sub_q, {"_id": 0}).sort("created_at", -1).limit(8).to_list(8)
+
+    # Pre-fetch templates/forms and site master for accurate site name lookup
+    std_form_objs = {f["form_id"]: f for f in await db.forms.find({"form_id": {"$in": [s.get("form_id") for s in std_recent if s.get("form_id")]}}).to_list(100)}
+    pdf_tpl_objs = {t["template_id"]: t for t in await db.pdf_templates.find({"template_id": {"$in": [s.get("template_id") for s in pdf_recent if s.get("template_id")]}}).to_list(100)}
+    
+    sites_list = await db.sites.find({}, {"site_name": 1, "site_code": 1, "plant_name": 1, "site_id": 1, "asset_id": 1}).to_list(2000)
+    site_names_set = {s.get("site_name") for s in sites_list if s.get("site_name")}
+    code_to_site_name = {s.get("site_code"): s.get("site_name") for s in sites_list if s.get("site_code") and s.get("site_name")}
+    id_to_site_name = {s.get("site_id"): s.get("site_name") for s in sites_list if s.get("site_id") and s.get("site_name")}
+    asset_to_site_name = {s.get("asset_id"): s.get("site_name") for s in sites_list if s.get("asset_id") and s.get("site_name")}
+
+    def _resolve_submission_site_name(sub_doc: Dict[str, Any], tpl_doc: Optional[Dict[str, Any]]) -> str:
+        # 1. Direct fields on the submission document
+        if sub_doc.get("site_name"):
+            return str(sub_doc["site_name"]).strip()
+        if sub_doc.get("site_code") and sub_doc["site_code"] in code_to_site_name:
+            return code_to_site_name[sub_doc["site_code"]]
+        if sub_doc.get("site_id") and sub_doc["site_id"] in id_to_site_name:
+            return id_to_site_name[sub_doc["site_id"]]
+        if sub_doc.get("plant_name"):
+            return str(sub_doc["plant_name"]).strip()
+
+        vals = sub_doc.get("values") or {}
+        if not isinstance(vals, dict):
+            return ""
+
+        # 2. Known key names in submission values dictionary
+        for k in ("site_name", "site", "plant_name", "plant", "site_code", "asset_id", "site_id"):
+            v = vals.get(k)
+            if v and isinstance(v, str):
+                v_clean = v.strip()
+                if v_clean in site_names_set:
+                    return v_clean
+                if v_clean in code_to_site_name:
+                    return code_to_site_name[v_clean]
+                if v_clean in asset_to_site_name:
+                    return asset_to_site_name[v_clean]
+                if k in ("site_name", "plant_name", "site", "plant") and v_clean:
+                    return v_clean
+
+        # 3. Match field labels in template/form
+        fields = (tpl_doc.get("fields") or []) if tpl_doc else []
+        for fld in fields:
+            lbl = (fld.get("label") or fld.get("name") or "").strip().lower()
+            if any(kw in lbl for kw in ("site name", "plant name", "site", "plant", "asset id", "site code")):
+                fid = fld.get("id")
+                v = vals.get(fid)
+                if v and isinstance(v, str):
+                    v_clean = v.strip()
+                    if v_clean in site_names_set:
+                        return v_clean
+                    if v_clean in code_to_site_name:
+                        return code_to_site_name[v_clean]
+                    if v_clean in asset_to_site_name:
+                        return asset_to_site_name[v_clean]
+                    if ("site name" in lbl or "plant name" in lbl or lbl == "site" or lbl == "plant") and len(v_clean) > 1 and not v_clean.startswith("["):
+                        return v_clean
+
+        # 4. Check all values for exact match in known sites
+        for v in vals.values():
+            if isinstance(v, str):
+                v_clean = v.strip()
+                if v_clean in site_names_set:
+                    return v_clean
+                if v_clean in code_to_site_name:
+                    return code_to_site_name[v_clean]
+                if v_clean in asset_to_site_name:
+                    return asset_to_site_name[v_clean]
+
+        return ""
+
     activity_all: List[Dict[str, Any]] = []
     for s in std_recent:
         activity_all.append({
@@ -2111,6 +2182,7 @@ async def dashboard_stats(user: User = Depends(get_current_user)):
             "kind": "form",
             "form_title": form_titles.get(s.get("form_id"), "Form"),
             "submission_id": s.get("submission_id"),
+            "site_name": _resolve_submission_site_name(s, std_form_objs.get(s.get("form_id"))),
             "created_at": s.get("created_at"),
             "status": s.get("status"),
         })
@@ -2120,6 +2192,7 @@ async def dashboard_stats(user: User = Depends(get_current_user)):
             "kind": "pdf",
             "form_title": pdf_titles.get(s.get("template_id"), "PDF form"),
             "submission_id": s.get("submission_id"),
+            "site_name": _resolve_submission_site_name(s, pdf_tpl_objs.get(s.get("template_id"))),
             "created_at": s.get("created_at"),
             "status": s.get("status"),
         })
