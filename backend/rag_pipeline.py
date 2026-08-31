@@ -1144,7 +1144,6 @@ def generate_standard_fault_response(
     if entities.topic_switch_action == "RESTORE_PREVIOUS" or "back to sungrow" in q_lower or "back to the sungrow" in q_lower:
         v_pos = entities.measured_v_pos_pe or 300.0
         v_sys = entities.nominal_v_dc or 800.0
-        mod_approx = round(v_pos / 40.0, 1)
 
         return f"""### Assessment
 
@@ -1153,14 +1152,14 @@ Welcome back to the **Sungrow SG110CX** fault troubleshooting.
 To recap where we left off:
 - **Inverter**: Sungrow SG110CX (Alarm 042) [USER-PROVIDED FACT]
 - **Scope**: Exactly one string is abnormal while all other strings are normal [USER-PROVIDED FACT]
-- **Reading**: Stable $V(+ \\text{{ to PE}}) = {v_pos:.0f}\\text{{ V}}$ on that single affected string [USER-PROVIDED FACT]
+- **Reading**: Stable **V(+ to PE) = {v_pos:.0f} V** on that single affected string [USER-PROVIDED FACT]
 
 Because only one string is affected, **the issue is on the string field side (DC cables, MC4 connectors, module junction box) — NOT the inverter or common DC bus**.
 
 ### What I need to continue narrowing this down
 
-1. What is the measured **$V(- \\text{{ to PE}})$** (Negative to Ground) on this string?
-2. What is the total string open-circuit voltage **$V(+ \\text{{ to }} -)$**?
+1. What is the measured **V(- to PE)** (Negative to Ground) on this string?
+2. What is the total string open-circuit voltage **V(+ to -)**?
 3. What are the corresponding 3 readings on an adjacent healthy string?
 
 Whenever you're ready with those readings or if you performed the string isolation check, let me know!"""
@@ -1173,15 +1172,16 @@ Whenever you're ready with those readings or if you performed the string isolati
     if "pr formula" in q_lower or "performance ratio" in q_lower or "calculate pr" in q_lower or ("formula" in q_lower and "pr" in q_lower):
         return (
             "PR means **Performance Ratio** (IEC 61724 standard).\n\n"
-            "A common PV formulation is:\n\n"
-            r"$$\text{PR} = \frac{Y_f}{Y_r} \times 100\% = \frac{E_{\text{AC}} / P_{\text{DC}}}{H_{\text{POA}} / G_{\text{ref}}} \times 100\%$$" + "\n\n"
+            "**Formula:**\n"
+            "**PR = (Actual AC Energy Generated in kWh) / (POA Solar Irradiation in kWh/m² × Installed DC Capacity in kWp) × 100%**\n\n"
+            "Or in standard yield notation:\n"
+            "**PR = (Final Yield / Reference Yield) × 100% = (Yf / Yr) × 100%**\n\n"
             "**Where:**\n"
-            r"- $Y_f = E_{\text{AC}} / P_{\text{DC}}$: Final Yield (kWh/kWp or equivalent full-load hours)" + "\n"
-            r"- $Y_r = H_{\text{POA}} / G_{\text{ref}}$: Reference Yield (peak sun hours)" + "\n"
-            r"- $E_{\text{AC}}$: Net AC energy generated and exported to the grid (kWh)" + "\n"
-            r"- $P_{\text{DC}}$: Installed DC peak nameplate capacity at STC ($kW_p$)" + "\n"
-            r"- $H_{\text{POA}}$: Total in-plane solar irradiation received by module plane (kWh/m²)" + "\n"
-            r"- $G_{\text{ref}}$: Reference solar irradiance at STC ($1000\text{ W/m}^2$ or $1.0\text{ kW/m}^2$)" + "\n\n"
+            "- **Actual AC Energy Generated (E_AC)**: Total AC energy exported to the grid (kWh)\n"
+            "- **POA Solar Irradiation (H_POA)**: Total in-plane solar irradiation received by module plane (kWh/m²)\n"
+            "- **Installed DC Capacity (P_DC)**: Installed DC peak nameplate capacity at STC (kWp)\n"
+            "- **Reference Yield (Yr)**: H_POA / 1.0 kW/m² (equivalent Peak Sun Hours)\n"
+            "- **Final Yield (Yf)**: E_AC / P_DC (equivalent full-load operating hours)\n\n"
             "If you're asking specifically about PVSyst weather-corrected PR or temperature-adjusted PR, I can explain that calculation too."
         )
 
@@ -1196,12 +1196,12 @@ Whenever you're ready with those readings or if you performed the string isolati
     if "pr with irradiance" in q_lower or "with reference to irradiance" in q_lower or ("irradiance" in q_lower and "pr" in q_lower):
         return (
             "### Performance Ratio with Reference Solar Irradiance\n\n"
-            r"In the standard PR equation, solar resource is normalized using the **reference irradiance at Standard Test Conditions (STC)**, $G_{\text{ref}} = 1000\text{ W/m}^2$:" + "\n\n"
-            r"$$\text{PR} = \frac{E_{\text{AC}} / P_{\text{DC}}}{H_{\text{POA}} / G_{\text{ref}}} \times 100\%$$" + "\n\n"
+            "In the standard PR equation, solar resource is normalized using the **reference irradiance at Standard Test Conditions (STC)** of **1000 W/m² (1.0 kW/m²)**:\n\n"
+            "**PR = [ (E_AC / P_DC) / (H_POA / 1.0 kW/m²) ] × 100%**\n\n"
             "**Key distinction:**\n"
-            r"- **Irradiance ($G$)**: Instantaneous solar power flux density arriving per unit area, measured in $\text{W/m}^2$." + "\n"
-            r"- **Irradiation ($H_{\text{POA}}$)**: Integrated solar energy received over a time interval, measured in $\text{kWh/m}^2$." + "\n"
-            r"- **Reference Yield ($Y_r$)**: $H_{\text{POA}} / 1.0\text{ kW/m}^2$ represents the equivalent hours at $1000\text{ W/m}^2$."
+            "- **Solar Irradiance (G)**: Instantaneous solar power flux density arriving per unit area, measured in **W/m²**.\n"
+            "- **Solar Irradiation (H_POA)**: Integrated solar energy received over a time interval, measured in **kWh/m²**.\n"
+            "- **Reference Yield (Yr)**: H_POA / 1.0 kW/m² represents the equivalent Peak Sun Hours at 1000 W/m²."
         )
 
     # D: IRR (Internal Rate of Return)
@@ -1209,11 +1209,11 @@ Whenever you're ready with those readings or if you performed the string isolati
         return (
             "In solar project finance and renewable energy investment, **IRR** stands for **Internal Rate of Return**.\n\n"
             "It is the annual discount rate at which the Net Present Value (NPV) of all future cash flows (revenues minus CAPEX, OPEX, and debt service) equals zero:\n\n"
-            r"$$\text{NPV} = \sum_{t=0}^{N} \frac{C_t}{(1 + \text{IRR})^t} = 0$$" + "\n\n"
+            "**NPV = Sum [ Net Cash Flow in Year t / (1 + IRR)^t ] - Initial Solar CAPEX = 0**\n\n"
             "**Where:**\n"
-            r"- $C_0$: Initial solar capital expenditure (CAPEX, negative cash flow)" + "\n"
-            r"- $C_t$: Net annual cash flow in year $t$ (PPA power sales revenue minus O&M and taxes)" + "\n"
-            r"- $N$: Plant operational lifetime (typically 25 years)" + "\n\n"
+            "- **Initial CAPEX (C0)**: Initial solar capital expenditure (negative cash flow)\n"
+            "- **Net Cash Flow (Ct)**: Net annual cash flow in year t (PPA power sales revenue minus O&M and taxes)\n"
+            "- **Lifetime (N)**: Plant operational lifetime (typically 25 years)\n\n"
             "*(Note: In rare instrument contexts, IRR can refer to an Infrared Reflectometer, but in solar power plant development it denotes financial project return).*"
         )
 
@@ -1222,7 +1222,7 @@ Whenever you're ready with those readings or if you performed the string isolati
         return (
             "### Capacity Utilization Factor (CUF) Calculation\n\n"
             "Capacity Utilization Factor measures the ratio of actual energy generated over a period relative to the plant's theoretical maximum generation running at full capacity 24 hours a day:\n\n"
-            r"$$\text{CUF} = \frac{E_{\text{AC (annual)}} (\text{kWh})}{P_{\text{AC}} (\text{kW}) \times 8760\text{ hours}} \times 100\%$$"
+            "**CUF = [ Total Annual AC Energy (kWh) / (Installed AC Capacity in kW × 8,760 hours) ] × 100%**"
         )
 
     # F: Modbus Telemetry Mapping
@@ -1287,16 +1287,13 @@ If you also know whether the fault is continuous or only occurs after rain/morni
     is_explicit_pos_gnd = ("positive" in q_lower or "+ to" in q_lower or "pos to" in q_lower or "around 300" in q_lower or "300" in q_lower)
     if is_explicit_pos_gnd and entities.is_follow_up:
         v_pos = entities.measured_v_pos_pe or 300.0
-        v_sys = entities.nominal_v_dc or 800.0
-        v_neg_expected = -(v_sys - v_pos)
-        mod_pos_approx = round(v_pos / 40.0, 1)
 
         return f"""That reading alone doesn't confirm a short circuit or insulation failure.
 
 I'd want to compare:
-- **Positive-to-ground ($V(+ \\text{{ to PE}})$)**
-- **Negative-to-ground ($V(- \\text{{ to PE}})$)**
-- **Positive-to-negative ($V(+ \\text{{ to }} -)$)**
+- **Positive-to-ground: V(+ to PE)**
+- **Negative-to-ground: V(- to PE)**
+- **Positive-to-negative: V(+ to -)**
 
 with the affected string and a healthy string, using the approved site/OEM measurement procedure.
 
@@ -1325,24 +1322,24 @@ For an {entities.nominal_v_dc or 800:.0f} V inverter operating with a standard f
 
 1. **Floating Array Principle**: In commercial string inverters ({mfg} {model if model != 'Unknown' else ''}), the DC array is ungrounded (floating). Neither the positive (+) nor the negative (-) conductor is solidly bonded to PE (earth).
 2. **Differential vs Ground Potentials**:
-   - $V(+ \\text{{ to }} -)$ is the true DC differential string voltage (nominally $\\approx {entities.nominal_v_dc or 800:.0f}\\text{{ V}}$).
-   - $V(+ \\text{{ to PE}})$ (Positive to Ground) and $V(- \\text{{ to PE}})$ (Negative to Ground) are floating potential references.
+   - **V(+ to -)** is the true DC differential string voltage (nominally ~{entities.nominal_v_dc or 800:.0f} V).
+   - **V(+ to PE)** (Positive to Ground) and **V(- to PE)** (Negative to Ground) are floating potential references.
 3. **What Determines the Ground Potential**:
-   - The ratio of positive-to-negative insulation resistance to ground ($R_{{\\text{{iso}}+}} \\text{{ vs }} R_{{\\text{{iso}}-}}$).
+   - The ratio of positive-to-negative insulation resistance to ground (Riso+ vs Riso-).
    - High-frequency common-mode AC switching modulation from the inverter power bridge.
-   - Distributed parasitic capacitance ($C_{{pv}}$) between modules/cables and the grounded structure.
+   - Distributed parasitic capacitance (Cpv) between modules/cables and the grounded structure.
 
 ### What it does NOT prove
 
-- It does **not** mean $V(+ \\text{{ to PE}})$ must be $V_{{dc}} / 2 = 400\\text{{ V}}$.
-- A non-symmetrical measurement (e.g. $+300\\text{{ V}} / -500\\text{{ V}}$) does **not** by itself prove a short circuit, insulation failure, or defective inverter.
+- It does **not** mean V(+ to PE) must be Vdc / 2 = 400 V.
+- A non-symmetrical measurement (e.g. +300 V / -500 V) does **not** by itself prove a short circuit, insulation failure, or defective inverter.
 
 ### What I need from you
 
 To analyze your specific DC circuit, please share:
-1. **$V(+ \\text{{ to PE}})$**: Measured Positive to Ground voltage.
-2. **$V(- \\text{{ to PE}})$**: Measured Negative to Ground voltage.
-3. **$V(+ \\text{{ to }} -)$**: Measured String DC open-circuit voltage ($V_{{oc}}$).
+1. **V(+ to PE)**: Measured Positive to Ground voltage.
+2. **V(- to PE)**: Measured Negative to Ground voltage.
+3. **V(+ to -)**: Measured String DC open-circuit voltage (Voc).
 4. Comparison readings from a known healthy string on the same inverter."""
 
     # ========================================================================
