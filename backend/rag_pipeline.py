@@ -1245,6 +1245,31 @@ Whenever you're ready with those readings or if you performed the string isolati
         )
 
     # ========================================================================
+    # 2.5 EQUIPMENT-ONLY INQUIRY (e.g. "sungro inverter", "sungrow 110cx inverter", "huawei inverter")
+    # ========================================================================
+    if not entities.alarm_code and not entities.symptom and not entities.is_dc_ground_query and not entities.single_string_anomaly and not entities.is_follow_up:
+        if entities.model and entities.model != "Unknown":
+            return f"""I can assist you with the **{mfg} {entities.model}** string inverter.
+
+How can I help you with this inverter?
+- **Active Fault / Alarm Troubleshooting**: Share any numeric alarm code or warning message from the display, web portal, or SCADA.
+- **DC String & Insulation Diagnostics**: $V(+ \\text{{ to }} -)$ open-circuit voltage, $V(+ \\text{{ to PE}})$, $V(- \\text{{ to PE}})$ ground potentials, or Riso checks.
+- **Modbus Telemetry & Registers**: Real-time power registers, yield counters, and communication parameters.
+- **Commissioning & Operation Procedures**: Startup sequence, grid parameters, and maintenance guidelines.
+
+Let me know what you're working on!"""
+        elif entities.manufacturer and entities.manufacturer != "Solar":
+            return f"""I can help you with **{entities.manufacturer} solar inverters**.
+
+What would you like to explore or troubleshoot?
+1. **Troubleshooting an active alarm or fault**: If you have an alarm code or error message, let me know the code and inverter model.
+2. **Model-Specific Guidance**: SG110CX, SUN2000, MAX Series, Solis 5G, Delta M-Series, etc.
+3. **DC-to-Ground & Insulation Analysis**: Understanding floating DC array voltage behavior, string isolation, and megger testing.
+4. **Modbus Telemetry & Plant Integration**: RS485 register addresses and SCADA tags.
+
+Please share the specific model or symptom you'd like to check!"""
+
+    # ========================================================================
     # 3. GENERIC OEM ALARM INQUIRY (e.g. "Sungrow alarm" without specific model/code)
     # ========================================================================
     if ("sungrow alarm" in q_lower or "huawei alarm" in q_lower or "growatt alarm" in q_lower) and not entities.alarm_code and not entities.model:
