@@ -15,6 +15,14 @@ from pdfminer.high_level import extract_text as extract_pdf_text
 
 from circuit_breaker import ai_circuit_breaker, CircuitState
 from ollama_service import ollama_service, OLLAMA_BASE_URL, OLLAMA_MODEL, SOLAR_SUPPORT_ENGINEER_SYSTEM_PROMPT
+from rag_pipeline import (
+    analyze_query,
+    query_mongodb_fault_knowledge,
+    retrieve_and_rerank_chunks,
+    build_grounded_solar_fault_prompt,
+    generate_standard_fault_response,
+    QueryEntities
+)
 from knowledge_manager import (
     KnowledgeManager,
     SUPPORTED_SOLAR_COLLECTIONS,
@@ -540,74 +548,84 @@ def build_ai_router(db, get_current_user):
         require_admin(user)
         start_time = time.time()
 
+        # ── Step 1: Query Analysis & Intent / Entity Extraction ──
+        entities = analyze_query(req.question)
 
-        retrieved_knowledge = []
-        retrieved_context = ""
-        chunk_ids = []
+        # ── Step 2: Multi-Stage Retrieval (MongoDB Structured First for Faults) ──
+        structured_results = await query_mongodb_fault_knowledge(db, entities)
 
-        # ── Stage 1: Semantic Vector Search via ai-service ──
-        try:
-            async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
-                rag_resp = await client.post(
-                    f"{AI_SERVICE_URL}/ai/rag/query",
-                    json={"query": req.question, "top_k": getattr(req, 'top_k', 3) or 3}
-                )
-                if rag_resp.status_code == 200:
-                    rag_data = rag_resp.json()
-                    ai_chunks = rag_data.get("results", [])
-
-                    for idx, chunk in enumerate(ai_chunks):
-                        retrieved_knowledge.append({
-                            "filename": chunk.get("filename", "Knowledge_Base.pdf"),
-                            "page": chunk.get("metadata", {}).get("page_number", idx + 1),
-                            "score": round(float(chunk.get("score", 0.9 - idx * 0.05)), 3),
-                            "chunk_id": chunk.get("chunk_id", f"chunk_{idx}")
-                        })
-                        retrieved_context += (
-                            f"\n[Source: {chunk.get('filename', 'SOP')} | "
-                            f"Page {chunk.get('metadata', {}).get('page_number', idx+1)} | "
-                            f"Score: {round(float(chunk.get('score', 0)), 3)}]\n"
-                            f"{chunk.get('text', '')}\n"
-                        )
-                        chunk_ids.append(chunk.get("chunk_id", f"ai_chunk_{idx}"))
-        except Exception as e:
-            logger.warning(f"ai-service vector search unavailable, falling back to MongoDB: {str(e)}")
-
-        # ── Fallback: MongoDB chunk retrieval (no vector scoring) ──
-        if not retrieved_knowledge:
-            query = {}
-            if req.collection_id:
-                query["collection_id"] = req.collection_id
-            chunks = await db.knowledge_chunks.find(query).limit(getattr(req, 'top_k', 3) or 3).to_list(length=None)
-            for idx, chk in enumerate(chunks):
-                doc = await db.knowledge_documents.find_one({"_id": ObjectId(chk["document_id"])}) if chk.get("document_id") else None
-                score = round(0.92 - (idx * 0.04), 2)
-                filename = doc.get("filename", "SOP_Guide.pdf") if doc else "Knowledge_Base.pdf"
-                retrieved_knowledge.append({
-                    "filename": filename,
-                    "page": chk.get("page_number", idx + 1),
-                    "score": score,
-                    "chunk_id": str(chk["_id"])
-                })
-                retrieved_context += (
-                    f"\n[Source: {filename} | Page {chk.get('page_number', idx+1)}]\n"
-                    f"{chk.get('content', '')}\n"
-                )
-                chunk_ids.append(str(chk["_id"]))
+        # ── Step 3: Document Chunk Retrieval & Priority Reranking ──
+        top_k_req = getattr(req, "top_k", 3) or 3
+        final_chunks, scored_chunks, debug_info = await retrieve_and_rerank_chunks(
+            db, entities, req.collection_id, top_k=top_k_req
+        )
 
         search_latency = int((time.time() - start_time) * 1000)
 
-        # ── Stage 2: LLM Generation grounded on retrieved context ──
+        # Format retrieved knowledge for response cards
+        retrieved_knowledge = []
+        for idx, c in enumerate(final_chunks):
+            retrieved_knowledge.append({
+                "filename": c["filename"],
+                "page": c["page"],
+                "score": c["rerank_score"],
+                "priority": c["priority"],
+                "doc_type": c["doc_type"],
+                "chunk_id": c["chunk_id"]
+            })
+
+        # ── Step 4: Build Grounded Prompt & Context ──
+        system_prompt, user_prompt, prompt_meta = build_grounded_solar_fault_prompt(
+            entities, structured_results, final_chunks
+        )
+
+        retrieved_context = user_prompt
+
+        # ── Step 5: LLM Generation (Ollama Local / AI Service with deterministic fallback) ──
         gen_start = time.time()
         generated_answer = None
         model_used = "gemma (Ollama Local)"
 
-        if retrieved_context.strip():
-            system_prompt = (
-                "You are a technical knowledge assistant. Answer the user's question strictly using "
-                "the retrieved context below. If the context does not contain enough information, say so clearly.\n\n"
-                f"RETRIEVED CONTEXT:\n{retrieved_context.strip()}"
-            )
+        if entities.intent == "FAULT / TROUBLESHOOTING":
+            # Call Ollama / AI service
+            try:
+                async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+                    chat_resp = await client.post(
+                        f"{AI_SERVICE_URL}/ai/chat",
+                        json={
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt}
+                            ],
+                            "provider": "local",
+                            "use_rag": False
+                        }
+                    )
+                    if chat_resp.status_code == 200:
+                        chat_data = chat_resp.json()
+                        generated_answer = chat_data.get("reply", "")
+                        model_used = chat_data.get("model_used", model_used)
+            except Exception as e:
+                logger.warning(f"ai-service chat failed for test-rag: {e}")
+
+            if not generated_answer:
+                try:
+                    ollama_res = await _call_ollama_direct(
+                        [{"role": "user", "content": user_prompt}],
+                        system_override=system_prompt
+                    )
+                    if ollama_res.get("success") and ollama_res.get("reply"):
+                        generated_answer = ollama_res.get("reply", "")
+                        model_used = f"{ollama_res.get('model', 'gemma')} (Ollama Direct)"
+                except Exception as _ex:
+                    logger.warning(f"Direct Ollama call failed for test-rag: {_ex}")
+
+            # Deterministic standard engineering fault response if local LLM offline or returned generic text
+            if not generated_answer or "Installation Manual" in generated_answer or "package list" in generated_answer.lower():
+                generated_answer = generate_standard_fault_response(entities, structured_results)
+                model_used = "Solar Engi AI (Deterministic Grounded Standard)"
+        else:
+            # Non-fault general query
             try:
                 async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
                     chat_resp = await client.post(
@@ -618,62 +636,66 @@ def build_ai_router(db, get_current_user):
                                 {"role": "user", "content": req.question}
                             ],
                             "provider": "local",
-                            "use_rag": False  # context already injected above
+                            "use_rag": False
                         }
                     )
                     if chat_resp.status_code == 200:
                         chat_data = chat_resp.json()
                         generated_answer = chat_data.get("reply", "")
-                        model_used = chat_data.get("model_used", model_used)
             except Exception as e:
-                logger.warning(f"LLM generation failed for test-rag: {str(e)}")
-
-            # ── Direct Ollama generation fallback ──
-            if not generated_answer:
-                try:
-                    ollama_res = await _call_ollama_direct(
-                        [{"role": "user", "content": req.question}],
-                        system_override=system_prompt
-                    )
-                    if ollama_res.get("success"):
-                        generated_answer = ollama_res.get("reply", "")
-                        model_used = f"{ollama_res.get('model', 'gemma')} (Ollama Direct)"
-                except Exception as _ex:
-                    logger.warning(f"Direct Ollama call failed for test-rag: {_ex}")
-
-        # ── Graceful fallback when Ollama is offline ──
-        if not generated_answer:
-            if not retrieved_context.strip():
-                generated_answer = (
-                    "WARNING:️ No knowledge chunks found for this question. "
-                    "Upload documents and index them first via the Knowledge Base tab."
-                )
-            else:
-                # Summarize top context without LLM
-                top_source = retrieved_knowledge[0]["filename"] if retrieved_knowledge else "knowledge base"
-                generated_answer = (
-                    f"WARNING:️ Local Ollama LLM is offline — answer generation is unavailable.\n\n"
-                    f"However, {len(retrieved_knowledge)} relevant context chunk(s) were retrieved "
-                    f"from '{top_source}' with a top similarity score of "
-                    f"{retrieved_knowledge[0]['score'] if retrieved_knowledge else 'N/A'}.\n\n"
-                    f"Ensure Ollama is running to generate a grounded AI answer."
-                )
-                model_used = "offline"
+                generated_answer = f"Information retrieved from {len(final_chunks)} document chunks."
 
         gen_latency = int((time.time() - gen_start) * 1000)
 
+        # ── Step 6: Construct Admin RAG Debug Payload ──
+        rag_debug = {
+            "user_query": req.question,
+            "intent": entities.intent,
+            "manufacturer": entities.manufacturer or "Unknown",
+            "power": entities.power_str or (f"{entities.power_kw} kW" if entities.power_kw else "Unknown"),
+            "model": entities.model or "Unknown",
+            "symptom": entities.symptom or "Unknown",
+            "mongodb_results": structured_results,
+            "qdrant_filter": f"manufacturer = {entities.manufacturer or 'All'}, equipment_type = {entities.equipment_type}",
+            "document_types_retrieved": debug_info.get("doc_types_retrieved", []),
+            "top_chunks": scored_chunks[:6],
+            "rerank_score": [
+                {
+                    "filename": c["filename"],
+                    "page": c["page"],
+                    "priority": c["priority"],
+                    "doc_type": c["doc_type"],
+                    "raw_score": c["raw_score"],
+                    "rerank_score": c["rerank_score"],
+                    "is_usable_for_fault": c["is_usable"]
+                }
+                for c in scored_chunks[:6]
+            ],
+            "chunks_sent_to_llm": [
+                {
+                    "filename": c["filename"],
+                    "page": c["page"],
+                    "doc_type": c["doc_type"],
+                    "priority": c["priority"],
+                    "preview": c["text"][:200] + ("..." if len(c["text"]) > 200 else "")
+                }
+                for c in final_chunks
+            ]
+        }
+
         return {
             "retrieved_knowledge": retrieved_knowledge,
-            "retrieved_context": retrieved_context if retrieved_context.strip() else "No matching context found in knowledge base.",
+            "retrieved_context": retrieved_context,
             "generated_answer": generated_answer,
+            "rag_debug": rag_debug,
             "metrics": {
                 "search_latency_ms": search_latency,
                 "generation_latency_ms": gen_latency,
                 "total_latency_ms": search_latency + gen_latency,
                 "embedding_model": "all-MiniLM-L6-v2",
                 "model_used": model_used,
-                "retrieved_chunk_ids": chunk_ids,
-                "chunks_retrieved": len(retrieved_knowledge)
+                "retrieved_chunk_ids": [c["chunk_id"] for c in final_chunks],
+                "chunks_retrieved": len(final_chunks)
             }
         }
 
@@ -917,51 +939,26 @@ def build_ai_router(db, get_current_user):
 
     # ----------------- 9. Solar Support Engineer Core Chat -----------------
 
-    async def _retrieve_solar_knowledge(user_query: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Intelligently retrieves structured knowledge and semantic chunks matching user query."""
-        structured_items = []
-        doc_chunks = []
-        tokens = [t.lower() for t in re.findall(r"\w+", user_query) if len(t) > 2]
-        
-        # Check known manufacturers & models
-        mfrs = ["sungrow", "growatt", "huawei", "delta", "solis", "solaredge", "deye", "sma", "abb", "kaco"]
-        detected_mfr = next((m for m in mfrs if m in user_query.lower()), None)
-        
-        # 1. Search Structured Knowledge (Modbus, Alarms, Inverter Specs)
+    async def _retrieve_solar_knowledge(user_query: str, history: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Intelligently retrieves structured knowledge and priority-reranked chunks matching user query and intent."""
         try:
-            sk_query = {}
-            if detected_mfr:
-                sk_query["manufacturer"] = {"$regex": detected_mfr, "$options": "i"}
-            
-            # Query oem_alarm_codes, inverter_parameters, structured_knowledge
-            for coll in ["oem_alarm_codes", "oem_troubleshooting_procedures", "inverter_parameters", "structured_knowledge", "historical_incidents"]:
-                if coll in await db.list_collection_names():
-                    found = await db[coll].find(sk_query).limit(4).to_list(length=4)
-                    structured_items.extend([serialize_doc(f) for f in found])
+            entities = analyze_query(user_query, history)
+            structured_items = await query_mongodb_fault_knowledge(db, entities)
+            final_chunks, scored_chunks, _ = await retrieve_and_rerank_chunks(db, entities, top_k=4)
+            doc_chunks = [
+                {
+                    "content": c["text"],
+                    "filename": c["filename"],
+                    "page": c["page"],
+                    "priority": c["priority"],
+                    "doc_type": c["doc_type"]
+                }
+                for c in final_chunks
+            ]
+            return structured_items, doc_chunks
         except Exception as e:
-            logger.error(f"Structured knowledge retrieval error: {e}")
-
-        # 2. Search Knowledge Chunks / Documents for RAG
-        try:
-            chunk_query = {}
-            if detected_mfr:
-                chunk_query["$or"] = [
-                    {"manufacturer": {"$regex": detected_mfr, "$options": "i"}},
-                    {"content": {"$regex": detected_mfr, "$options": "i"}}
-                ]
-            chunks = await db.knowledge_chunks.find(chunk_query).limit(5).to_list(length=5)
-            if not chunks:
-                chunks = await db.knowledge_chunks.find({}).limit(5).to_list(length=5)
-            doc_chunks = [serialize_doc(c) for c in chunks]
-
-            # Also check knowledge_documents
-            if not doc_chunks:
-                docs = await db.knowledge_documents.find({}).limit(3).to_list(length=3)
-                doc_chunks = [serialize_doc(d) for d in docs]
-        except Exception as e:
-            logger.error(f"Chunk retrieval error: {e}")
-
-        return structured_items, doc_chunks
+            logger.error(f"Solar knowledge retrieval error: {e}")
+            return [], []
 
     @router.post("/chat")
     async def chat_with_ai(req: ChatRequest, user=Depends(get_current_user)):
@@ -978,7 +975,7 @@ def build_ai_router(db, get_current_user):
 
         # Extract latest message text for RAG retrieval
         latest_msg = req.messages[-1].content if req.messages else ""
-        structured_items, doc_chunks = await _retrieve_solar_knowledge(latest_msg)
+        structured_items, doc_chunks = await _retrieve_solar_knowledge(latest_msg, [{"role": m.role, "content": m.content} for m in req.messages[:-1]])
 
         # Load active system prompt from MongoDB if custom override exists
         active_prompt_doc = await db.ai_prompts.find_one({"is_active": True}, sort=[("created_at", -1)])
@@ -1038,7 +1035,7 @@ def build_ai_router(db, get_current_user):
     async def stream_chat_with_ai(req: ChatRequest, user=Depends(get_current_user)):
         require_admin(user)
         latest_msg = req.messages[-1].content if req.messages else ""
-        structured_items, doc_chunks = await _retrieve_solar_knowledge(latest_msg)
+        structured_items, doc_chunks = await _retrieve_solar_knowledge(latest_msg, [{"role": m.role, "content": m.content} for m in req.messages[:-1]])
 
         active_prompt_doc = await db.ai_prompts.find_one({"is_active": True}, sort=[("created_at", -1)])
         mongo_system_prompt = active_prompt_doc.get("template_text") if active_prompt_doc else None
