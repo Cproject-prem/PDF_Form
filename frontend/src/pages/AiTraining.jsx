@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 
 import { 
   Bot, UploadCloud, Trash2, Send, FileText, Settings2, 
-  RefreshCcw, Sparkles, CheckCircle2, LayoutDashboard, BookOpen,
+  RefreshCcw, RefreshCw, Sparkles, CheckCircle2, LayoutDashboard, BookOpen,
   Layers, Table, Lightbulb, MessageSquareQuote, Cpu, FileCode,
   Gauge, History, Sliders, Search, Plus, ThumbsUp, ThumbsDown,
   Activity, ShieldAlert, Check, ChevronRight, X, Zap, Loader2,
