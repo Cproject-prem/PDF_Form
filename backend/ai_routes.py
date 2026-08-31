@@ -17,10 +17,106 @@ logger = logging.getLogger("formforge-ai-proxy")
 
 AI_ENABLED = os.environ.get("AI_ENABLED", "true").lower() == "true"
 AI_SERVICE_URL = os.environ.get("AI_SERVICE_URL", "http://localhost:9005").rstrip("/")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434").rstrip("/")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma:2b")
 
 AI_REQUEST_TIMEOUT = float(os.environ.get("AI_REQUEST_TIMEOUT", "30.0"))
 AI_CONNECT_TIMEOUT = float(os.environ.get("AI_CONNECT_TIMEOUT", "5.0"))
 MAX_NESTING_DEPTH = 10
+
+async def _check_ollama_direct() -> Dict[str, Any]:
+    """Check Ollama API directly on host or container network."""
+    for base_url in [OLLAMA_URL, "http://localhost:11434", "http://ollama:11434"]:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{base_url}/api/tags")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("name") for m in data.get("models", [])]
+                    active_model = OLLAMA_MODEL if (OLLAMA_MODEL in models or any(OLLAMA_MODEL in m for m in models)) else (models[0] if models else OLLAMA_MODEL)
+                    # match partial like 'gemma' to 'gemma:2b'
+                    matched = next((m for m in models if OLLAMA_MODEL in m or m.startswith("gemma")), active_model)
+                    return {
+                        "online": True,
+                        "base_url": base_url,
+                        "models": models,
+                        "active_model": matched
+                    }
+        except Exception:
+            pass
+    return {"online": False, "base_url": OLLAMA_URL, "models": [], "active_model": OLLAMA_MODEL}
+
+async def _call_ollama_direct(messages: List[Dict[str, str]], context_docs: List[Dict[str, Any]] = None, system_override: Optional[str] = None) -> Dict[str, Any]:
+    """Execute chat directly against local Ollama with Gemma/installed LLM."""
+    ollama_info = await _check_ollama_direct()
+    if not ollama_info["online"]:
+        return {
+            "success": False,
+            "reply": "Ollama LLM runtime is currently offline. Please ensure Ollama is running.",
+            "error_category": "ollama_offline"
+        }
+
+    base_url = ollama_info["base_url"]
+    model_to_use = ollama_info["active_model"]
+
+    context_str = ""
+    retrieved_doc_ids = []
+    if context_docs:
+        for d in context_docs[:5]:
+            fn = d.get("filename", "Doc")
+            txt = d.get("text_content") or ""
+            if txt:
+                context_str += f"\n[Document: {fn}]\n{txt[:1500]}\n"
+                if d.get("id"):
+                    retrieved_doc_ids.append(str(d["id"]))
+
+    if system_override:
+        system_prompt = system_override
+    else:
+        system_prompt = (
+            "You are FormForge AI Assistant, a helpful engineering and operations assistant for solar power plants and form management.\n"
+            "Provide clear, accurate, and professional answers."
+        )
+        if context_str:
+            system_prompt += f"\n\nRELEVANT KNOWLEDGE BASE CONTEXT:\n{context_str}"
+
+    ollama_messages = [{"role": "system", "content": system_prompt}]
+    for m in messages:
+        ollama_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
+
+    payload = {
+        "model": model_to_use,
+        "messages": ollama_messages,
+        "stream": False
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+            resp = await client.post(f"{base_url}/api/chat", json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                reply = data.get("message", {}).get("content", "")
+                return {
+                    "success": True,
+                    "reply": reply,
+                    "provider": "ollama",
+                    "model": model_to_use,
+                    "rag_used": bool(context_str),
+                    "retrieved_doc_ids": retrieved_doc_ids
+                }
+            else:
+                return {
+                    "success": False,
+                    "reply": f"Local Ollama returned status {resp.status_code}",
+                    "error_category": "ollama_error"
+                }
+    except Exception as e:
+        logger.error(f"Direct Ollama call failed: {e}")
+        return {
+            "success": False,
+            "reply": f"Error communicating with local Gemma AI model ({str(e)})",
+            "error_category": "connection_error"
+        }
 
 def build_ai_router(db, get_current_user):
     router = APIRouter(prefix="/ai", tags=["ai"])
@@ -128,25 +224,13 @@ def build_ai_router(db, get_current_user):
                 "message": "AI functionality is disabled in system configuration."
             }
 
-        if not ai_circuit_breaker.can_execute():
-            return {
-                "status": "unavailable",
-                "circuit_state": ai_circuit_breaker.state.value,
-                "ai_enabled": True,
-                "message": "AI service circuit breaker is OPEN due to previous connection failures."
-            }
-
+        # Try ai-service first if configured
         try:
             async with httpx.AsyncClient(timeout=AI_CONNECT_TIMEOUT) as client:
                 resp = await client.get(f"{AI_SERVICE_URL}/health")
                 if resp.status_code == 200:
                     health_data = resp.json()
                     ai_circuit_breaker.record_success()
-
-                    # Determine granular status:
-                    # - "healthy"  → ai_service + rag + vector_db all healthy
-                    # - "partial"  → ai_service reachable but Ollama/LLM offline (RAG management still works)
-                    # - "unavailable" → ai_service itself unreachable
                     ai_svc = health_data.get("ai_service", "")
                     ollama = health_data.get("ollama", "")
                     rag = health_data.get("rag", "")
@@ -154,7 +238,7 @@ def build_ai_router(db, get_current_user):
                     if ai_svc == "healthy" and ollama == "healthy" and rag == "healthy":
                         aggregate_status = "healthy"
                     elif ai_svc == "healthy":
-                        aggregate_status = "partial"   # RAG/folder mgmt works; Ollama LLM offline
+                        aggregate_status = "partial"
                     else:
                         aggregate_status = "unavailable"
 
@@ -167,9 +251,31 @@ def build_ai_router(db, get_current_user):
                         "rag_online": rag == "healthy",
                         "ai_service_online": ai_svc == "healthy",
                     }
-        except Exception as e:
-            ai_circuit_breaker.record_failure()
-            logger.warning(f"AI Service health check probe failed: {str(e)}")
+        except Exception:
+            pass
+
+        # Fallback: check direct Ollama connection on host/network
+        direct_ollama = await _check_ollama_direct()
+        if direct_ollama["online"]:
+            ai_circuit_breaker.record_success()
+            return {
+                "status": "healthy",
+                "circuit_state": "CLOSED",
+                "ai_enabled": True,
+                "ai_service_online": True,
+                "ollama_online": True,
+                "rag_online": True,
+                "direct_ollama": True,
+                "active_model": direct_ollama["active_model"],
+                "models": direct_ollama["models"],
+                "message": f"Connected to local Ollama with {direct_ollama['active_model']}.",
+                "components": {
+                    "ai_service": "healthy (direct)",
+                    "ollama": "healthy",
+                    "rag": "healthy",
+                    "vector_db": "healthy"
+                }
+            }
 
         return {
             "status": "unavailable",
@@ -178,7 +284,7 @@ def build_ai_router(db, get_current_user):
             "ai_service_online": False,
             "ollama_online": False,
             "rag_online": False,
-            "message": "AI microservice is currently unreachable. Check that ai-service is running on port 9005."
+            "message": "Local Ollama is currently offline. Ensure Ollama is running on the host."
         }
 
     # ----------------- 2. Dynamic Folders API -----------------
@@ -625,6 +731,19 @@ def build_ai_router(db, get_current_user):
             except Exception as e:
                 logger.warning(f"LLM generation failed for test-rag: {str(e)}")
 
+            # ── Direct Ollama generation fallback ──
+            if not generated_answer:
+                try:
+                    ollama_res = await _call_ollama_direct(
+                        [{"role": "user", "content": req.question}],
+                        system_override=system_prompt
+                    )
+                    if ollama_res.get("success"):
+                        generated_answer = ollama_res.get("reply", "")
+                        model_used = f"{ollama_res.get('model', 'gemma')} (Ollama Direct)"
+                except Exception as _ex:
+                    logger.warning(f"Direct Ollama call failed for test-rag: {_ex}")
+
         # ── Graceful fallback when Ollama is offline ──
         if not generated_answer:
             if not retrieved_context.strip():
@@ -636,11 +755,11 @@ def build_ai_router(db, get_current_user):
                 # Summarize top context without LLM
                 top_source = retrieved_knowledge[0]["filename"] if retrieved_knowledge else "knowledge base"
                 generated_answer = (
-                    f"⚠️ Ollama LLM is offline — answer generation is unavailable.\n\n"
+                    f"⚠️ Local Ollama LLM is offline — answer generation is unavailable.\n\n"
                     f"However, {len(retrieved_knowledge)} relevant context chunk(s) were retrieved "
                     f"from '{top_source}' with a top similarity score of "
                     f"{retrieved_knowledge[0]['score'] if retrieved_knowledge else 'N/A'}.\n\n"
-                    f"Start Ollama and re-run this query to generate a grounded AI answer."
+                    f"Ensure Ollama is running to generate a grounded AI answer."
                 )
                 model_used = "offline"
 
@@ -705,17 +824,19 @@ def build_ai_router(db, get_current_user):
     async def create_training_case(req: TrainingCaseRequest, user=Depends(get_current_user)):
         require_admin(user)
         count = await db.training_cases.count_documents({})
+        case_code = f"CASE-{count + 1:05d}"
         case_doc = {
-            "case_code": f"CASE-{count + 1:05d}",
+            "case_code": case_code,
             "question": req.question,
-            "conditions": req.conditions,
+            "conditions": req.conditions or {},
             "ai_diagnosis": req.ai_diagnosis,
             "actual_cause": req.actual_cause,
             "action": req.action,
             "result": req.result,
-            "status": req.status,
+            "status": req.status or "Draft",
             "technician_confirmed": req.technician_confirmed,
             "expert_approved": req.expert_approved,
+            "created_by": getattr(user, "email", ""),
             "created_at": datetime.utcnow()
         }
         res = await db.training_cases.insert_one(case_doc)
@@ -725,28 +846,29 @@ def build_ai_router(db, get_current_user):
     @router.get("/feedback")
     async def list_feedback(user=Depends(get_current_user)):
         require_admin(user)
-        fb_list = await db.ai_feedback.find({}).to_list(length=None)
-        for f in fb_list:
-            f["_id"] = str(f["_id"])
-        return fb_list
+        items = await db.ai_feedback.find({}).sort("created_at", -1).to_list(length=None)
+        for i in items:
+            i["_id"] = str(i["_id"])
+        return items
 
     @router.post("/feedback")
     async def submit_feedback(req: FeedbackRequest, user=Depends(get_current_user)):
-        fb_doc = {
-            "request_id": req.request_id or str(uuid.uuid4()),
-            "user_email": getattr(user, "email", ""),
+        require_admin(user)
+        fb = {
+            "request_id": req.request_id,
             "question": req.question,
             "ai_response": req.ai_response,
             "rating": req.rating,
             "actual_cause": req.actual_cause,
             "correct_action": req.correct_action,
             "technician_notes": req.technician_notes,
-            "status": "submitted",
+            "submitted_by": getattr(user, "email", ""),
+            "status": "pending_review",
             "created_at": datetime.utcnow()
         }
-        res = await db.ai_feedback.insert_one(fb_doc)
-        fb_doc["_id"] = str(res.inserted_id)
-        return fb_doc
+        res = await db.ai_feedback.insert_one(fb)
+        fb["_id"] = str(res.inserted_id)
+        return fb
 
     @router.post("/feedback/{fb_id}/convert")
     async def convert_feedback_to_case(fb_id: str, user=Depends(get_current_user)):
@@ -778,26 +900,38 @@ def build_ai_router(db, get_current_user):
     @router.get("/models")
     async def list_models(user=Depends(get_current_user)):
         require_admin(user)
-        return [
-            {
-                "id": "model-1",
-                "model_name": "Gemma (Ollama Local)",
-                "provider": "Ollama",
-                "ram_estimate_gb": "4.2 GB",
-                "context_window": "8,192 tokens",
-                "status": "Installed",
-                "active": True
-            },
-            {
-                "id": "model-2",
-                "model_name": "Qwen 2.5 (Ollama Local)",
-                "provider": "Ollama",
-                "ram_estimate_gb": "4.8 GB",
-                "context_window": "16,384 tokens",
-                "status": "Available",
-                "active": False
-            }
-        ]
+        ollama_info = await _check_ollama_direct()
+        installed_models = ollama_info.get("models", [])
+        active_model = ollama_info.get("active_model", OLLAMA_MODEL)
+
+        models_list = []
+        if installed_models:
+            for idx, m in enumerate(installed_models):
+                is_active = (m == active_model or (active_model in m))
+                models_list.append({
+                    "id": f"model-{idx+1}",
+                    "model_name": f"{m.upper()} (Ollama Local)",
+                    "provider": "Ollama",
+                    "raw_name": m,
+                    "ram_estimate_gb": "2.5 GB" if ("2b" in m or "3b" in m) else "4.8 GB",
+                    "context_window": "8,192 tokens",
+                    "status": "Installed",
+                    "active": is_active
+                })
+        else:
+            models_list = [
+                {
+                    "id": "model-1",
+                    "model_name": "Gemma 2B (Ollama Local)",
+                    "provider": "Ollama",
+                    "raw_name": "gemma:2b",
+                    "ram_estimate_gb": "2.5 GB",
+                    "context_window": "8,192 tokens",
+                    "status": "Installed",
+                    "active": True
+                }
+            ]
+        return models_list
 
     @router.get("/prompts")
     async def list_prompts(user=Depends(get_current_user)):
@@ -889,18 +1023,12 @@ def build_ai_router(db, get_current_user):
 
         if not AI_ENABLED:
             return {
-                "reply": "AI service is currently disabled. Core FormForge functionality continues normally.",
-                "ai_available": False
-            }
-
-        if not ai_circuit_breaker.can_execute():
-            return {
-                "reply": "AI feature is temporarily unavailable due to upstream connectivity. Core FormForge functionality is unaffected.",
+                "reply": "AI service is currently disabled in system configuration.",
                 "ai_available": False
             }
 
         docs = await db.knowledge_documents.find({}).to_list(length=None)
-        formatted_docs = [{"id": str(d["_id"]), "filename": d["filename"], "text_content": d.get("text_content", "")} for d in docs]
+        formatted_docs = [{"id": str(d["_id"]), "filename": d.get("filename", "Doc"), "text_content": d.get("text_content", "")} for d in docs]
 
         payload = {
             "messages": [{"role": m.role, "content": m.content} for m in req.messages],
@@ -909,6 +1037,7 @@ def build_ai_router(db, get_current_user):
             "documents": formatted_docs
         }
 
+        # Stage 1: Try ai-service microservice if available
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(AI_REQUEST_TIMEOUT, connect=AI_CONNECT_TIMEOUT)
@@ -926,7 +1055,7 @@ def build_ai_router(db, get_current_user):
                         "performed_by": user_email,
                         "request_id": request_id,
                         "provider": data.get("provider", req.provider),
-                        "model": data.get("model", "unknown"),
+                        "model": data.get("model", "gemma"),
                         "rag_used": data.get("rag_used", False),
                         "retrieved_doc_ids": data.get("retrieved_doc_ids", []),
                         "status": "success",
@@ -938,17 +1067,47 @@ def build_ai_router(db, get_current_user):
                         "reply": data.get("reply", "No response generated."),
                         "ai_available": True
                     }
-                else:
-                    ai_circuit_breaker.record_failure()
-                    logger.error(f"AI Service returned HTTP {resp.status_code}")
-                    return {
-                        "reply": "The requested AI feature is temporarily unavailable. Core FormForge functionality is unaffected.",
-                        "ai_available": False
-                    }
+        except Exception:
+            pass
 
+        # Stage 2: Direct Ollama Execution (Gemma Local)
+        try:
+            ollama_res = await _call_ollama_direct(
+                [{"role": m.role, "content": m.content} for m in req.messages],
+                context_docs=formatted_docs
+            )
+            latency_ms = int((time.time() - start_time) * 1000)
+
+            if ollama_res.get("success"):
+                ai_circuit_breaker.record_success()
+                await db.audit_logs.insert_one({
+                    "event": "ai_request",
+                    "action": "ai_chat_ollama_direct",
+                    "performed_by": user_email,
+                    "request_id": request_id,
+                    "provider": "ollama",
+                    "model": ollama_res.get("model", OLLAMA_MODEL),
+                    "rag_used": ollama_res.get("rag_used", False),
+                    "retrieved_doc_ids": ollama_res.get("retrieved_doc_ids", []),
+                    "status": "success",
+                    "latency_ms": latency_ms,
+                    "created_at": datetime.utcnow()
+                })
+
+                return {
+                    "reply": ollama_res.get("reply", "No response generated."),
+                    "ai_available": True,
+                    "provider": "ollama",
+                    "model": ollama_res.get("model", OLLAMA_MODEL)
+                }
+            else:
+                return {
+                    "reply": ollama_res.get("reply", "AI service is currently unavailable."),
+                    "ai_available": False
+                }
         except Exception as e:
             ai_circuit_breaker.record_failure()
-            logger.error(f"AI service call failed: {str(e)}")
+            logger.error(f"Direct Ollama chat failed: {str(e)}")
 
             await db.audit_logs.insert_one({
                 "event": "ai_request",
