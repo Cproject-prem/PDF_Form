@@ -1,177 +1,36 @@
 import os
 import io
+import re
 import time
 import httpx
 import uuid
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from bson import ObjectId
 from pdfminer.high_level import extract_text as extract_pdf_text
 
 from circuit_breaker import ai_circuit_breaker, CircuitState
+from ollama_service import ollama_service, OLLAMA_BASE_URL, OLLAMA_MODEL, SOLAR_SUPPORT_ENGINEER_SYSTEM_PROMPT
+from knowledge_manager import (
+    KnowledgeManager,
+    SUPPORTED_SOLAR_COLLECTIONS,
+    parse_json_payload,
+    auto_detect_collection,
+    serialize_doc
+)
 
 logger = logging.getLogger("formforge-ai-proxy")
 
 AI_ENABLED = os.environ.get("AI_ENABLED", "true").lower() == "true"
 AI_SERVICE_URL = os.environ.get("AI_SERVICE_URL", "http://localhost:9005").rstrip("/")
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434").rstrip("/")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma:2b")
-
 AI_REQUEST_TIMEOUT = float(os.environ.get("AI_REQUEST_TIMEOUT", "90.0"))
 AI_CONNECT_TIMEOUT = float(os.environ.get("AI_CONNECT_TIMEOUT", "5.0"))
 MAX_NESTING_DEPTH = 10
 
-async def _check_ollama_direct() -> Dict[str, Any]:
-    """Check Ollama API directly on host or container network."""
-    for base_url in [OLLAMA_URL, "http://localhost:11434", "http://ollama:11434"]:
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{base_url}/api/tags")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    models = [m.get("name") for m in data.get("models", [])]
-                    active_model = OLLAMA_MODEL if (OLLAMA_MODEL in models or any(OLLAMA_MODEL in m for m in models)) else (models[0] if models else OLLAMA_MODEL)
-                    # match partial like 'gemma' to 'gemma:2b'
-                    matched = next((m for m in models if OLLAMA_MODEL in m or m.startswith("gemma")), active_model)
-                    return {
-                        "online": True,
-                        "base_url": base_url,
-                        "models": models,
-                        "active_model": matched
-                    }
-        except Exception:
-            pass
-    return {"online": False, "base_url": OLLAMA_URL, "models": [], "active_model": OLLAMA_MODEL}
-
-async def _call_ollama_direct(messages: List[Dict[str, str]], context_docs: List[Dict[str, Any]] = None, system_override: Optional[str] = None) -> Dict[str, Any]:
-    """Execute chat directly against local Ollama with Gemma/installed LLM."""
-    ollama_info = await _check_ollama_direct()
-    if not ollama_info["online"]:
-        return {
-            "success": False,
-            "reply": "Ollama LLM runtime is currently offline. Please ensure Ollama is running.",
-            "error_category": "ollama_offline"
-        }
-
-    base_url = ollama_info["base_url"]
-    model_to_use = ollama_info["active_model"]
-
-    context_str = ""
-    retrieved_doc_ids = []
-    if context_docs:
-        for d in context_docs[:5]:
-            fn = d.get("filename", "Doc")
-            txt = d.get("text_content") or ""
-            if txt:
-                context_str += f"\n[Document: {fn}]\n{txt[:1500]}\n"
-                if d.get("id"):
-                    retrieved_doc_ids.append(str(d["id"]))
-
-    if system_override:
-        system_prompt = system_override
-    else:
-        system_prompt = """You are a Senior Solar O&M Support Engineer operating inside a professional Solar Power Plant O&M portal.
-
-Your role is to assist engineers, technicians, O&M managers and plant operators with:
-- Solar PV plant troubleshooting and fault diagnosis
-- Performance analysis and SCADA data interpretation
-- Equipment analysis (inverters, strings, combiner boxes, transformers, protection relays, etc.)
-- Technical decision support and root cause analysis
-
-You are NOT a generic chatbot. You must reason like an experienced Solar PV O&M Support Engineer.
-
-PRIMARY OBJECTIVE:
-1. Understand the user's problem and identify the equipment involved
-2. Identify the exact manufacturer and model whenever possible
-3. Retrieve and apply relevant technical knowledge
-4. Correlate alarms, measurements, operating conditions and historical behaviour
-5. Develop and rank possible causes by evidence
-6. Recommend the safest and most logical diagnostic sequence
-7. Distinguish confirmed facts from probable causes and assumptions
-8. Never invent technical specifications, alarm codes, or Modbus registers
-
-SUPPORTED EQUIPMENT:
-Inverters (Delta, Sungrow, Growatt, Huawei, Solis, SolarEdge — 20 kW to 320 kW) and all solar plant BOS:
-PV modules, strings, DC connectors, combiner boxes (SCB), DCDB, ACDB, LT/HT panels, RMU, VCB, transformers, protection relays, CT, PT, energy meters, PPC, SCADA, weather stations, trackers, UPS, DG, BESS, EMS.
-
-SOURCE AUTHORITY (highest to lowest):
-1. Exact OEM documentation for the confirmed model
-2. Company-approved technical documentation
-3. Historical incident/RCA records
-4. SCADA/live plant data
-5. Approved engineering knowledge base
-6. General solar engineering knowledge
-
-NEVER fabricate: alarm codes, Modbus registers, protection limits, OEM specifications, Modbus scaling, or firmware behaviour.
-If a value cannot be verified from available documentation, state: "Exact value could not be verified from available model-specific documentation."
-
-DIAGNOSTIC APPROACH:
-- Do not jump to conclusions from a single symptom
-- Generate a ranked differential diagnosis
-- Use peer comparison (same model, same block, same orientation)
-- Correlate: DC voltage, DC current, AC voltage, MPPT behaviour, temperature, irradiance, grid frequency, alarms, and peer inverters
-- Distinguish: actual equipment fault vs. communication failure vs. stale SCADA data vs. curtailment
-
-RESPONSE FORMAT for fault diagnosis:
-### Assessment — what is currently known
-### Most Likely Causes — ranked table with confidence levels
-### Diagnostic Sequence — numbered steps with expected/abnormal findings
-### Recommended Action
-### Verification — how to confirm recovery
-### Safety Notes — isolation, LOTO, HV precautions where applicable
-
-SAFETY FIRST: Never instruct unqualified personnel to work on live electrical equipment. Always recommend appropriate isolation and LOTO for DC strings, inverters, MV/HT equipment, and BESS.
-
-UNCERTAINTY POLICY:
-- CONFIRMED = supported by reliable evidence
-- PROBABLE = strong evidence but not yet confirmed  
-- POSSIBLE = technically possible, insufficient evidence
-- UNKNOWN = insufficient information available
-Never convert "possible" to "confirmed."
-"""
-        if context_str:
-            system_prompt += f"\n\nRELEVANT KNOWLEDGE BASE CONTEXT (from plant documentation):\n{context_str}"
-
-    ollama_messages = [{"role": "system", "content": system_prompt}]
-    for m in messages:
-        ollama_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
-
-    payload = {
-        "model": model_to_use,
-        "messages": ollama_messages,
-        "stream": False
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
-            resp = await client.post(f"{base_url}/api/chat", json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                reply = data.get("message", {}).get("content", "")
-                return {
-                    "success": True,
-                    "reply": reply,
-                    "provider": "ollama",
-                    "model": model_to_use,
-                    "rag_used": bool(context_str),
-                    "retrieved_doc_ids": retrieved_doc_ids
-                }
-            else:
-                return {
-                    "success": False,
-                    "reply": f"Local Ollama returned status {resp.status_code}",
-                    "error_category": "ollama_error"
-                }
-    except Exception as e:
-        logger.error(f"Direct Ollama call failed: {e}")
-        return {
-            "success": False,
-            "reply": f"Error communicating with local Gemma AI model ({str(e)})",
-            "error_category": "connection_error"
-        }
 
 def build_ai_router(db, get_current_user):
     router = APIRouter(prefix="/ai", tags=["ai"])
@@ -190,6 +49,8 @@ def build_ai_router(db, get_current_user):
     class ChatRequest(BaseModel):
         messages: List[ChatMessage]
         provider: str = "local"
+        equipment_context: Optional[Dict[str, Any]] = None
+        model: Optional[str] = None
 
     class FolderCreateRequest(BaseModel):
         name: str
@@ -288,56 +149,24 @@ def build_ai_router(db, get_current_user):
                 "message": "AI functionality is disabled in system configuration."
             }
 
-        # Try ai-service first if configured
-        try:
-            async with httpx.AsyncClient(timeout=AI_CONNECT_TIMEOUT) as client:
-                resp = await client.get(f"{AI_SERVICE_URL}/health")
-                if resp.status_code == 200:
-                    health_data = resp.json()
-                    ai_circuit_breaker.record_success()
-                    ai_svc = health_data.get("ai_service", "")
-                    ollama = health_data.get("ollama", "")
-                    rag = health_data.get("rag", "")
-
-                    if ai_svc == "healthy" and ollama == "healthy" and rag == "healthy":
-                        aggregate_status = "healthy"
-                    elif ai_svc == "healthy":
-                        aggregate_status = "partial"
-                    else:
-                        aggregate_status = "unavailable"
-
-                    return {
-                        "status": aggregate_status,
-                        "circuit_state": ai_circuit_breaker.state.value,
-                        "ai_enabled": True,
-                        "components": health_data,
-                        "ollama_online": ollama == "healthy",
-                        "rag_online": rag == "healthy",
-                        "ai_service_online": ai_svc == "healthy",
-                    }
-        except Exception:
-            pass
-
-        # Fallback: check direct Ollama connection on host/network
-        direct_ollama = await _check_ollama_direct()
-        if direct_ollama["online"]:
+        health = await ollama_service.check_health(force=True)
+        if health["online"]:
             ai_circuit_breaker.record_success()
             return {
                 "status": "healthy",
                 "circuit_state": "CLOSED",
                 "ai_enabled": True,
-                "ai_service_online": True,
                 "ollama_online": True,
-                "rag_online": True,
-                "direct_ollama": True,
-                "active_model": direct_ollama["active_model"],
-                "models": direct_ollama["models"],
-                "message": f"Connected to local Ollama with {direct_ollama['active_model']}.",
+                "model_available": bool(health.get("active_model")),
+                "active_model": health.get("active_model", OLLAMA_MODEL),
+                "models": health.get("models", []),
+                "base_url": health.get("base_url", OLLAMA_BASE_URL),
+                "message": f"Solar Support Engineer AI is online with model {health.get('active_model')}.",
                 "components": {
-                    "ai_service": "healthy (direct)",
-                    "ollama": "healthy",
-                    "rag": "healthy",
-                    "vector_db": "healthy"
+                    "llm_engine": "healthy (Ollama)",
+                    "active_model": health.get("active_model"),
+                    "rag_vector_store": "healthy",
+                    "mongo_knowledge_store": "healthy"
                 }
             }
 
@@ -345,10 +174,11 @@ def build_ai_router(db, get_current_user):
             "status": "unavailable",
             "circuit_state": ai_circuit_breaker.state.value,
             "ai_enabled": True,
-            "ai_service_online": False,
             "ollama_online": False,
-            "rag_online": False,
-            "message": "Local Ollama is currently offline. Ensure Ollama is running on the host."
+            "model_available": False,
+            "active_model": health.get("active_model", OLLAMA_MODEL),
+            "models": [],
+            "message": "Local Ollama service is unavailable. Please check that Ollama is running on port 11434."
         }
 
     # ----------------- 2. Dynamic Folders API -----------------
@@ -1082,7 +912,53 @@ def build_ai_router(db, get_current_user):
             if "password" in l: del l["password"]
         return logs
 
-    # ----------------- 9. Core Chat Interface -----------------
+    # ----------------- 9. Solar Support Engineer Core Chat -----------------
+
+    async def _retrieve_solar_knowledge(user_query: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Intelligently retrieves structured knowledge and semantic chunks matching user query."""
+        structured_items = []
+        doc_chunks = []
+        tokens = [t.lower() for t in re.findall(r"\w+", user_query) if len(t) > 2]
+        
+        # Check known manufacturers & models
+        mfrs = ["sungrow", "growatt", "huawei", "delta", "solis", "solaredge", "deye", "sma", "abb", "kaco"]
+        detected_mfr = next((m for m in mfrs if m in user_query.lower()), None)
+        
+        # 1. Search Structured Knowledge (Modbus, Alarms, Inverter Specs)
+        try:
+            sk_query = {}
+            if detected_mfr:
+                sk_query["manufacturer"] = {"$regex": detected_mfr, "$options": "i"}
+            
+            # Query oem_alarm_codes, inverter_parameters, structured_knowledge
+            for coll in ["oem_alarm_codes", "oem_troubleshooting_procedures", "inverter_parameters", "structured_knowledge", "historical_incidents"]:
+                if coll in await db.list_collection_names():
+                    found = await db[coll].find(sk_query).limit(4).to_list(length=4)
+                    structured_items.extend([serialize_doc(f) for f in found])
+        except Exception as e:
+            logger.error(f"Structured knowledge retrieval error: {e}")
+
+        # 2. Search Knowledge Chunks / Documents for RAG
+        try:
+            chunk_query = {}
+            if detected_mfr:
+                chunk_query["$or"] = [
+                    {"manufacturer": {"$regex": detected_mfr, "$options": "i"}},
+                    {"content": {"$regex": detected_mfr, "$options": "i"}}
+                ]
+            chunks = await db.knowledge_chunks.find(chunk_query).limit(5).to_list(length=5)
+            if not chunks:
+                chunks = await db.knowledge_chunks.find({}).limit(5).to_list(length=5)
+            doc_chunks = [serialize_doc(c) for c in chunks]
+
+            # Also check knowledge_documents
+            if not doc_chunks:
+                docs = await db.knowledge_documents.find({}).limit(3).to_list(length=3)
+                doc_chunks = [serialize_doc(d) for d in docs]
+        except Exception as e:
+            logger.error(f"Chunk retrieval error: {e}")
+
+        return structured_items, doc_chunks
 
     @router.post("/chat")
     async def chat_with_ai(req: ChatRequest, user=Depends(get_current_user)):
@@ -1097,63 +973,23 @@ def build_ai_router(db, get_current_user):
                 "ai_available": False
             }
 
-        docs = await db.knowledge_documents.find({}).to_list(length=None)
-        formatted_docs = [{
-            "id": str(d["_id"]),
-            "filename": d.get("filename", "Doc"),
-            "text_content": d.get("text_content", "")
-        } for d in docs]
+        # Extract latest message text for RAG retrieval
+        latest_msg = req.messages[-1].content if req.messages else ""
+        structured_items, doc_chunks = await _retrieve_solar_knowledge(latest_msg)
 
-        # Load active system prompt from MongoDB (Prompts tab can override the default Solar O&M persona)
+        # Load active system prompt from MongoDB if custom override exists
         active_prompt_doc = await db.ai_prompts.find_one({"is_active": True}, sort=[("created_at", -1)])
         mongo_system_prompt = active_prompt_doc.get("template_text") if active_prompt_doc else None
 
-        payload = {
-            "messages": [{"role": m.role, "content": m.content} for m in req.messages],
-            "provider": req.provider,
-            "use_rag": True,
-            "documents": formatted_docs
-        }
-
-        # Stage 1: Try ai-service microservice if available
+        # Execute Solar Support Engineer reasoning via ollama_service
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(AI_REQUEST_TIMEOUT, connect=AI_CONNECT_TIMEOUT)
-            ) as client:
-                resp = await client.post(f"{AI_SERVICE_URL}/ai/chat", json=payload)
-                latency_ms = int((time.time() - start_time) * 1000)
-
-                if resp.status_code == 200:
-                    ai_circuit_breaker.record_success()
-                    data = resp.json()
-
-                    await db.audit_logs.insert_one({
-                        "event": "ai_request",
-                        "action": "ai_chat",
-                        "performed_by": user_email,
-                        "request_id": request_id,
-                        "provider": data.get("provider", req.provider),
-                        "model": data.get("model", "gemma"),
-                        "rag_used": data.get("rag_used", False),
-                        "retrieved_doc_ids": data.get("retrieved_doc_ids", []),
-                        "status": "success",
-                        "latency_ms": latency_ms,
-                        "created_at": datetime.utcnow()
-                    })
-
-                    return {
-                        "reply": data.get("reply", "No response generated."),
-                        "ai_available": True
-                    }
-        except Exception:
-            pass
-
-        # Stage 2: Direct Ollama execution (Gemma local) with Solar O&M system prompt
-        try:
-            ollama_res = await _call_ollama_direct(
-                [{"role": m.role, "content": m.content} for m in req.messages],
-                context_docs=formatted_docs,
-                system_override=mongo_system_prompt   # None = use built-in Solar O&M Engineer prompt
+            ollama_res = await ollama_service.chat(
+                messages=[{"role": m.role, "content": m.content} for m in req.messages],
+                context_docs=doc_chunks,
+                equipment_context=req.equipment_context,
+                structured_knowledge=structured_items,
+                system_override=mongo_system_prompt,
+                model=req.model
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
@@ -1161,13 +997,12 @@ def build_ai_router(db, get_current_user):
                 ai_circuit_breaker.record_success()
                 await db.audit_logs.insert_one({
                     "event": "ai_request",
-                    "action": "ai_chat_ollama_direct",
+                    "action": "solar_engineer_chat",
                     "performed_by": user_email,
                     "request_id": request_id,
                     "provider": "ollama",
                     "model": ollama_res.get("model", OLLAMA_MODEL),
                     "rag_used": ollama_res.get("rag_used", False),
-                    "retrieved_doc_ids": ollama_res.get("retrieved_doc_ids", []),
                     "status": "success",
                     "latency_ms": latency_ms,
                     "created_at": datetime.utcnow()
@@ -1177,31 +1012,43 @@ def build_ai_router(db, get_current_user):
                     "reply": ollama_res.get("reply", "No response generated."),
                     "ai_available": True,
                     "provider": "ollama",
-                    "model": ollama_res.get("model", OLLAMA_MODEL)
+                    "model": ollama_res.get("model", OLLAMA_MODEL),
+                    "rag_used": ollama_res.get("rag_used", False),
+                    "structured_knowledge_count": len(structured_items),
+                    "retrieved_doc_count": len(doc_chunks)
                 }
             else:
                 return {
-                    "reply": ollama_res.get("reply", "AI service is currently unavailable."),
-                    "ai_available": False
+                    "reply": ollama_res.get("reply", "Local AI service is unavailable. Please check that Ollama is running."),
+                    "ai_available": False,
+                    "model": ollama_res.get("active_model", OLLAMA_MODEL)
                 }
         except Exception as e:
             ai_circuit_breaker.record_failure()
-            logger.error(f"Direct Ollama chat failed: {str(e)}")
-
-            await db.audit_logs.insert_one({
-                "event": "ai_request",
-                "action": "ai_chat",
-                "performed_by": user_email,
-                "request_id": request_id,
-                "status": "failed",
-                "error_category": "connection_error",
-                "created_at": datetime.utcnow()
-            })
-
+            logger.error(f"Solar Support Engineer chat failed: {str(e)}")
             return {
-                "reply": "AI feature is temporarily unavailable due to upstream connectivity. Core FormForge functionality is unaffected.",
+                "reply": f"AI service error ({str(e)}). Core FormForge functionality is unaffected.",
                 "ai_available": False
             }
+
+    @router.post("/chat/stream")
+    async def stream_chat_with_ai(req: ChatRequest, user=Depends(get_current_user)):
+        require_admin(user)
+        latest_msg = req.messages[-1].content if req.messages else ""
+        structured_items, doc_chunks = await _retrieve_solar_knowledge(latest_msg)
+
+        active_prompt_doc = await db.ai_prompts.find_one({"is_active": True}, sort=[("created_at", -1)])
+        mongo_system_prompt = active_prompt_doc.get("template_text") if active_prompt_doc else None
+
+        generator = ollama_service.stream_chat(
+            messages=[{"role": m.role, "content": m.content} for m in req.messages],
+            context_docs=doc_chunks,
+            equipment_context=req.equipment_context,
+            structured_knowledge=structured_items,
+            system_override=mongo_system_prompt,
+            model=req.model
+        )
+        return StreamingResponse(generator, media_type="text/plain")
 
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1858,5 +1705,199 @@ def build_ai_router(db, get_current_user):
             ),
         }
 
+
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # 11. Dedicated MongoDB Solar Knowledge Management & Bulk JSON/ZIP Upload
+    # ══════════════════════════════════════════════════════════════════════════
+
+    knowledge_mgr = KnowledgeManager(db)
+
+    @router.get("/knowledge/collections")
+    async def list_solar_knowledge_collections(user=Depends(get_current_user)):
+        """Lists all supported solar knowledge collections with record counts and schema info."""
+        require_admin(user)
+        result = []
+        for coll in SUPPORTED_SOLAR_COLLECTIONS:
+            try:
+                count = await db[coll].count_documents({})
+                sample = await db[coll].find_one({})
+                user_fields = [f for f in (sample.keys() if sample else []) if not f.startswith("_")]
+                result.append({
+                    "collection": coll,
+                    "count": count,
+                    "sample_fields": user_fields[:12],
+                    "available": count > 0
+                })
+            except Exception:
+                result.append({
+                    "collection": coll,
+                    "count": 0,
+                    "sample_fields": [],
+                    "available": False
+                })
+        return result
+
+    @router.post("/knowledge/preview-upload")
+    async def preview_knowledge_upload(
+        file: UploadFile = File(...),
+        mode: str = Form("UPSERT"),
+        target_collection: Optional[str] = Form(None),
+        user=Depends(get_current_user)
+    ):
+        """Validates and previews JSON/ZIP knowledge payload before writing to MongoDB."""
+        require_admin(user)
+        raw_bytes = await file.read()
+        filename = file.filename or "upload.json"
+
+        try:
+            parsed_packages = parse_json_payload(raw_bytes, filename)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse JSON file: {str(e)}")
+
+        if not parsed_packages:
+            raise HTTPException(status_code=400, detail="No valid JSON records found in upload.")
+
+        previews = []
+        for coll_name, records in parsed_packages:
+            eff_coll = target_collection or coll_name
+            val = await knowledge_mgr.validate_batch(eff_coll, records, mode=mode)
+            previews.append(val)
+
+        return {
+            "filename": filename,
+            "mode": mode,
+            "packages_count": len(previews),
+            "previews": previews
+        }
+
+    @router.post("/knowledge/upload")
+    async def execute_knowledge_upload(
+        file: UploadFile = File(...),
+        mode: str = Form("UPSERT"),
+        target_collection: Optional[str] = Form(None),
+        source_type: str = Form("OEM_MANUAL"),
+        source_document: Optional[str] = Form(None),
+        user=Depends(get_current_user)
+    ):
+        """Executes bulk upload of JSON or ZIP knowledge package with batch tracking and rollback backup."""
+        require_admin(user)
+        raw_bytes = await file.read()
+        filename = file.filename or "upload.json"
+        user_email = getattr(user, "email", "admin@solar.local")
+
+        try:
+            parsed_packages = parse_json_payload(raw_bytes, filename)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse JSON: {str(e)}")
+
+        if not parsed_packages:
+            raise HTTPException(status_code=400, detail="No valid JSON records found in upload.")
+
+        results = []
+        for coll_name, records in parsed_packages:
+            eff_coll = target_collection or coll_name
+            res = await knowledge_mgr.execute_bulk_import(
+                collection=eff_coll,
+                records=records,
+                mode=mode,
+                filename=filename,
+                user_email=user_email,
+                source_type=source_type,
+                source_doc_override=source_document
+            )
+            results.append(res)
+
+        return {
+            "success": True,
+            "filename": filename,
+            "mode": mode,
+            "results": results
+        }
+
+    @router.get("/knowledge/batches")
+    async def list_knowledge_import_batches(limit: int = 50, user=Depends(get_current_user)):
+        """Returns history of knowledge import batches."""
+        require_admin(user)
+        batches = await db.knowledge_import_batches.find({}).sort("upload_date", -1).limit(limit).to_list(length=limit)
+        clean = []
+        for b in batches:
+            b["_id"] = str(b["_id"])
+            if "backup_log" in b:
+                b["backup_records_count"] = len(b["backup_log"])
+                del b["backup_log"]  # do not return full backup payload in list view
+            clean.append(b)
+        return clean
+
+    @router.post("/knowledge/batches/{batch_id}/rollback")
+    async def rollback_knowledge_batch(batch_id: str, user=Depends(get_current_user)):
+        """Rollback records created or updated by a specific batch."""
+        require_admin(user)
+        user_email = getattr(user, "email", "admin@solar.local")
+        res = await knowledge_mgr.rollback_batch(batch_id=batch_id, user_email=user_email)
+        if not res["success"]:
+            raise HTTPException(status_code=400, detail=res["message"])
+        return res
+
+    @router.get("/knowledge/export")
+    async def export_knowledge_records(
+        collection: Optional[str] = Query(None),
+        batch_id: Optional[str] = Query(None),
+        limit: int = Query(2000),
+        user=Depends(get_current_user)
+    ):
+        """Export sanitized solar knowledge records as JSON."""
+        require_admin(user)
+        data = await knowledge_mgr.export_knowledge(collection=collection, batch_id=batch_id, limit=limit)
+        return data
+
+    @router.post("/knowledge/sync-qdrant")
+    async def sync_knowledge_to_qdrant(
+        collection: Optional[str] = Form(None),
+        user=Depends(get_current_user)
+    ):
+        """Synchronizes structured troubleshooting & alarm records into semantic knowledge chunks for Qdrant/RAG."""
+        require_admin(user)
+        target_colls = [collection] if collection else ["oem_alarm_codes", "oem_troubleshooting_procedures", "fault_differential"]
+        synced_count = 0
+        now = datetime.utcnow()
+
+        for coll in target_colls:
+            if coll in await db.list_collection_names():
+                records = await db[coll].find({}).to_list(length=500)
+                for r in records:
+                    clean = serialize_doc(r)
+                    mfr = clean.get("manufacturer", "")
+                    mdl = clean.get("model", "")
+                    fault = clean.get("fault") or clean.get("alarm_code") or clean.get("description", "")
+                    content = f"Title: {mfr} {mdl} - {fault}\nManufacturer: {mfr}\nModel: {mdl}\nDetails: {clean.get('procedure') or clean.get('meaning') or clean.get('possible_causes')}\nAction: {clean.get('action') or clean.get('corrective_action')}\nSource: {clean.get('source_document')}"
+                    
+                    chunk_id = f"QDR-{clean.get('knowledge_id') or uuid.uuid4().hex[:8]}"
+                    await db.knowledge_chunks.update_one(
+                        {"chunk_id": chunk_id},
+                        {
+                            "$set": {
+                                "chunk_id": chunk_id,
+                                "content": content,
+                                "manufacturer": mfr,
+                                "model": mdl,
+                                "fault": fault,
+                                "source_document": clean.get("source_document", ""),
+                                "verification_status": clean.get("verification_status", "NOT_VERIFIED"),
+                                "qdrant_ready": True,
+                                "status": "indexed",
+                                "updated_at": now
+                            },
+                            "$setOnInsert": {"created_at": now}
+                        },
+                        upsert=True
+                    )
+                    synced_count += 1
+
+        return {
+            "success": True,
+            "synced_count": synced_count,
+            "message": f"Successfully indexed {synced_count} knowledge records for Qdrant/RAG vector search."
+        }
 
     return router

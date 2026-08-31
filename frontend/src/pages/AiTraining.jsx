@@ -155,6 +155,23 @@ export default function AiTrainingPage() {
   const [mongoImportResult, setMongoImportResult] = useState(null);
   const [mongoImporting, setMongoImporting] = useState(false);
 
+  // ── Dedicated Solar Knowledge Management State ──
+  const [knowledgeCollections, setKnowledgeCollections] = useState([]);
+  const [knowledgeBatches, setKnowledgeBatches] = useState([]);
+  const [selectedBulkFile, setSelectedBulkFile] = useState(null);
+  const [bulkUploadMode, setBulkUploadMode] = useState("UPSERT");
+  const [bulkTargetCollection, setBulkTargetCollection] = useState("");
+  const [bulkSourceType, setBulkSourceType] = useState("OEM_MANUAL");
+  const [bulkSourceDoc, setBulkSourceDoc] = useState("");
+  const [bulkValidationPreview, setBulkValidationPreview] = useState(null);
+  const [isValidatingBulk, setIsValidatingBulk] = useState(false);
+  const [isUploadingBulk, setIsUploadingBulk] = useState(false);
+  const [bulkUploadResult, setBulkUploadResult] = useState(null);
+  const [activeKnowledgeSubTab, setActiveKnowledgeSubTab] = useState("upload");
+  const [isRollingBackBatchId, setIsRollingBackBatchId] = useState(null);
+  const [isSyncingQdrant, setIsSyncingQdrant] = useState(false);
+  const bulkFileInputRef = useRef(null);
+
 
   useEffect(() => {
     fetchAllData();
@@ -167,7 +184,7 @@ export default function AiTrainingPage() {
   const fetchAllData = async () => {
     setLoadingDocs(true);
     try {
-      const [foldersRes, collectionsRes, docsRes, chunksRes, skRes, casesRes, fbRes, modelsRes, promptsRes, logsRes, statusRes] = await Promise.allSettled([
+      const [foldersRes, collectionsRes, docsRes, chunksRes, skRes, casesRes, fbRes, modelsRes, promptsRes, logsRes, statusRes, kmCollsRes, kmBatchesRes] = await Promise.allSettled([
         api.get("/ai/folders"),
         api.get("/ai/collections"),
         api.get("/ai/documents"),
@@ -196,6 +213,8 @@ export default function AiTrainingPage() {
       }
       if (logsRes.status === "fulfilled") setAuditLogsList(logsRes.value.data || []);
       if (statusRes.status === "fulfilled") setAiStatus(statusRes.value.data);
+      if (kmCollsRes?.status === "fulfilled") setKnowledgeCollections(kmCollsRes.value.data || []);
+      if (kmBatchesRes?.status === "fulfilled") setKnowledgeBatches(kmBatchesRes.value.data || []);
 
     } catch (err) {
       toast.error("Failed to sync AI knowledge base data");
@@ -478,6 +497,128 @@ export default function AiTrainingPage() {
     }
   };
 
+  // ── DEDICATED SOLAR KNOWLEDGE MANAGEMENT HANDLERS ──
+  const fetchKnowledgeData = async () => {
+    try {
+      const [collsRes, batchesRes] = await Promise.allSettled([
+        api.get("/ai/knowledge/collections"),
+        api.get("/ai/knowledge/batches")
+      ]);
+      if (collsRes.status === "fulfilled") setKnowledgeCollections(collsRes.value.data || []);
+      if (batchesRes.status === "fulfilled") setKnowledgeBatches(batchesRes.value.data || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleBulkFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedBulkFile(file);
+      setBulkValidationPreview(null);
+      setBulkUploadResult(null);
+    }
+  };
+
+  const handleValidateBulk = async () => {
+    if (!selectedBulkFile) return toast.error("Please select a JSON or ZIP file to validate");
+    setIsValidatingBulk(true);
+    setBulkValidationPreview(null);
+    setBulkUploadResult(null);
+
+    const formData = new FormData();
+    formData.append("file", selectedBulkFile);
+    formData.append("mode", bulkUploadMode);
+    if (bulkTargetCollection) formData.append("target_collection", bulkTargetCollection);
+
+    try {
+      const res = await api.post("/ai/knowledge/preview-upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+      setBulkValidationPreview(res.data);
+      toast.success(`Validation complete: ${res.data.previews?.[0]?.total_records || 0} records parsed`);
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Validation failed");
+    } finally {
+      setIsValidatingBulk(false);
+    }
+  };
+
+  const handleExecuteBulkUpload = async () => {
+    if (!selectedBulkFile) return toast.error("Please select a JSON or ZIP file");
+    setIsUploadingBulk(true);
+    setBulkUploadResult(null);
+
+    const formData = new FormData();
+    formData.append("file", selectedBulkFile);
+    formData.append("mode", bulkUploadMode);
+    if (bulkTargetCollection) formData.append("target_collection", bulkTargetCollection);
+    formData.append("source_type", bulkSourceType);
+    if (bulkSourceDoc) formData.append("source_document", bulkSourceDoc);
+
+    try {
+      const res = await api.post("/ai/knowledge/upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+      setBulkUploadResult(res.data);
+      const firstRes = res.data.results?.[0];
+      toast.success(`Import completed! Inserted: ${firstRes?.inserted || 0}, Updated: ${firstRes?.updated || 0}`);
+      fetchKnowledgeData();
+      fetchAllData();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload failed");
+    } finally {
+      setIsUploadingBulk(false);
+    }
+  };
+
+  const handleRollbackBatch = async (batchId) => {
+    if (!window.confirm(`Are you sure you want to rollback batch ${batchId}? Inserted records will be removed and updated records restored.`)) return;
+    setIsRollingBackBatchId(batchId);
+    try {
+      const res = await api.post(`/ai/knowledge/batches/${batchId}/rollback`);
+      toast.success(res.data.message || "Batch rolled back successfully");
+      fetchKnowledgeData();
+      fetchAllData();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Rollback failed");
+    } finally {
+      setIsRollingBackBatchId(null);
+    }
+  };
+
+  const handleExportKnowledge = async (collectionName) => {
+    try {
+      const url = collectionName ? `/ai/knowledge/export?collection=${collectionName}` : "/ai/knowledge/export";
+      const res = await api.get(url);
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(res.data, null, 2));
+      const downloadAnchor = document.createElement("a");
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `${collectionName || "solar_knowledge_full"}_export.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      toast.success(`Exported ${res.data.total_records || 0} records!`);
+    } catch (err) {
+      toast.error("Export failed");
+    }
+  };
+
+  const handleSyncQdrant = async (collectionName) => {
+    setIsSyncingQdrant(true);
+    try {
+      const formData = new FormData();
+      if (collectionName) formData.append("collection", collectionName);
+      const res = await api.post("/ai/knowledge/sync-qdrant", formData);
+      toast.success(res.data.message || "Synced to Qdrant vector index!");
+      fetchAllData();
+    } catch (err) {
+      toast.error("Qdrant sync failed");
+    } finally {
+      setIsSyncingQdrant(false);
+    }
+  };
+
   // ── MONGODB DATA PULL HANDLERS ──
   const fetchMongoCollections = async () => {
     setMongoLoadingCollections(true);
@@ -587,6 +728,7 @@ export default function AiTrainingPage() {
     { id: "dashboard", label: "AI Dashboard", icon: LayoutDashboard },
     { id: "kb", label: "Knowledge Base", icon: BookOpen, badge: documents.length },
     { id: "structured", label: "Structured Knowledge", icon: Table, badge: structuredKnowledgeList.length },
+    { id: "knowledge-mgmt", label: "Knowledge Management (Bulk Upload)", icon: Sliders, badge: knowledgeBatches.length },
     { id: "cases", label: "Training Cases", icon: CheckCircle2, badge: trainingCasesList.length },
     { id: "feedback", label: "Feedback & Corrections", icon: MessageSquareQuote, badge: feedbackList.length },
     { id: "mongo-pull", label: "MongoDB Data Pull", icon: Database },
