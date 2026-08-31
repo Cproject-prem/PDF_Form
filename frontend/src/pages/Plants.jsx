@@ -480,10 +480,10 @@ function PlantDetail({ siteCode }) {
     { title: "Location", icon: <MapPin className="w-4 h-4" />,
       keys: ["state", "district", "location", "latitude", "longitude"] },
     { title: "Vendor & customer", icon: <Building2 className="w-4 h-4" />,
-      keys: ["vendor_name", "vendor_email", "vendor_login_user", "customer_name",
+      keys: ["vendor_name", "vendor_email", "cc_email", "vendor_login_user", "customer_name",
              "cluster", "cluster_manager_name"] },
-    { title: "Approver", icon: <Mail className="w-4 h-4" />,
-      keys: ["approver_email"] },
+    { title: "Approver & Contacts", icon: <Mail className="w-4 h-4" />,
+      keys: ["approver_email", "vendor_approver_l1", "vendor_approver_l2", "cc_email"] },
     { title: "Timeline", icon: <Calendar className="w-4 h-4" />,
       keys: ["commission_date", "om_start_date", "warranty_end_date"] },
   ];
@@ -589,7 +589,7 @@ function PlantDetail({ siteCode }) {
                 key: k,
                 label: labelsByKey[k] || humanize(k),
                 value: p[k],
-                mono: k === "approver_email" || k === "vendor_email",
+                mono: k === "approver_email" || k === "vendor_email" || k === "vendor_approver_l1" || k === "vendor_approver_l2" || k === "cc_email",
               }));
             if (rows.length === 0) return null;
             return (
@@ -894,9 +894,9 @@ function EditPlantDialog({ open, onOpenChange, site, columns, onSaved, onColumns
       "customer_name", "site_status", "region"] },
     { title: "Capacity",  keys: ["ac_capacity", "dc_capacity", "inverter_capacity"] },
     { title: "Location",  keys: ["state", "district", "location", "latitude", "longitude"] },
-    { title: "Vendor",    keys: ["vendor_name", "vendor_email", "vendor_login_user",
+    { title: "Vendor",    keys: ["vendor_name", "vendor_email", "cc_email", "vendor_login_user",
       "cluster", "cluster_manager_name"] },
-    { title: "Approver",  keys: ["approver_email"] },
+    { title: "Approver & Contacts",  keys: ["approver_email", "vendor_approver_l1", "vendor_approver_l2", "cc_email"] },
     { title: "Timeline",  keys: ["commission_date", "om_start_date", "warranty_end_date"] },
     { title: "Notes",     keys: ["remarks"] },
   ];

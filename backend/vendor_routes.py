@@ -99,7 +99,8 @@ SITE_COLUMNS = [
     "site_name", "site_code", "asset_id", "plant_name", "customer_name",
     "state", "district", "location", "latitude", "longitude",
     "ac_capacity", "dc_capacity", "inverter_capacity",
-    "vendor_name", "vendor_login_user", "vendor_email",
+    "vendor_name", "vendor_login_user", "vendor_email", "cc_email",
+    "vendor_approver_l1", "vendor_approver_l2",
     "approver_email", "cluster_manager_name",
     "cluster", "region", "site_status",
     "commission_date", "om_start_date", "warranty_end_date",
@@ -124,6 +125,9 @@ SITE_COLUMN_LABELS = {
     "inverter_capacity": "Inverter Capacity (MW)",
     "vendor_name": "Vendor Name", "vendor_login_user": "Vendor Login User",
     "vendor_email": "Vendor Email",
+    "cc_email": "CC Email",
+    "vendor_approver_l1": "Vendor L1 Approver Email",
+    "vendor_approver_l2": "Vendor L2 Approver Email",
     "approver_email": "Approver Email",
     "cluster_manager_name": "Cluster Manager",
     "cluster": "Cluster", "region": "Region",
@@ -867,6 +871,9 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             "ac_capacity": 50, "dc_capacity": 65, "inverter_capacity": 50,
             "vendor_name": "SunOps Pvt Ltd", "vendor_login_user": "sunops@example.com",
             "vendor_email": "ops@sunops.example.com",
+            "cc_email": "manager@sunops.example.com",
+            "vendor_approver_l1": "l1.approver@sunops.example.com",
+            "vendor_approver_l2": "l2.approver@sunops.example.com",
             "cluster": "South-1", "region": "South",
             "site_status": "operational",
             "commission_date": "2023-04-01", "om_start_date": "2023-05-01",
@@ -931,6 +938,27 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         # also accept the raw keys as headers
         for c in cols:
             key_by_label[c["key"].lower()] = c["key"]
+        # common aliases for L1/L2 and CC emails
+        extra_aliases = {
+            "vendor l1 approver": "vendor_approver_l1",
+            "vendor l1 approver email": "vendor_approver_l1",
+            "vendor l1 email": "vendor_approver_l1",
+            "l1 approver": "vendor_approver_l1",
+            "l1 approver email": "vendor_approver_l1",
+            "l1 email": "vendor_approver_l1",
+            "vendor_l1_email": "vendor_approver_l1",
+            "vendor l2 approver": "vendor_approver_l2",
+            "vendor l2 approver email": "vendor_approver_l2",
+            "vendor l2 email": "vendor_approver_l2",
+            "l2 approver": "vendor_approver_l2",
+            "l2 approver email": "vendor_approver_l2",
+            "l2 email": "vendor_approver_l2",
+            "vendor_l2_email": "vendor_approver_l2",
+            "cc": "cc_email",
+            "cc email": "cc_email",
+            "cc_email": "cc_email",
+        }
+        key_by_label.update(extra_aliases)
         content = await file.read()
         rows: List[Dict[str, Any]] = []
         name = (file.filename or "").lower()
@@ -2124,6 +2152,9 @@ DEMO_SITES = [
      "latitude": 14.099, "longitude": 77.275,
      "ac_capacity": 50, "dc_capacity": 65, "inverter_capacity": 50,
      "vendor_name": "SunOps Pvt Ltd", "vendor_email": "ops@sunops.example.com",
+            "cc_email": "manager@sunops.example.com",
+            "vendor_approver_l1": "l1.approver@sunops.example.com",
+            "vendor_approver_l2": "l2.approver@sunops.example.com",
      "approver_email": "approver.alpha@example.com",
      "cluster": "South-1", "region": "South", "site_status": "operational",
      "cluster_manager_name": "Rahul Verma",
@@ -2144,6 +2175,9 @@ DEMO_SITES = [
      "latitude": 22.83, "longitude": 69.69,
      "ac_capacity": 25, "dc_capacity": 32, "inverter_capacity": 25,
      "vendor_name": "SunOps Pvt Ltd", "vendor_email": "ops@sunops.example.com",
+            "cc_email": "manager@sunops.example.com",
+            "vendor_approver_l1": "l1.approver@sunops.example.com",
+            "vendor_approver_l2": "l2.approver@sunops.example.com",
      "approver_email": "approver.charlie@example.com",
      "cluster": "West-1", "region": "West", "site_status": "commissioning",
      "cluster_manager_name": "Priya Sharma",

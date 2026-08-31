@@ -310,6 +310,12 @@ export default function SiteMasterPage() {
           headerName: c.label,
           headerTooltip: c.key === "vendor_email"
             ? "Multiple vendor contacts allowed — separate emails with a semicolon (;). Every listed user under the same vendor will get access to this site."
+            : c.key === "vendor_approver_l1"
+            ? "Vendor Level-1 Approver contact email."
+            : c.key === "vendor_approver_l2"
+            ? "Vendor Level-2 Approver contact email."
+            : c.key === "cc_email"
+            ? "Optional CC email notifications for site reports and updates."
             : undefined,
           editable: canEdit,
           filter: true,
