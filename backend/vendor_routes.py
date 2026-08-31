@@ -348,12 +348,11 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             raise HTTPException(403, "Admin role required")
 
     async def _require_master_data_editor(user) -> None:
-        """Only Super Admin may write to master data (sites, vendors, master tables).
-
-        This matches the spec: Admin can view but not edit Site/Vendor/Master Data.
-        """
-        if user.role != "super_admin":
-            raise HTTPException(403, "Only Super Admin can edit master data records.")
+        """Allow Super Admin and Admin (or user with access_override) to manage vendors/master data."""
+        user_role = getattr(user, "role", "")
+        has_override = getattr(user, "access_override", False)
+        if user_role not in ("super_admin", "admin") and not has_override:
+            raise HTTPException(403, "Admin role required to manage vendors and master data.")
 
     async def _require_site_editor(user) -> None:
         """Super Admin OR Admin may edit sites/site columns.
@@ -386,6 +385,7 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
         is present so nothing gets clobbered."""
         if not row:
             return row
+        row.pop("_id", None)
         n = row.get("name") or row.get("vendor_name") or ""
         e = row.get("email") or row.get("vendor_email") or ""
         row["name"] = n
@@ -409,15 +409,18 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
     async def create_vendor(body: VendorIn, user=Depends(get_current_user)):
         await _require_master_data_editor(user)
         doc = body.model_dump()
-        doc["vendor_id"] = doc.pop("vendor_id", None) or _gen("ven")
+        # Clean custom vendor_id / Scope Name if provided
+        custom_vid = (doc.pop("vendor_id", None) or "").strip()
+        doc["vendor_id"] = custom_vid or _gen("ven")
         doc["created_at"] = _now()
         doc["updated_at"] = doc["created_at"]
-        doc["created_by"] = user.user_id
+        doc["created_by"] = getattr(user, "user_id", None) or getattr(user, "id", None) or str(user)
         
         if await db.vendors.find_one({"vendor_id": doc["vendor_id"]}):
             raise HTTPException(409, f"Vendor ID '{doc['vendor_id']}' is already in use.")
             
         await db.vendors.insert_one(doc)
+        doc.pop("_id", None)
         return _normalize_vendor(doc)
 
     @vendors.get("/{vid}")
@@ -506,7 +509,8 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             "assignments": {"forms": [], "pdf_forms": [], "sites": [], "workflows": []},
         }
         await db.users.insert_one(dict(doc))
-        out = {k: v for k, v in doc.items() if k != "password_hash"}
+        doc.pop("_id", None)
+        out = {k: v for k, v in doc.items() if k != "password_hash" and k != "_id"}
         out["initial_password"] = pwd if not body.password else None
         return out
 
