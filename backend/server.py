@@ -1477,6 +1477,14 @@ async def public_get_form(slug: str):
         raise HTTPException(403, "Form is not published")
     return doc
 
+@api.get("/public/forms/{slug}/auto-numbers")
+async def public_form_auto_numbers(slug: str):
+    form = await db.forms.find_one({"slug": slug, "is_deleted": False}, {"_id": 0})
+    if not form:
+        raise HTTPException(404, "Form not found")
+    from sequence_service import get_auto_number_previews
+    return await get_auto_number_previews(db, form["form_id"], form.get("fields", []))
+
 @api.post("/public/forms/{slug}/submit")
 async def public_submit(slug: str, body: SubmissionIn, request: Request,
                         viewer: User = Depends(get_current_user)):
@@ -1486,6 +1494,12 @@ async def public_submit(slug: str, body: SubmissionIn, request: Request,
         raise HTTPException(404, "Form not found")
     if form.get("status") != "published":
         raise HTTPException(403, "Form is not accepting submissions")
+
+    # auto-generate next sequence numbers for auto_number enabled fields
+    from sequence_service import resolve_auto_numbers_for_submission
+    body.values = await resolve_auto_numbers_for_submission(
+        db, form["form_id"], form.get("fields", []), body.values
+    )
     # required-field validation
     for f in form.get("fields", []):
         if f.get("required") and f["type"] not in ("heading", "paragraph", "divider"):

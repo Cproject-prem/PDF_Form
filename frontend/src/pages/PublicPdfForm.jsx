@@ -35,7 +35,20 @@ export default function PublicPdfFormPage() {
   useEffect(() => {
     if (!me) return;
     api.get(`/public/pdf-forms/${slug}`)
-      .then((r) => setTpl(r.data))
+      .then(async (r) => {
+        const templateData = r.data;
+        setTpl(templateData);
+        // Pre-fetch auto numbers for any auto_number enabled fields
+        const hasAuto = (templateData.fields || []).some((f) => f.auto_number?.enabled);
+        if (hasAuto) {
+          try {
+            const autoRes = await api.get(`/public/pdf-forms/${slug}/auto-numbers`);
+            if (autoRes.data && Object.keys(autoRes.data).length > 0) {
+              setValues((prev) => ({ ...autoRes.data, ...prev }));
+            }
+          } catch {}
+        }
+      })
       .catch((e) => setError(e?.response?.data?.detail || "Form not found"));
   }, [slug, me]);
 

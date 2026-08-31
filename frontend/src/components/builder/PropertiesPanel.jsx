@@ -230,6 +230,106 @@ function GeneralTab({ field, update, isDisplay }) {
             </div>
             <Switch checked={!!field.read_only} onCheckedChange={(v) => update({ read_only: v })} data-testid="prop-readonly" />
           </div>
+
+          {(field.type === "number" || field.type === "short_text" || field.type === "auto_number") && (
+            <div className="pt-3 border-t border-slate-100 space-y-3" data-testid="prop-auto-number-section">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+                    Auto Number (Sequence)
+                  </div>
+                  <div className="text-xs text-slate-400">Auto-generate sequential numbers for each new submission</div>
+                </div>
+                <Switch
+                  checked={!!field.auto_number?.enabled}
+                  onCheckedChange={(enabled) => {
+                    const current = field.auto_number || {};
+                    update({
+                      auto_number: {
+                        enabled,
+                        mode: current.mode || (field.type === "number" ? "continuous" : "year_continuous"),
+                        start_from: current.start_from || 1,
+                        padding: current.padding || (current.mode === "continuous" ? 1 : 3),
+                      },
+                    });
+                  }}
+                  data-testid="prop-auto-number-toggle"
+                />
+              </div>
+
+              {field.auto_number?.enabled && (
+                <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-lg border border-slate-200 dark:border-slate-700 space-y-2.5 text-xs">
+                  <div>
+                    <Label className="text-[11px] font-medium text-slate-700 dark:text-slate-300">Format Option</Label>
+                    <select
+                      value={field.auto_number?.mode || "year_continuous"}
+                      onChange={(e) => {
+                        const mode = e.target.value;
+                        update({
+                          auto_number: {
+                            ...field.auto_number,
+                            mode,
+                            padding: mode === "year_continuous" ? 3 : (field.auto_number?.padding || 1),
+                          }
+                        });
+                      }}
+                      className="w-full h-8 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2 text-xs mt-1"
+                      data-testid="prop-auto-number-mode"
+                    >
+                      <option value="year_continuous">Current Year / Continuous Number (YYYY/NNN e.g. 2026/001)</option>
+                      <option value="continuous">Continuous Number (e.g. 1, 2, 3, 4, 5, 6...)</option>
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-[11px] font-medium text-slate-700 dark:text-slate-300">Start From</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={field.auto_number?.start_from ?? 1}
+                        onChange={(e) => update({
+                          auto_number: { ...field.auto_number, start_from: Math.max(1, parseInt(e.target.value) || 1) }
+                        })}
+                        className="h-8 text-xs mt-1 bg-white"
+                        data-testid="prop-auto-number-start"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-[11px] font-medium text-slate-700 dark:text-slate-300">Digit Padding</Label>
+                      <Input
+                        type="number"
+                        min="1"
+                        max="8"
+                        value={field.auto_number?.padding ?? (field.auto_number?.mode === "year_continuous" ? 3 : 1)}
+                        onChange={(e) => update({
+                          auto_number: { ...field.auto_number, padding: Math.max(1, parseInt(e.target.value) || 1) }
+                        })}
+                        className="h-8 text-xs mt-1 bg-white"
+                        data-testid="prop-auto-number-padding"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-2 rounded bg-blue-50/70 border border-blue-200 text-blue-900 text-[11px] font-mono flex items-center justify-between">
+                    <span className="text-slate-500 font-sans">Sample Next:</span>
+                    <span className="font-semibold text-blue-700">
+                      {field.auto_number?.mode === "year_continuous"
+                        ? `${new Date().getFullYear()}/${String(field.auto_number?.start_from || 1).padStart(field.auto_number?.padding || 3, "0")}`
+                        : String(field.auto_number?.start_from || 1).padStart(field.auto_number?.padding || 1, "0")
+                      }
+                      {" → "}
+                      {field.auto_number?.mode === "year_continuous"
+                        ? `${new Date().getFullYear()}/${String((field.auto_number?.start_from || 1) + 1).padStart(field.auto_number?.padding || 3, "0")}`
+                        : String((field.auto_number?.start_from || 1) + 1).padStart(field.auto_number?.padding || 1, "0")
+                      }
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </>

@@ -1066,6 +1066,14 @@ def build_pdf_router(db, get_current_user, get_optional_user,
                         headers={"Content-Disposition":
                                  f'inline; filename="{doc["original_filename"]}"'})
 
+    @public.get("/{slug}/auto-numbers")
+    async def public_pdf_auto_numbers(slug: str):
+        tpl = await db.pdf_templates.find_one({"slug": slug, "is_deleted": False}, {"_id": 0})
+        if not tpl:
+            raise HTTPException(404, "Form not found")
+        from sequence_service import get_auto_number_previews
+        return await get_auto_number_previews(db, tpl["template_id"], tpl.get("fields", []))
+
     @public.post("/{slug}/submit")
     async def public_submit(slug: str, body: PDFSubmissionIn, request: Request,
                             viewer=Depends(get_current_user)):
@@ -1081,6 +1089,12 @@ def build_pdf_router(db, get_current_user, get_optional_user,
                 v = body.values.get(f["id"])
                 if v is None or v == "" or (isinstance(v, list) and len(v) == 0):
                     raise HTTPException(400, f"'{f.get('label') or f['id']}' is required")
+        # auto-generate next sequence numbers for auto_number enabled fields
+        from sequence_service import resolve_auto_numbers_for_submission
+        body.values = await resolve_auto_numbers_for_submission(
+            db, tpl["template_id"], tpl.get("fields", []), body.values
+        )
+
         # generate completed PDF
         src = PDF_DIR / tpl["storage_filename"]
         sid = f"pdfsub_{uuid.uuid4().hex[:12]}"

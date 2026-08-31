@@ -64,9 +64,22 @@ export default function FieldRenderer({ field, value, onChange, mode = "fill", i
     case "number":
       return (
         <div className="space-y-1.5">
-          {renderLabel()}
-          <Input type="number" placeholder={field.placeholder || ""} value={value ?? ""}
-            disabled={disabled} onChange={(e) => onChange?.(e.target.value)} />
+          <div className="flex items-center justify-between">
+            {renderLabel()}
+            {field.auto_number?.enabled && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
+                <Sparkles className="w-2.5 h-2.5" /> Auto Sequence
+              </span>
+            )}
+          </div>
+          <Input
+            type={field.auto_number?.enabled && field.auto_number?.mode === "year_continuous" ? "text" : "number"}
+            placeholder={field.auto_number?.enabled ? "Auto generated on submit" : (field.placeholder || "")}
+            value={value ?? ""}
+            disabled={disabled || !!field.auto_number?.enabled}
+            readOnly={!!field.auto_number?.enabled}
+            onChange={(e) => onChange?.(e.target.value)}
+          />
           {renderDesc()}
         </div>
       );
