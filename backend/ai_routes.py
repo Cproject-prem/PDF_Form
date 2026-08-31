@@ -27,6 +27,7 @@ from rag_pipeline import (
     retrieve_and_rerank_chunks,
     build_grounded_solar_fault_prompt,
     generate_standard_fault_response,
+    validate_ai_response_text,
     QueryEntities
 )
 from knowledge_manager import (
@@ -828,6 +829,7 @@ def build_ai_router(db, get_current_user):
             except Exception as e:
                 generated_answer = f"Information retrieved from {len(final_chunks)} document chunks."
 
+        generated_answer = validate_ai_response_text(generated_answer, entities)
         gen_latency = int((time.time() - gen_start) * 1000)
 
         # ── Step 6: Construct Transparent Admin RAG Debug Payload ──
