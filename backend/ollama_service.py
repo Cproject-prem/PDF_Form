@@ -317,7 +317,7 @@ class OllamaService:
                         data = resp.json()
                         raw_reply = data.get("message", {}).get("content", "").strip()
                         
-                        # Intercept any cop-out refusal or empty confidence headers from model
+                        # Intercept any cop-out refusal, empty confidence headers, or generic greetings from model
                         cop_out_phrases = [
                             "unable to access external websites",
                             "cannot provide a definitive answer",
@@ -328,8 +328,12 @@ class OllamaService:
                             "## confidence\n\n**🟢 verified**"
                         ]
                         is_cop_out = any(phrase in raw_reply.lower() for phrase in cop_out_phrases) or (len(raw_reply.strip()) < 120 and "confidence" in raw_reply.lower())
+                        is_generic_greeting = (
+                            ("what can i do for you today" in raw_reply.lower() or "how can i assist you today" in raw_reply.lower() or "how can i help you today" in raw_reply.lower())
+                            and (entities.alarm_code or entities.symptom or entities.is_dc_ground_query or entities.single_string_anomaly)
+                        )
 
-                        if is_cop_out or not raw_reply:
+                        if is_cop_out or is_generic_greeting or not raw_reply:
                             raw_reply = generate_standard_fault_response(entities, structured_knowledge or [])
 
                         # Run strict engineering validation and sanitize any hallucinated ranges/assertions
