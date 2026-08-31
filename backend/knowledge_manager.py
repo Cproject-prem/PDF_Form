@@ -6,10 +6,24 @@ batch tracking, rollback, and JSON export.
 """
 
 import os
+import io
 import json
 import uuid
 import zipfile
+import tarfile
+import tempfile
+import subprocess
 import logging
+
+try:
+    import rarfile
+    # Point to unrar binary if available
+    for u_path in ["/usr/local/bin/unrar", "/usr/bin/unrar", "unrar"]:
+        if os.path.exists(u_path):
+            rarfile.UNRAR_TOOL = u_path
+            break
+except ImportError:
+    rarfile = None
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from bson import ObjectId
@@ -175,29 +189,148 @@ def auto_detect_collection(filename: str, json_content: Any) -> str:
     return "knowledge_chunks"
 
 
+def _safe_decode_bytes(b: bytes) -> str:
+    """Attempts decoding bytes across common encodings with graceful fallback."""
+    for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252", "iso-8859-1"]:
+        try:
+            return b.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return b.decode("utf-8", errors="replace")
+
+
+def _safe_parse_json_text(text: str, source_name: str = "") -> Optional[Any]:
+    """Parses JSON string supporting standard JSON (array/object) and JSON Lines (NDJSON)."""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        # Try JSON Lines / NDJSON parsing
+        records = []
+        for line in text.splitlines():
+            line_str = line.strip()
+            if line_str and not line_str.startswith("#"):
+                try:
+                    records.append(json.loads(line_str))
+                except Exception:
+                    continue
+        if records:
+            return records
+        raise ValueError(f"Could not parse valid JSON or JSONL from {source_name}")
+
+
 def parse_json_payload(raw_bytes: bytes, filename: str) -> List[Tuple[str, List[Dict[str, Any]]]]:
     """
-    Parses JSON bytes or ZIP archive containing JSONs.
+    Parses JSON bytes, ZIP, RAR, or TAR archives containing JSONs.
     Returns list of (target_collection, records_list).
     """
     results = []
+    fn_lower = filename.lower()
 
-    # Check if ZIP file
-    if filename.lower().endswith(".zip"):
-        import io
-        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as z:
-            for zip_fn in z.namelist():
-                if zip_fn.lower().endswith(".json") and not zip_fn.startswith("__MACOSX"):
-                    try:
-                        content = json.loads(z.read(zip_fn).decode("utf-8"))
-                        coll, recs = _extract_records_from_obj(content, zip_fn)
-                        if recs:
-                            results.append((coll, recs))
-                    except Exception as e:
-                        logger.error(f"Failed to parse {zip_fn} inside zip: {e}")
-    else:
-        # Standard JSON file
-        content = json.loads(raw_bytes.decode("utf-8"))
+    # 1. ZIP Archive
+    if fn_lower.endswith(".zip"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as z:
+                for zip_fn in z.namelist():
+                    if (zip_fn.lower().endswith(".json") or zip_fn.lower().endswith(".jsonl")) and not zip_fn.startswith("__MACOSX"):
+                        try:
+                            text = _safe_decode_bytes(z.read(zip_fn))
+                            content = _safe_parse_json_text(text, zip_fn)
+                            if content is not None:
+                                coll, recs = _extract_records_from_obj(content, zip_fn)
+                                if recs:
+                                    results.append((coll, recs))
+                        except Exception as e:
+                            logger.error(f"Failed to parse {zip_fn} inside zip: {e}")
+            if results:
+                return results
+        except Exception as e:
+            logger.warning(f"Zip extraction failed: {e}")
+
+    # 2. RAR Archive
+    if fn_lower.endswith(".rar"):
+        # Method A: rarfile module
+        if rarfile:
+            try:
+                with rarfile.RarFile(io.BytesIO(raw_bytes)) as rf:
+                    for r_fn in rf.namelist():
+                        if (r_fn.lower().endswith(".json") or r_fn.lower().endswith(".jsonl")) and not r_fn.startswith("__MACOSX"):
+                            try:
+                                text = _safe_decode_bytes(rf.read(r_fn))
+                                content = _safe_parse_json_text(text, r_fn)
+                                if content is not None:
+                                    coll, recs = _extract_records_from_obj(content, r_fn)
+                                    if recs:
+                                        results.append((coll, recs))
+                            except Exception as e:
+                                logger.error(f"Failed to parse {r_fn} inside rar: {e}")
+                if results:
+                    return results
+            except Exception as e:
+                logger.warning(f"rarfile extraction failed: {e}")
+
+        # Method B: unrar CLI fallback using temporary files
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".rar", delete=False) as tmp_rar:
+                tmp_rar.write(raw_bytes)
+                tmp_rar_path = tmp_rar.name
+
+            with tempfile.TemporaryDirectory() as tmp_out_dir:
+                unrar_bin = "/usr/local/bin/unrar" if os.path.exists("/usr/local/bin/unrar") else "unrar"
+                proc = subprocess.run(
+                    [unrar_bin, "x", "-y", "-inul", tmp_rar_path, tmp_out_dir],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60
+                )
+                if proc.returncode == 0:
+                    for root, _, files in os.walk(tmp_out_dir):
+                        for f_item in files:
+                            if f_item.lower().endswith(".json") or f_item.lower().endswith(".jsonl"):
+                                f_path = os.path.join(root, f_item)
+                                try:
+                                    with open(f_path, "rb") as jf:
+                                        text = _safe_decode_bytes(jf.read())
+                                    content = _safe_parse_json_text(text, f_item)
+                                    if content is not None:
+                                        coll, recs = _extract_records_from_obj(content, f_item)
+                                        if recs:
+                                            results.append((coll, recs))
+                                except Exception as e:
+                                    logger.error(f"Failed to parse extracted rar file {f_item}: {e}")
+            try:
+                os.remove(tmp_rar_path)
+            except Exception:
+                pass
+
+            if results:
+                return results
+        except Exception as e:
+            logger.warning(f"unrar CLI extraction failed: {e}")
+
+    # 3. TAR / TAR.GZ / TGZ Archive
+    if fn_lower.endswith(".tar") or fn_lower.endswith(".tar.gz") or fn_lower.endswith(".tgz"):
+        try:
+            with tarfile.open(fileobj=io.BytesIO(raw_bytes)) as tf:
+                for member in tf.getmembers():
+                    if member.isfile() and (member.name.lower().endswith(".json") or member.name.lower().endswith(".jsonl")):
+                        f = tf.extractfile(member)
+                        if f:
+                            text = _safe_decode_bytes(f.read())
+                            content = _safe_parse_json_text(text, member.name)
+                            if content is not None:
+                                coll, recs = _extract_records_from_obj(content, member.name)
+                                if recs:
+                                    results.append((coll, recs))
+            if results:
+                return results
+        except Exception as e:
+            logger.warning(f"tar extraction failed: {e}")
+
+    # 4. Standard JSON or JSONL file
+    text = _safe_decode_bytes(raw_bytes)
+    content = _safe_parse_json_text(text, filename)
+    if content is not None:
         coll, recs = _extract_records_from_obj(content, filename)
         if recs:
             results.append((coll, recs))

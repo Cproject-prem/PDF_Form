@@ -521,7 +521,7 @@ export default function AiTrainingPage() {
   };
 
   const handleValidateBulk = async () => {
-    if (!selectedBulkFile) return toast.error("Please select a JSON or ZIP file to validate");
+    if (!selectedBulkFile) return toast.error("Please select a JSON, ZIP, RAR, or TAR file to validate");
     setIsValidatingBulk(true);
     setBulkValidationPreview(null);
     setBulkUploadResult(null);
@@ -545,7 +545,7 @@ export default function AiTrainingPage() {
   };
 
   const handleExecuteBulkUpload = async () => {
-    if (!selectedBulkFile) return toast.error("Please select a JSON or ZIP file");
+    if (!selectedBulkFile) return toast.error("Please select a JSON, ZIP, RAR, or TAR file");
     setIsUploadingBulk(true);
     setBulkUploadResult(null);
 
@@ -1877,10 +1877,10 @@ export default function AiTrainingPage() {
                     >
                       <UploadCloud className="w-10 h-10 text-indigo-500 mb-1" />
                       <div className="text-sm font-bold text-slate-800">
-                        {selectedBulkFile ? selectedBulkFile.name : "Click to select or drag & drop JSON / ZIP files"}
+                        {selectedBulkFile ? selectedBulkFile.name : "Click to select or drag & drop JSON, ZIP, RAR, or TAR files"}
                       </div>
                       <div className="text-xs text-slate-500">
-                        Supports Format A (Array), Format B (Single Object), Format C (Collection Package), or ZIP archive
+                        Supports Format A (Array), Format B (Single Object), Format C (Package), JSONL, or ZIP / RAR / TAR archives
                       </div>
                       {selectedBulkFile && (
                         <div className="mt-2 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
@@ -1890,7 +1890,7 @@ export default function AiTrainingPage() {
                       <input
                         ref={bulkFileInputRef}
                         type="file"
-                        accept=".json,.zip"
+                        accept=".json,.jsonl,.zip,.rar,.tar,.gz,.tgz"
                         onChange={handleBulkFileSelect}
                         className="hidden"
                       />

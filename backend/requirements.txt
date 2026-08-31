@@ -41,6 +41,7 @@ aiosmtplib>=3.0.0
 # Expression Evaluation & Utilities
 simpleeval>=0.9.13
 email-validator>=2.1.0
+rarfile>=4.1
 
 # AI & LLM Integrations (Optional / RAG)
 openai>=1.14.0
