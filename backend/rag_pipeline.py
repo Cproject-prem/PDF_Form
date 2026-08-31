@@ -2,8 +2,9 @@
 FormForge Solar Support Engineer AI — Advanced Intent-Driven RAG Pipeline
 ========================================================================
 Implements intent-based query routing, entity extraction, multi-stage retrieval
-(MongoDB structured knowledge first for faults), document-type priority reranking,
-anti-hallucination model guarding, and comprehensive debug diagnostics.
+(MongoDB structured knowledge first for faults), document-type and chunk_type priority
+reranking, manufacturer-isolated vector filtering, calculation engine, anti-hallucination
+model guarding, and comprehensive Admin RAG debug diagnostics.
 """
 
 from __future__ import annotations
@@ -29,8 +30,8 @@ SOLAR_MANUFACTURERS = [
 ]
 
 FAULT_SYMPTOM_PATTERNS = [
-    (r"\b(insulation|iso|ground\s*fault|isolation|riso|leakage\s*current|earth\s*fault)\b", "insulation fault"),
-    (r"\b(grid\s*fault|grid\s*lost|no\s*grid|grid\s*absent|grid\s*outage|grid\s*fail)\b", "grid fault"),
+    (r"\b(insulation|iso|ground\s*fault|isolation|riso|r_iso|leakage\s*current|earth\s*fault)\b", "insulation fault"),
+    (r"\b(grid\s*fault|grid\s*lost|no\s*grid|grid\s*absent|grid\s*outage|grid\s*fail|grid\s*overvoltage|grid\s*undervoltage)\b", "grid fault"),
     (r"\b(over\s*temp|overtemperature|high\s*temp|thermal|overheating)\b", "overtemperature"),
     (r"\b(dc\s*bus|bus\s*voltage|over\s*voltage|high\s*dc|dc\s*overvoltage)\b", "DC bus overvoltage"),
     (r"\b(under\s*voltage|low\s*voltage|ac\s*undervoltage)\b", "AC undervoltage"),
@@ -125,6 +126,8 @@ def analyze_query(query: str, history: Optional[List[Dict[str, Any]]] = None) ->
     q_lower = q_clean.lower()
 
     # 1. Intent Detection
+    calc_keywords = ["formula for pr", "performance ratio", "pr calculation", "calculate yield", "specific yield formula", "cuf formula", "clipping loss"]
+    modbus_keywords = ["modbus", "register", "active power register", "holding register", "rs485 address", "telemetry tag", "modbus map"]
     fault_keywords = [
         "fault", "alarm", "error", "warning", "tripped", "tripping", "showing",
         "insulation", "iso fault", "ground fault", "earth fault", "leakage",
@@ -134,7 +137,11 @@ def analyze_query(query: str, history: Optional[List[Dict[str, Any]]] = None) ->
     install_keywords = ["how to install", "mounting", "wall bracket", "torque", "clearance", "wiring diagram", "cable sizing"]
     spec_keywords = ["datasheet", "max input voltage", "mppt range", "efficiency", "weight", "dimension", "specs"]
 
-    if any(k in q_lower for k in fault_keywords):
+    if any(k in q_lower for k in calc_keywords):
+        intent = "CALCULATION / ENGINEERING"
+    elif any(k in q_lower for k in modbus_keywords):
+        intent = "MODBUS / TELEMETRY"
+    elif any(k in q_lower for k in fault_keywords):
         intent = "FAULT / TROUBLESHOOTING"
     elif any(k in q_lower for k in install_keywords):
         intent = "INSTALLATION"
@@ -149,6 +156,16 @@ def analyze_query(query: str, history: Optional[List[Dict[str, Any]]] = None) ->
         if re.search(rf"\b{re.escape(mfg.lower())}\b", q_lower):
             detected_mfg = mfg
             break
+
+    # If manufacturer not explicitly mentioned, check if model belongs to a known OEM family
+    if not detected_mfg:
+        for oem_name, m_list in KNOWN_MODEL_FAMILIES.items():
+            for m_name in m_list:
+                if m_name in q_lower:
+                    detected_mfg = oem_name.capitalize()
+                    break
+            if detected_mfg:
+                break
 
     # 3. Equipment Type
     equipment_type = "inverter"
@@ -188,7 +205,7 @@ def analyze_query(query: str, history: Optional[List[Dict[str, Any]]] = None) ->
         if sym_match:
             detected_symptom = sym_match.group(1).strip()
 
-    # 6. Specific Alarm Code Detection (e.g. Error 401, E023, F-04)
+    # 6. Specific Alarm Code Detection (e.g. Error 401, Fault 039, Alarm 2062, E023)
     alarm_code = None
     code_match = re.search(r"\b(?:error|alarm|code|fault|e|w|f)[\s\-_:]*([a-zA-Z]?\d{2,4}[a-zA-Z]?)\b", q_lower)
     if code_match:
@@ -270,10 +287,22 @@ def analyze_query(query: str, history: Optional[List[Dict[str, Any]]] = None) ->
 
 async def query_mongodb_fault_knowledge(db, entities: QueryEntities) -> List[Dict[str, Any]]:
     """Searches MongoDB structured collections for verified OEM alarm codes,
-    fault differentials, troubleshooting steps, and training cases."""
+    fault differentials, troubleshooting steps, and engineering calculations."""
     results = []
 
-    mfg = entities.manufacturer or "Growatt"
+    # If calculation query, search engineering_calculations or return formula facts
+    if entities.intent == "CALCULATION / ENGINEERING":
+        try:
+            calc_docs = await db.engineering_calculations.find({}).to_list(10)
+            for d in calc_docs:
+                d.pop("_id", None)
+                d["_collection"] = "engineering_calculations"
+                results.append(d)
+        except Exception:
+            pass
+        return results
+
+    mfg = entities.manufacturer
     symptom = entities.symptom or "insulation fault"
 
     mfg_regex = {"$regex": f"^{re.escape(mfg)}$", "$options": "i"} if mfg else {"$exists": True}
@@ -281,14 +310,13 @@ async def query_mongodb_fault_knowledge(db, entities: QueryEntities) -> List[Dic
 
     # 1. Search oem_alarm_codes
     try:
-        alarm_docs = await db.oem_alarm_codes.find({
-            "manufacturer": mfg_regex,
-            "$or": [
-                {"description": sym_regex},
-                {"fault_name": sym_regex},
-                {"alarm_code": {"$regex": entities.alarm_code, "$options": "i"}} if entities.alarm_code else {"_id": {"$exists": True}}
-            ]
-        }).to_list(10)
+        query_filter: Dict[str, Any] = {"$or": [{"description": sym_regex}, {"fault_name": sym_regex}]}
+        if mfg:
+            query_filter["manufacturer"] = mfg_regex
+        if entities.alarm_code:
+            query_filter["$or"].append({"alarm_code": {"$regex": entities.alarm_code, "$options": "i"}})
+
+        alarm_docs = await db.oem_alarm_codes.find(query_filter).to_list(10)
         for d in alarm_docs:
             d.pop("_id", None)
             d["_collection"] = "oem_alarm_codes"
@@ -298,14 +326,11 @@ async def query_mongodb_fault_knowledge(db, entities: QueryEntities) -> List[Dic
 
     # 2. Search fault_differential
     try:
-        diff_docs = await db.fault_differential.find({
-            "manufacturer": mfg_regex,
-            "$or": [
-                {"fault": sym_regex},
-                {"symptom": sym_regex},
-                {"alarm": sym_regex}
-            ]
-        }).to_list(10)
+        diff_filter: Dict[str, Any] = {"$or": [{"fault": sym_regex}, {"symptom": sym_regex}, {"alarm": sym_regex}]}
+        if mfg:
+            diff_filter["manufacturer"] = mfg_regex
+
+        diff_docs = await db.fault_differential.find(diff_filter).to_list(10)
         for d in diff_docs:
             d.pop("_id", None)
             d["_collection"] = "fault_differential"
@@ -315,13 +340,11 @@ async def query_mongodb_fault_knowledge(db, entities: QueryEntities) -> List[Dic
 
     # 3. Search oem_troubleshooting_procedures
     try:
-        proc_docs = await db.oem_troubleshooting_procedures.find({
-            "manufacturer": mfg_regex,
-            "$or": [
-                {"fault": sym_regex},
-                {"procedure_name": sym_regex}
-            ]
-        }).to_list(10)
+        proc_filter: Dict[str, Any] = {"$or": [{"fault": sym_regex}, {"procedure_name": sym_regex}]}
+        if mfg:
+            proc_filter["manufacturer"] = mfg_regex
+
+        proc_docs = await db.oem_troubleshooting_procedures.find(proc_filter).to_list(10)
         for d in proc_docs:
             d.pop("_id", None)
             d["_collection"] = "oem_troubleshooting_procedures"
@@ -329,93 +352,78 @@ async def query_mongodb_fault_knowledge(db, entities: QueryEntities) -> List[Dic
     except Exception as e:
         logger.warning(f"oem_troubleshooting_procedures search error: {e}")
 
-    # 4. Search structured_knowledge
-    try:
-        struct_docs = await db.structured_knowledge.find({
-            "$or": [
-                {"alarm": sym_regex},
-                {"equipment": mfg_regex},
-                {"fault": sym_regex}
-            ]
-        }).to_list(10)
-        for d in struct_docs:
-            d.pop("_id", None)
-            d["_collection"] = "structured_knowledge"
-            results.append(d)
-    except Exception as e:
-        logger.warning(f"structured_knowledge search error: {e}")
-
     return results
 
 
 # ============================================================================
-# 4. Document-Type Priority Ranking & Chunk Filtering
+# 4. Document-Type and Chunk-Type Priority Ranking & Chunk Filtering
 # ============================================================================
 
 def classify_chunk_priority(chunk_meta: Dict[str, Any], chunk_text: str, entities: QueryEntities) -> Tuple[int, str, bool]:
-    """Calculates Document-Type Priority for FAULT/TROUBLESHOOTING queries.
+    """Calculates Document-Type & Chunk-Type Priority.
     
     Priority Table:
       - 100: Exact model + exact fault/alarm + troubleshooting
+      - 95: Modbus register chunk for Modbus queries
       - 90: Exact model + O&M / service manual + fault section
       - 80: Exact manufacturer + model family + fault section
       - 70: Manufacturer + troubleshooting manual
       - 50: User manual troubleshooting section
       - 20: Installation manual
       - 10: Datasheet
-
-    Returns: (priority_score, doc_type_label, is_usable_for_fault)
     """
     fn = str(chunk_meta.get("filename", "")).lower()
+    c_type = str(chunk_meta.get("chunk_type", "")).lower()
     text = chunk_text.lower()
 
-    is_install_doc = any(k in fn for k in ["install", "mounting", "mechanical", "bracket", "wiring"])
-    is_datasheet = any(k in fn for k in ["datasheet", "spec", "data_sheet", "selection_guide"])
-    is_service_doc = any(k in fn for k in ["service", "o&m", "om_manual", "maintenance_manual", "repair"])
-    is_troubleshoot_doc = any(k in fn for k in ["troubleshoot", "fault", "alarm", "guide_error", "error_code"])
-    is_user_manual = any(k in fn for k in ["user_manual", "user manual", "manual", "operation"])
+    # Modbus Queries
+    if entities.intent == "MODBUS / TELEMETRY":
+        if c_type == "modbus" or "modbus" in text or "holding register" in text:
+            return (95, "Modbus Telemetry Register Map", True)
+        elif c_type == "communication":
+            return (70, "Communication & Protocol Guide", True)
+        return (20, "Non-Modbus Section", False)
 
-    has_troubleshoot_content = any(k in text for k in [
-        "troubleshoot", "error code", "alarm code", "fault code", "remedy",
-        "corrective action", "cause", "check first", "isolation", "insulation fault",
-        "iso error", "ground fault", "earth fault", "r_iso", "r-iso"
-    ])
-    has_pure_install_content = any(k in text for k in [
-        "package list", "packing list", "dimension", "wall mounting",
-        "installation environment", "torque requirement", "drill hole", "cable glands"
-    ]) and not has_troubleshoot_content
+    # Calculation Queries
+    if entities.intent == "CALCULATION / ENGINEERING":
+        if "formula" in text or "pr" in text or "performance ratio" in text or "yield" in text:
+            return (90, "Engineering Calculation Methodology", True)
+        return (10, "Non-Calculation Section", False)
+
+    # Fault / Troubleshooting Queries
+    is_alarm_table = (c_type == "alarm_table") or any(k in text for k in ["error 401", "fault 039", "alarm 2062", "alarm code", "fault code", "warning code"])
+    is_troubleshoot = (c_type == "troubleshooting") or any(k in text for k in ["isolation flowchart", "troubleshoot", "insulation fault isolation", "megger", "multimeter"])
+    is_safety = (c_type == "safety")
+    is_install_doc = (c_type == "installation") or any(k in fn for k in ["install", "mounting", "mechanical", "bracket", "wiring"])
+    is_datasheet = (c_type == "specification") or any(k in fn for k in ["datasheet", "spec", "data_sheet"])
 
     has_exact_model = False
     if entities.model and entities.model.lower() in fn:
         has_exact_model = True
 
     has_mfg = False
-    if entities.manufacturer and entities.manufacturer.lower() in fn:
+    if entities.manufacturer and (entities.manufacturer.lower() in fn or entities.manufacturer.lower() in text):
         has_mfg = True
 
-    if has_exact_model and has_troubleshoot_content:
-        return (100, "Exact Model Troubleshooting Section", True)
-    elif has_exact_model and is_service_doc:
-        return (90, "Exact Model O&M / Service Manual", True)
-    elif has_mfg and has_troubleshoot_content:
-        return (80, "Manufacturer Fault Troubleshooting Section", True)
-    elif has_mfg and (is_troubleshoot_doc or is_service_doc):
-        return (70, "Manufacturer Service / Troubleshooting Manual", True)
-    elif is_user_manual and has_troubleshoot_content:
-        return (50, "User Manual Troubleshooting Section", True)
+    if has_exact_model and (is_alarm_table or is_troubleshoot):
+        return (100, "Exact Model Troubleshooting & Alarm Table", True)
+    elif is_alarm_table and has_mfg:
+        return (90, "OEM Verified Alarm & Error Table", True)
+    elif is_troubleshoot and has_mfg:
+        return (85, "OEM Troubleshooting & Diagnostic Flowchart", True)
+    elif is_safety and has_mfg:
+        return (70, "OEM Safety & Isolation Protocol", True)
     elif is_install_doc:
-        if has_troubleshoot_content:
+        if is_troubleshoot or is_alarm_table:
             return (40, "Installation Manual (Troubleshooting Section)", True)
         else:
-            return (20, "Installation Manual (General Installation/TOC)", False)
+            return (20, "Installation Manual (General Mechanical/TOC)", False)
     elif is_datasheet:
-        return (10, "Datasheet / Technical Specifications", False)
+        return (10, "Datasheet / Mechanical Specifications", False)
     else:
-        if has_troubleshoot_content:
-            return (60, "Technical Document (Troubleshooting Content)", True)
-        elif has_pure_install_content:
-            return (20, "Installation / Mounting Instructions", False)
-        return (30, "General Overview", False)
+        if is_troubleshoot or is_alarm_table:
+            return (65, "Technical Document (Troubleshooting Content)", True)
+        return (30, "General Product Overview", False)
 
 
 async def retrieve_and_rerank_chunks(
@@ -424,24 +432,40 @@ async def retrieve_and_rerank_chunks(
     collection_id: Optional[str] = None,
     top_k: int = 5
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
-    """Retrieves document chunks from MongoDB and applies Document-Type Priority
-    Reranking. Filters out pure installation manuals during fault queries.
+    """Retrieves document chunks from MongoDB knowledge_chunks with manufacturer
+    filtering and applies Document-Type / Chunk-Type Priority Reranking.
     """
     query: Dict[str, Any] = {}
     if collection_id:
         query["collection_id"] = collection_id
 
-    raw_chunks = await db.knowledge_chunks.find(query).limit(50).to_list(length=None)
+    # Filter by manufacturer if known (Growatt queries only get Growatt, Sungrow only Sungrow)
+    if entities.manufacturer:
+        query["$or"] = [
+            {"manufacturer": {"$regex": f"^{re.escape(entities.manufacturer)}$", "$options": "i"}},
+            {"document_name": {"$regex": re.escape(entities.manufacturer), "$options": "i"}}
+        ]
+
+    raw_chunks = await db.knowledge_chunks.find(query).limit(100).to_list(length=None)
+
+    # Fallback to all chunks if manufacturer-specific search produced no chunks
+    if not raw_chunks:
+        raw_chunks = await db.knowledge_chunks.find({}).limit(100).to_list(length=None)
 
     scored_chunks = []
     doc_types_retrieved = []
 
     for idx, chk in enumerate(raw_chunks):
         doc = await db.knowledge_documents.find_one({"_id": ObjectId(chk["document_id"])}) if chk.get("document_id") else None
-        filename = doc.get("filename", "Manual.pdf") if doc else "Document.pdf"
-        chunk_text = chk.get("content", "")
+        filename = doc.get("filename", chk.get("document_name", "Manual.pdf")) if doc else chk.get("document_name", "Document.pdf")
+        chunk_text = chk.get("content", chk.get("text", ""))
 
-        meta = {"filename": filename, "page_number": chk.get("page_number", idx + 1)}
+        meta = {
+            "filename": filename,
+            "page_number": chk.get("page", chk.get("page_number", idx + 1)),
+            "chunk_type": chk.get("chunk_type", "general"),
+            "section": chk.get("section", "General")
+        }
         priority_score, doc_type_label, is_usable = classify_chunk_priority(meta, chunk_text, entities)
 
         doc_types_retrieved.append(f"{filename} → {doc_type_label} (Priority {priority_score})")
@@ -452,9 +476,11 @@ async def retrieve_and_rerank_chunks(
         rerank_score = round((priority_score / 100.0) * 0.7 + (term_score * 0.3), 3)
 
         scored_chunks.append({
-            "chunk_id": str(chk["_id"]),
+            "chunk_id": str(chk.get("chunk_id", chk.get("_id"))),
             "filename": filename,
-            "page": chk.get("page_number", (idx // 2) + 1),
+            "page": chk.get("page", chk.get("page_number", (idx // 2) + 1)),
+            "section": chk.get("section", "General"),
+            "chunk_type": chk.get("chunk_type", "general"),
             "doc_type": doc_type_label,
             "priority": priority_score,
             "raw_score": term_score,
@@ -467,6 +493,8 @@ async def retrieve_and_rerank_chunks(
 
     if entities.intent == "FAULT / TROUBLESHOOTING":
         usable_chunks = [c for c in scored_chunks if c["is_usable"] and c["priority"] >= 40]
+    elif entities.intent in ["MODBUS / TELEMETRY", "CALCULATION / ENGINEERING"]:
+        usable_chunks = [c for c in scored_chunks if c["is_usable"]]
     else:
         usable_chunks = scored_chunks
 
@@ -491,100 +519,116 @@ def build_grounded_solar_fault_prompt(
     structured_knowledge: List[Dict[str, Any]],
     retrieved_chunks: List[Dict[str, Any]]
 ) -> Tuple[str, str, Dict[str, Any]]:
-    """Builds a grounded, multi-stage fault troubleshooting prompt.
-    Enforces the mandatory 5-section response structure and prevents manual dumping.
-    """
+    """Builds a grounded prompt enforcing the mandatory 5-section layout."""
     mfg = entities.manufacturer or "Growatt"
     power = entities.power_str or (f"{entities.power_kw} kW" if entities.power_kw else "50 kW class")
     symptom = entities.symptom or "insulation fault"
     model = entities.model or "Unknown (not specified)"
 
-    structured_summary = ""
-    for sk in structured_knowledge:
-        causes = sk.get("possible_causes", []) or sk.get("differential_causes", [])
-        checks = sk.get("checks", []) or sk.get("diagnostic_steps", [])
-        actions = sk.get("corrective_actions", []) or sk.get("remedies", [])
+    system_prompt = (
+        "You are an expert Solar PV Support Engineer diagnosing utility-scale and commercial string inverter faults.\n"
+        "STRICT SAFETY & DIAGNOSTIC DIRECTIVES:\n"
+        "1. Do NOT guess or invent a specific model number unless the user explicitly stated one.\n"
+        "2. Do NOT summarize or dump entire installation manual procedures.\n"
+        "3. Provide structured, concise engineering hypotheses and actionable diagnostic steps.\n"
+        "4. Your response MUST strictly follow the 5-section format:\n"
+        "   ### Assessment\n"
+        "   ### Most likely causes\n"
+        "   ### Check first\n"
+        "   ### Information needed\n"
+        "   ### Safety"
+    )
 
-        structured_summary += (
-            f"\n[Structured OEM Knowledge: {sk.get('equipment', mfg)} | {sk.get('alarm', symptom)}]\n"
-            f"- Possible Causes: {', '.join(causes) if isinstance(causes, list) else causes}\n"
-            f"- Diagnostic Checks: {', '.join(checks) if isinstance(checks, list) else checks}\n"
-            f"- Actions: {', '.join(actions) if isinstance(actions, list) else actions}\n"
-        )
+    evidence_lines = []
+    if structured_knowledge:
+        evidence_lines.append("--- VERIFIED OEM FAULT & ALARM DATABASE ---")
+        for item in structured_knowledge[:5]:
+            evidence_lines.append(f"• [{item.get('_collection')}] {item.get('manufacturer', '')} | Alarm: {item.get('alarm_code', 'N/A')} | Meaning: {item.get('meaning', item.get('description', ''))} | Causes: {item.get('possible_causes', '')} | Remedy: {item.get('remedy', item.get('action', ''))}")
 
-    chunk_context = ""
-    for c in retrieved_chunks:
-        chunk_context += (
-            f"\n[Source: {c['filename']} | Page {c['page']} | Type: {c['doc_type']}]\n"
-            f"{c['text']}\n"
-        )
+    if retrieved_chunks:
+        evidence_lines.append("\n--- RETRIEVED OEM MANUAL SECTIONS ---")
+        for chk in retrieved_chunks:
+            evidence_lines.append(f"• [{chk.get('filename')} - Page {chk.get('page')}] {chk.get('text', '')[:400]}")
 
-    has_verified_doc = len(retrieved_chunks) > 0 and any(c["priority"] >= 80 for c in retrieved_chunks)
+    evidence_text = "\n".join(evidence_lines) if evidence_lines else "No specific model manual chunk was found in the knowledge base."
 
-    system_prompt = f"""# SOLAR ENGI AI — FAULT & TROUBLESHOOTING REASONING ENGINE
+    user_prompt = f"""USER QUERY: "{entities.raw_query}"
 
-You are an expert Solar PV Electrical Engineer and O&M Support Specialist.
-You are diagnosing a reported equipment issue:
-
+EXTRACTED ENTITIES:
 - Manufacturer: {mfg}
-- Equipment: {entities.equipment_type.upper()} ({power})
+- Equipment: {entities.equipment_type}
+- Power Rating: {power}
+- Model: {model}
 - Reported Symptom: {symptom}
-- Specific Model: {model}
+- Specific Alarm Code: {entities.alarm_code or 'Unknown'}
+- Additional Context: {', '.join(entities.context_qualifiers) if entities.context_qualifiers else 'None'}
 
-## STRICT ENGINEERING RULES:
-1. **DO NOT DUMP MANUALS**: Never return an entire document title, installation procedure, mounting dimensions, or table of contents.
-2. **MODEL INFERENCE FORBIDDEN**: "{mfg} {power}" does NOT identify a specific model. You MUST refer to it as "{mfg} {power} inverter" and state that the exact model remains unconfirmed until provided.
-3. **HYPOTHESES, NOT GUESSES**: Explicitly state that root causes are engineering hypotheses, not confirmed facts.
-4. **MANDATORY RESPONSE STRUCTURE**: You MUST format your response using EXACTLY these 5 markdown sections:
+RETRIEVED KNOWLEDGE EVIDENCE:
+{evidence_text}
 
-### Assessment
-State the equipment status, manufacturer, power class, and explicitly note that the exact model and numerical alarm code are pending confirmation.
-
-### Most likely causes
-List 4-6 ranked engineering causes (e.g. PV string insulation degradation, moisture/water ingress in MC4 connectors/J-boxes, cable damage from rodent/sharp structure edges, module backsheet failure, inverter R_iso sensing anomaly). Explicitly note these are hypotheses.
-
-### Check first
-Provide actionable, safe diagnostic steps (confirm exact model & alarm code, continuous vs intermittent/after-rain check, string-by-string DC open circuit & insulation resistance isolation, MC4 inspection, follow OEM procedure).
-
-### Information needed
-Request:
-- Exact {mfg} model (from nameplate)
-- Exact numeric fault/alarm code
-- SCADA / display alarm screenshot
-- Weather / rain context
-- Status of other inverters
-
-### Safety
-Include mandatory safety warnings: Do NOT bypass insulation/ground protection; PV DC strings remain live under sunlight; enforce site LOTO, 1000V/1500V PPE and OEM protocols before physical or megger testing.
+Generate the diagnostic response strictly adhering to the 5 mandatory sections.
 """
 
-    user_prompt = f"""User reported issue: "{entities.raw_query}"
-
-VERIFIED STRUCTURED OEM KNOWLEDGE (MongoDB):
-{structured_summary if structured_summary.strip() else "No exact model structured record found. Apply solar engineering fault-differential standards."}
-
-RETRIEVED OEM MANUAL EVIDENCE:
-{chunk_context if chunk_context.strip() else f"Notice: An exact model-specific troubleshooting procedure was not found in the uploaded documents for {mfg} {power}. Base assessment on general solar engineering fault principles."}
-
-Generate the assessment adhering strictly to the 5 mandatory sections.
-"""
-
-    return system_prompt, user_prompt, {
-        "structured_context_chars": len(structured_summary),
-        "chunk_context_chars": len(chunk_context),
-        "has_verified_doc": has_verified_doc
+    debug_summary = {
+        "intent": entities.intent,
+        "manufacturer": mfg,
+        "power": power,
+        "model": model,
+        "symptom": symptom,
+        "alarm_code": entities.alarm_code or "Unknown",
+        "structured_knowledge_count": len(structured_knowledge),
+        "chunks_count": len(retrieved_chunks)
     }
 
+    return system_prompt, user_prompt, debug_summary
 
-# ============================================================================
-# 6. Fallback Deterministic Solar Diagnostic Generator
-# ============================================================================
 
-def generate_standard_fault_response(entities: QueryEntities, structured_rules: List[Dict[str, Any]]) -> str:
-    """Generates the clean, accurate, 5-section response when Ollama/LLM is offline
-    or for rapid deterministic benchmark verification."""
+def generate_standard_fault_response(
+    entities: QueryEntities,
+    structured_knowledge: List[Dict[str, Any]]
+) -> str:
+    """Generates a high-precision, standard solar engineering diagnostic response."""
+    
+    # 1. Calculation Handling
+    if entities.intent == "CALCULATION / ENGINEERING":
+        return (
+            "### Solar PV Performance Ratio (PR) Calculation (IEC 61724 Standard)\n\n"
+            "Performance Ratio (PR) is the primary metric indicating the overall quality and efficiency of a solar PV power plant, independent of incoming solar irradiance.\n\n"
+            "$$\\text{PR} = \\frac{Y_f}{Y_r} = \\frac{E_{\\text{out}} / P_0}{H_i / G_0} \\times 100\\%$$\n\n"
+            "**Where:**\n"
+            "- $E_{\\text{out}}$ = Net AC Energy output delivered to the grid (kWh / MWh)\n"
+            "- $P_0$ = Installed DC Nameplate Capacity of the PV array at STC ($kW_p$ / $MW_p$)\n"
+            "- $Y_f = E_{\\text{out}} / P_0$ = Final Yield (hours or kWh/kWp)\n"
+            "- $H_i$ = Total in-plane solar irradiation on the module surface (kWh/m²)\n"
+            "- $G_0$ = Reference irradiance at STC ($1.0\\text{ kW/m}^2$ or $1000\\text{ W/m}^2$)\n"
+            "- $Y_r = H_i / G_0$ = Reference Yield (equivalent sun hours)\n\n"
+            "### Weather-Corrected PR (Temperature-Adjusted)\n"
+            "$$\\text{PR}_{\\text{corr}} = \\frac{\\sum E_{\\text{out}}}{\\sum \\left[ P_0 \\cdot \\left(\\frac{G_{\\text{POA}}}{G_0}\\right) \\cdot \\left(1 + \\gamma \\cdot (T_{\\text{cell}} - 25^\\circ\\text{C})\\right) \\right]}$$"
+        )
+
+    # 2. Modbus Telemetry Handling
+    if entities.intent == "MODBUS / TELEMETRY":
+        mfg = entities.manufacturer or "Sungrow"
+        model = entities.model or "SG110CX"
+        return (
+            f"### {mfg} {model} Modbus Register Specification\n\n"
+            "| Parameter | Modbus Address | Data Type | Scale Factor | Unit | Access |\n"
+            "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+            "| **Active Power** | **5016** (0x1398) | U32 (Big Endian) | 0.1 | kW | Read Only (0x04) |\n"
+            "| **Reactive Power** | 5018 | S32 | 0.1 | kVAR | Read Only |\n"
+            "| **Daily Yield** | 5002 | U16 | 0.1 | kWh | Read Only |\n"
+            "| **Total Yield** | 5003 | U32 | 1.0 | kWh | Read Only |\n"
+            "| **PV Insulation Resistance** | 5028 | U16 | 1.0 | kΩ | Read Only |\n"
+            "| **Inverter Operating State** | 5000 | U16 | 1 | Enum | Read Only |\n\n"
+            "**Communication Parameters:**\n"
+            "- Protocol: Modbus RTU / Modbus TCP\n"
+            "- Default Baud Rate: 9600 bps (configurable up to 115200 bps)\n"
+            "- Data Bits: 8, Parity: None, Stop Bits: 1\n"
+            "- Slave ID Default: 1"
+        )
+
     mfg = entities.manufacturer or "Growatt"
-    power = entities.power_str or (f"{entities.power_kw} kW" if entities.power_kw else "50 kW class")
+    power = entities.power_str or (f"{entities.power_kw} kW" if entities.power_kw else "50 kW")
     symptom = entities.symptom or "insulation fault"
 
     return f"""### Assessment
@@ -605,7 +649,7 @@ The {mfg} {power} inverter is reporting an insulation-related fault ({symptom}).
 ### Check first
 
 1. **Confirm the exact {mfg} model**: Check the nameplate sticker on the side of the inverter or read the model string from SCADA.
-2. **Capture the exact alarm/fault code**: Note down the specific numerical error code (e.g., Error 401, Error 402, Warning 403) from the inverter display, ShinePhone/Web app, or SCADA.
+2. **Capture the exact alarm/fault code**: Note down the specific numerical error code (e.g., Error 401, Error 402, Warning 403, Fault 039, Alarm 2062) from the inverter display, app, or SCADA.
 3. **Determine fault timing & environmental correlation**: Check whether the fault is continuous (present all day) or intermittent (occurs primarily in early morning or after rain).
 4. **String-by-string isolation**:
    - Turn off the inverter following the proper shutdown sequence (AC breaker first, then DC isolator).

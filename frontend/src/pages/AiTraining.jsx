@@ -133,6 +133,15 @@ export default function AiTrainingPage() {
     status: "idle"
   });
 
+  // Document Chunk Viewer & Reindexing State
+  const [viewerDoc, setViewerDoc] = useState(null);
+  const [viewerChunks, setViewerChunks] = useState([]);
+  const [viewerLoading, setViewerLoading] = useState(false);
+  const [viewerSearch, setViewerSearch] = useState("");
+  const [viewerActiveChunk, setViewerActiveChunk] = useState(0);
+  const [reindexingAll, setReindexingAll] = useState(false);
+  const [reindexingDocId, setReindexingDocId] = useState(null);
+
   const [searchQuery, setSearchQuery] = useState("");
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1138,52 +1147,128 @@ export default function AiTrainingPage() {
 
               {/* Documents List in Current Folder */}
               <div className="space-y-3 pt-2">
-                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                  Knowledge Documents ({currentDocuments.length})
-                </h3>
-                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-indigo-600" /> Knowledge Documents ({currentDocuments.length})
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleReindexAllDocs}
+                      disabled={reindexingAll}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 text-xs font-bold border border-amber-200 shadow-sm transition disabled:opacity-50"
+                      title="Re-index all documents into semantic chunks"
+                    >
+                      {reindexingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" /> : <RefreshCcw className="w-3.5 h-3.5 text-amber-700" />}
+                      Re-index All Documents
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-x-auto shadow-sm">
+                  <table className="w-full text-left text-xs min-w-[850px]">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase tracking-wider text-[11px]">
                       <tr>
-                        <th className="p-4">Document Name</th>
-                        <th className="p-4">Chunks</th>
-                        <th className="p-4">Status</th>
-                        <th className="p-4 text-right">Actions</th>
+                        <th className="p-3.5">Document Name</th>
+                        <th className="p-3.5">Pages</th>
+                        <th className="p-3.5">Chunks</th>
+                        <th className="p-3.5">Document Type</th>
+                        <th className="p-3.5">Manufacturer</th>
+                        <th className="p-3.5">Model</th>
+                        <th className="p-3.5">Status</th>
+                        <th className="p-3.5">Last Indexed</th>
+                        <th className="p-3.5 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {currentDocuments.length === 0 ? (
-                        <tr><td colSpan="4" className="p-8 text-center text-slate-400">No documents in this folder. Click "Upload Document" to train the AI.</td></tr>
+                        <tr><td colSpan="9" className="p-8 text-center text-slate-400">No documents in this folder. Click "Upload Document" to train the AI.</td></tr>
                       ) : (
                         currentDocuments.map((doc) => (
-                          <tr key={doc._id} className="hover:bg-slate-50/80">
-                            <td className="p-4 font-medium text-slate-800 flex items-center gap-2.5">
-                              <FileText className="w-4 h-4 text-indigo-500 shrink-0" />
-                              <span>{doc.filename}</span>
+                          <tr key={doc._id} className="hover:bg-slate-50/80 transition-colors">
+                            <td className="p-3.5 font-medium text-slate-800">
+                              <div className="flex items-center gap-2">
+                                <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600">
+                                  <FileText className="w-4 h-4 shrink-0" />
+                                </div>
+                                <span className="truncate max-w-[220px]" title={doc.filename}>{doc.filename}</span>
+                              </div>
                             </td>
-                            <td className="p-4 text-slate-600 font-mono">{doc.chunk_count || 12} chunks</td>
-                            <td className="p-4">
-                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] inline-flex items-center gap-1 border border-emerald-200">
+                            <td className="p-3.5 text-slate-600 font-semibold">
+                              <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-mono text-[11px]">
+                                {doc.pages || 1} pages
+                              </span>
+                            </td>
+                            <td className="p-3.5">
+                              <button
+                                onClick={() => openChunkViewer(doc)}
+                                className="px-2.5 py-1 rounded-lg bg-violet-50 hover:bg-violet-100 text-violet-700 font-bold font-mono text-[11px] border border-violet-200 flex items-center gap-1 transition shadow-xs"
+                                title="Click to view all semantic chunks"
+                              >
+                                <span>{doc.chunk_count || 1} chunks</span>
+                                <ChevronRight className="w-3 h-3" />
+                              </button>
+                            </td>
+                            <td className="p-3.5 text-slate-600">
+                              <span className="capitalize font-semibold text-[11px]">
+                                {(doc.document_type || "user_manual").replace("_", " ")}
+                              </span>
+                            </td>
+                            <td className="p-3.5">
+                              <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] border ${
+                                doc.manufacturer === "Growatt" ? "bg-orange-50 text-orange-700 border-orange-200" :
+                                doc.manufacturer === "Sungrow" ? "bg-amber-50 text-amber-700 border-amber-200" :
+                                doc.manufacturer === "Huawei" ? "bg-red-50 text-red-700 border-red-200" :
+                                doc.manufacturer === "Solis" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                                "bg-slate-100 text-slate-700 border-slate-200"
+                              }`}>
+                                {doc.manufacturer || "Unknown"}
+                              </span>
+                            </td>
+                            <td className="p-3.5 text-slate-700 font-medium text-[11px] truncate max-w-[140px]" title={doc.model}>
+                              {doc.model || "Unknown"}
+                            </td>
+                            <td className="p-3.5">
+                              <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] inline-flex items-center gap-1 border border-emerald-200">
                                 <CheckCircle2 className="w-3 h-3" /> Ready & Indexed
                               </span>
                             </td>
-                            <td className="p-4 text-right flex justify-end gap-2">
-                              <button 
-                                data-testid="rag-document-move"
-                                onClick={() => { setMovingDoc(doc); setShowMoveDocModal(true); }}
-                                className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg"
-                                title="Move Document & Re-index"
-                              >
-                                <Move className="w-4 h-4" />
-                              </button>
-                              <button 
-                                data-testid="rag-document-delete"
-                                onClick={() => handleDeleteDoc(doc._id, doc.filename)}
-                                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                                title="Delete Document"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                            <td className="p-3.5 text-[10px] text-slate-400 font-mono">
+                              {doc.last_indexed_at ? new Date(doc.last_indexed_at).toLocaleDateString() : "Recent"}
+                            </td>
+                            <td className="p-3.5 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleReindexDoc(doc)}
+                                  disabled={reindexingDocId === doc._id}
+                                  className="p-1.5 text-slate-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition"
+                                  title="Re-index document"
+                                >
+                                  {reindexingDocId === doc._id ? <Loader2 className="w-4 h-4 animate-spin text-amber-600" /> : <RefreshCcw className="w-4 h-4" />}
+                                </button>
+                                <button
+                                  onClick={() => openChunkViewer(doc)}
+                                  className="p-1.5 text-slate-500 hover:text-violet-700 hover:bg-violet-50 rounded-lg transition"
+                                  title="View document chunks"
+                                >
+                                  <BookOpen className="w-4 h-4" />
+                                </button>
+                                <button 
+                                  data-testid="rag-document-move"
+                                  onClick={() => { setMovingDoc(doc); setShowMoveDocModal(true); }}
+                                  className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+                                  title="Move Document"
+                                >
+                                  <Move className="w-4 h-4" />
+                                </button>
+                                <button 
+                                  data-testid="rag-document-delete"
+                                  onClick={() => handleDeleteDoc(doc._id, doc.filename)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
+                                  title="Delete Document"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))

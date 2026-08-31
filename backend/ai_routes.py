@@ -15,6 +15,12 @@ from pdfminer.high_level import extract_text as extract_pdf_text
 
 from circuit_breaker import ai_circuit_breaker, CircuitState
 from ollama_service import ollama_service, OLLAMA_BASE_URL, OLLAMA_MODEL, SOLAR_SUPPORT_ENGINEER_SYSTEM_PROMPT
+from pdf_ingestion import (
+    process_pdf_pages_to_semantic_chunks,
+    extract_document_oem_metadata,
+    clean_page_text,
+    classify_chunk_type
+)
 from rag_pipeline import (
     analyze_query,
     query_mongodb_fault_knowledge,
@@ -409,19 +415,33 @@ def build_ai_router(db, get_current_user):
     ):
         require_admin(user)
         content = await file.read()
-        text = ""
+        pages = []
+        full_text_list = []
         
         if file.filename.lower().endswith(".pdf"):
             try:
-                text = extract_pdf_text(io.BytesIO(content))
+                reader = pypdf.PdfReader(io.BytesIO(content))
+                for p_idx, page in enumerate(reader.pages, start=1):
+                    p_txt = page.extract_text() or ""
+                    if p_txt.strip():
+                        pages.append({"page": p_idx, "text": p_txt})
+                        full_text_list.append(p_txt)
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to extract PDF: {str(e)}")
+                # Fallback to pdfminer if pypdf has issues
+                try:
+                    raw_txt = extract_pdf_text(io.BytesIO(content))
+                    pages = [{"page": 1, "text": raw_txt}]
+                    full_text_list.append(raw_txt)
+                except Exception as ex:
+                    raise HTTPException(status_code=400, detail=f"Failed to extract PDF: {str(ex)}")
         else:
-            text = content.decode("utf-8", errors="ignore")
+            txt = content.decode("utf-8", errors="ignore")
+            pages = [{"page": 1, "text": txt}]
+            full_text_list.append(txt)
 
-        chunk_words = text.split()
-        chunk_size = 300
-        chunks = [" ".join(chunk_words[i:i+chunk_size]) for i in range(0, max(1, len(chunk_words)), chunk_size - 50)]
+        full_text = "\n\n".join(full_text_list)
+        doc_meta = extract_document_oem_metadata(file.filename, full_text[:3000])
+        doc_meta["document_name"] = file.filename
 
         doc = {
             "filename": file.filename,
@@ -429,32 +449,194 @@ def build_ai_router(db, get_current_user):
             "file_size": len(content),
             "folder_id": folder_id,
             "collection_id": collection_id,
+            "pages": len(pages),
+            "manufacturer": doc_meta.get("manufacturer", "Unknown"),
+            "model": doc_meta.get("model", "Unknown"),
+            "model_family": doc_meta.get("model_family", "Unknown"),
+            "power_kw": doc_meta.get("power_kw", "Unknown"),
+            "document_type": doc_meta.get("document_type", "user_manual"),
+            "verification_status": doc_meta.get("verification_status", "OEM_VERIFIED"),
             "version": 1,
-            "text_content": text,
+            "text_content": full_text,
             "uploaded_by": getattr(user, "email", ""),
             "uploaded_at": datetime.utcnow(),
             "last_indexed_at": datetime.utcnow(),
-            "status": "ready",
-            "chunk_count": len(chunks)
+            "status": "ready"
         }
 
         res = await db.knowledge_documents.insert_one(doc)
         doc_id_str = str(res.inserted_id)
+        doc_meta["document_id"] = doc_id_str
 
-        # Write chunks into knowledge_chunks
-        for idx, chk_text in enumerate(chunks):
-            await db.knowledge_chunks.insert_one({
-                "document_id": doc_id_str,
-                "collection_id": collection_id,
-                "folder_id": folder_id,
-                "chunk_index": idx + 1,
-                "page_number": (idx // 2) + 1,
-                "content": chk_text,
-                "status": "indexed",
-                "created_at": datetime.utcnow()
+        # Generate semantic chunks with table and section awareness
+        chunks = process_pdf_pages_to_semantic_chunks(pages, doc_meta)
+
+        for chk in chunks:
+            chk["document_id"] = doc_id_str
+            chk["folder_id"] = folder_id
+            chk["collection_id"] = collection_id
+            await db.knowledge_chunks.insert_one(chk)
+
+        await db.knowledge_documents.update_one(
+            {"_id": res.inserted_id},
+            {"$set": {"chunk_count": len(chunks), "pages": len(pages)}}
+        )
+
+        return {
+            "success": True,
+            "id": doc_id_str,
+            "filename": file.filename,
+            "pages": len(pages),
+            "chunk_count": len(chunks),
+            "manufacturer": doc_meta.get("manufacturer"),
+            "model": doc_meta.get("model")
+        }
+
+    @router.post("/documents/{doc_id}/reindex")
+    async def reindex_document(doc_id: str, user=Depends(get_current_user)):
+        """Re-indexes a single document by extracting sections and generating semantic chunks."""
+        require_admin(user)
+        doc = await db.knowledge_documents.find_one({"_id": ObjectId(doc_id)})
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        filename = doc.get("filename", "")
+        text_content = doc.get("text_content", "")
+        
+        # Build page list
+        pages = []
+        # Check if text has page markers like [Page X] or === Section (Page X) ===
+        page_splits = re.split(r"(?:===.*?Page\s*(\d+).*?===|\[Page\s*(\d+)\])", text_content)
+        if len(page_splits) > 3:
+            curr_p = 1
+            for idx in range(1, len(page_splits), 3):
+                p_num_str = page_splits[idx] or page_splits[idx+1]
+                p_num = int(p_num_str) if p_num_str and p_num_str.isdigit() else curr_p
+                p_txt = page_splits[idx+2] if idx+2 < len(page_splits) else ""
+                if p_txt.strip():
+                    pages.append({"page": p_num, "text": p_txt})
+                curr_p = p_num + 1
+        else:
+            pages = [{"page": 1, "text": text_content}]
+
+        doc_meta = extract_document_oem_metadata(filename, text_content[:3000])
+        doc_meta["document_id"] = doc_id
+        doc_meta["document_name"] = filename
+
+        chunks = process_pdf_pages_to_semantic_chunks(pages, doc_meta)
+
+        # Remove old chunks and insert clean semantic chunks
+        await db.knowledge_chunks.delete_many({"document_id": doc_id})
+        for chk in chunks:
+            chk["document_id"] = doc_id
+            chk["folder_id"] = doc.get("folder_id")
+            chk["collection_id"] = doc.get("collection_id")
+            await db.knowledge_chunks.insert_one(chk)
+
+        await db.knowledge_documents.update_one(
+            {"_id": ObjectId(doc_id)},
+            {"$set": {
+                "chunk_count": len(chunks),
+                "pages": len(pages),
+                "manufacturer": doc_meta.get("manufacturer"),
+                "model": doc_meta.get("model"),
+                "model_family": doc_meta.get("model_family"),
+                "power_kw": doc_meta.get("power_kw"),
+                "document_type": doc_meta.get("document_type"),
+                "last_indexed_at": datetime.utcnow(),
+                "status": "ready"
+            }}
+        )
+
+        return {
+            "success": True,
+            "document_id": doc_id,
+            "filename": filename,
+            "pages": len(pages),
+            "chunk_count": len(chunks),
+            "message": f"Successfully re-indexed {filename} into {len(chunks)} semantic chunks."
+        }
+
+    @router.post("/documents/reindex-all")
+    async def reindex_all_documents(user=Depends(get_current_user)):
+        """Re-indexes all knowledge documents in the knowledge base."""
+        require_admin(user)
+        docs = await db.knowledge_documents.find({}).to_list(length=None)
+        total_chunks = 0
+        reindexed_docs = []
+
+        for d in docs:
+            d_id = str(d["_id"])
+            filename = d.get("filename", "")
+            text_content = d.get("text_content", "")
+            
+            pages = []
+            page_splits = re.split(r"(?:===.*?Page\s*(\d+).*?===|\[Page\s*(\d+)\])", text_content)
+            if len(page_splits) > 3:
+                curr_p = 1
+                for idx in range(1, len(page_splits), 3):
+                    p_num_str = page_splits[idx] or page_splits[idx+1]
+                    p_num = int(p_num_str) if p_num_str and p_num_str.isdigit() else curr_p
+                    p_txt = page_splits[idx+2] if idx+2 < len(page_splits) else ""
+                    if p_txt.strip():
+                        pages.append({"page": p_num, "text": p_txt})
+                    curr_p = p_num + 1
+            else:
+                pages = [{"page": 1, "text": text_content}]
+
+            doc_meta = extract_document_oem_metadata(filename, text_content[:3000])
+            doc_meta["document_id"] = d_id
+            doc_meta["document_name"] = filename
+
+            chunks = process_pdf_pages_to_semantic_chunks(pages, doc_meta)
+
+            await db.knowledge_chunks.delete_many({"document_id": d_id})
+            for chk in chunks:
+                chk["document_id"] = d_id
+                chk["folder_id"] = d.get("folder_id")
+                chk["collection_id"] = d.get("collection_id")
+                await db.knowledge_chunks.insert_one(chk)
+
+            await db.knowledge_documents.update_one(
+                {"_id": d["_id"]},
+                {"$set": {
+                    "chunk_count": len(chunks),
+                    "pages": len(pages),
+                    "manufacturer": doc_meta.get("manufacturer"),
+                    "model": doc_meta.get("model"),
+                    "model_family": doc_meta.get("model_family"),
+                    "power_kw": doc_meta.get("power_kw"),
+                    "document_type": doc_meta.get("document_type"),
+                    "last_indexed_at": datetime.utcnow(),
+                    "status": "ready"
+                }}
+            )
+            total_chunks += len(chunks)
+            reindexed_docs.append({
+                "id": d_id,
+                "filename": filename,
+                "pages": len(pages),
+                "chunk_count": len(chunks)
             })
 
-        return {"success": True, "id": doc_id_str, "filename": file.filename, "chunk_count": len(chunks)}
+        return {
+            "success": True,
+            "total_documents": len(docs),
+            "total_chunks": total_chunks,
+            "documents": reindexed_docs,
+            "message": f"Successfully re-indexed {len(docs)} documents into {total_chunks} semantic chunks."
+        }
+
+    @router.get("/documents/{doc_id}/chunks")
+    async def get_document_chunks(doc_id: str, user=Depends(get_current_user)):
+        """Retrieves all structured chunks for a document for chunk inspection."""
+        require_admin(user)
+        chunks = await db.knowledge_chunks.find({"document_id": doc_id}).sort("chunk_index", 1).to_list(length=None)
+        clean = []
+        for c in chunks:
+            c["_id"] = str(c["_id"])
+            clean.append(c)
+        return clean
 
     @router.post("/documents/{doc_id}/move")
     async def move_document(doc_id: str, req: DocumentMoveRequest, user=Depends(get_current_user)):
