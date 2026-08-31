@@ -398,4 +398,3 @@ class OllamaService:
 
 # Singleton service instance
 ollama_service = OllamaService()
-"""
