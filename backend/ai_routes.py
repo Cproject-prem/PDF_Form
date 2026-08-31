@@ -20,7 +20,7 @@ AI_SERVICE_URL = os.environ.get("AI_SERVICE_URL", "http://localhost:9005").rstri
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma:2b")
 
-AI_REQUEST_TIMEOUT = float(os.environ.get("AI_REQUEST_TIMEOUT", "30.0"))
+AI_REQUEST_TIMEOUT = float(os.environ.get("AI_REQUEST_TIMEOUT", "90.0"))
 AI_CONNECT_TIMEOUT = float(os.environ.get("AI_CONNECT_TIMEOUT", "5.0"))
 MAX_NESTING_DEPTH = 10
 
