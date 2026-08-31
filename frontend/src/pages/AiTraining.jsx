@@ -1800,6 +1800,426 @@ export default function AiTrainingPage() {
             </div>
           )}
 
+          {/* TAB: DEDICATED SOLAR KNOWLEDGE MANAGEMENT & BULK JSON UPLOAD */}
+          {activeTab === "knowledge-mgmt" && (
+            <div className="space-y-6 max-w-6xl">
+              {/* Header */}
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    <Sliders className="w-5 h-5 text-indigo-600" /> Solar Knowledge Management & Bulk Upload
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Bulk upload verified JSON/ZIP packages, perform duplicate-aware UPSERT/MERGE, manage batch rollback, export datasets, and sync with Qdrant.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleExportKnowledge()}
+                    className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition shadow-sm"
+                  >
+                    <Download className="w-4 h-4" /> Export All JSON
+                  </button>
+                  <button
+                    onClick={() => handleSyncQdrant()}
+                    disabled={isSyncingQdrant}
+                    className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-violet-50 border border-violet-200 hover:bg-violet-100 text-violet-700 text-xs font-semibold transition shadow-sm disabled:opacity-50"
+                  >
+                    {isSyncingQdrant ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                    Sync Qdrant
+                  </button>
+                </div>
+              </div>
+
+              {/* Sub Navigation Bar */}
+              <div className="flex border-b border-slate-200 gap-6 text-xs font-bold">
+                <button
+                  onClick={() => setActiveKnowledgeSubTab("upload")}
+                  className={`pb-3 border-b-2 transition flex items-center gap-2 ${
+                    activeKnowledgeSubTab === "upload"
+                      ? "border-indigo-600 text-indigo-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <UploadCloud className="w-4 h-4" /> Bulk JSON / ZIP Upload
+                </button>
+                <button
+                  onClick={() => setActiveKnowledgeSubTab("batches")}
+                  className={`pb-3 border-b-2 transition flex items-center gap-2 ${
+                    activeKnowledgeSubTab === "batches"
+                      ? "border-indigo-600 text-indigo-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <History className="w-4 h-4" /> Import Batch History ({knowledgeBatches.length})
+                </button>
+                <button
+                  onClick={() => setActiveKnowledgeSubTab("collections")}
+                  className={`pb-3 border-b-2 transition flex items-center gap-2 ${
+                    activeKnowledgeSubTab === "collections"
+                      ? "border-indigo-600 text-indigo-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <Database className="w-4 h-4" /> Collections Overview ({knowledgeCollections.length})
+                </button>
+              </div>
+
+              {/* SUBTAB 1: BULK UPLOAD */}
+              {activeKnowledgeSubTab === "upload" && (
+                <div className="space-y-6">
+                  {/* Upload Card */}
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-5">
+                    {/* Drag & Drop Dropzone */}
+                    <div
+                      onClick={() => bulkFileInputRef.current?.click()}
+                      className="border-2 border-dashed border-indigo-200 hover:border-indigo-400 bg-indigo-50/40 rounded-2xl p-8 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2"
+                    >
+                      <UploadCloud className="w-10 h-10 text-indigo-500 mb-1" />
+                      <div className="text-sm font-bold text-slate-800">
+                        {selectedBulkFile ? selectedBulkFile.name : "Click to select or drag & drop JSON / ZIP files"}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        Supports Format A (Array), Format B (Single Object), Format C (Collection Package), or ZIP archive
+                      </div>
+                      {selectedBulkFile && (
+                        <div className="mt-2 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+                          Selected: {selectedBulkFile.name} ({(selectedBulkFile.size / 1024).toFixed(1)} KB)
+                        </div>
+                      )}
+                      <input
+                        ref={bulkFileInputRef}
+                        type="file"
+                        accept=".json,.zip"
+                        onChange={handleBulkFileSelect}
+                        className="hidden"
+                      />
+                    </div>
+
+                    {/* Parameters Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                      {/* Target Collection */}
+                      <div>
+                        <label className="font-bold text-slate-700 mb-1.5 block">Target Collection</label>
+                        <select
+                          value={bulkTargetCollection}
+                          onChange={e => setBulkTargetCollection(e.target.value)}
+                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold shadow-sm"
+                        >
+                          <option value="">✨ Auto Detect (from file / JSON)</option>
+                          <option value="oem_alarm_codes">oem_alarm_codes</option>
+                          <option value="oem_troubleshooting_procedures">oem_troubleshooting_procedures</option>
+                          <option value="inverter_models">inverter_models</option>
+                          <option value="inverter_parameters">inverter_parameters</option>
+                          <option value="modbus_registers">modbus_registers</option>
+                          <option value="fault_differential">fault_differential</option>
+                          <option value="diagnostic_steps">diagnostic_steps</option>
+                          <option value="historical_incidents">historical_incidents</option>
+                          <option value="safety_rules">safety_rules</option>
+                          <option value="scada_tags">scada_tags</option>
+                          <option value="engineering_calculations">engineering_calculations</option>
+                          <option value="firmware_revisions">firmware_revisions</option>
+                          <option value="source_documents">source_documents</option>
+                          <option value="vision_fault_patterns">vision_fault_patterns</option>
+                          <option value="response_templates">response_templates</option>
+                        </select>
+                      </div>
+
+                      {/* Bulk Mode */}
+                      <div>
+                        <label className="font-bold text-slate-700 mb-1.5 block">Bulk Update Mode</label>
+                        <select
+                          value={bulkUploadMode}
+                          onChange={e => setBulkUploadMode(e.target.value)}
+                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold shadow-sm"
+                        >
+                          <option value="UPSERT">🔄 UPSERT (Update existing, Insert new - Default)</option>
+                          <option value="INSERT_ONLY">➕ INSERT ONLY (Skip duplicates)</option>
+                          <option value="MERGE">🔀 MERGE (Update only supplied fields)</option>
+                          <option value="REPLACE_COLLECTION">⚠️ REPLACE COLLECTION (Clear & insert)</option>
+                        </select>
+                      </div>
+
+                      {/* Source Type */}
+                      <div>
+                        <label className="font-bold text-slate-700 mb-1.5 block">Source Provenance</label>
+                        <select
+                          value={bulkSourceType}
+                          onChange={e => setBulkSourceType(e.target.value)}
+                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-xs shadow-sm"
+                        >
+                          <option value="OEM_MANUAL">OEM User Manual</option>
+                          <option value="RCA_REPORT">Site Incident RCA Report</option>
+                          <option value="SITE_SOP">Plant Standard SOP</option>
+                          <option value="FIELD_TEST">Field Commissioning Test</option>
+                        </select>
+                      </div>
+
+                      {/* Source Document Override */}
+                      <div>
+                        <label className="font-bold text-slate-700 mb-1.5 block">Source Document Name</label>
+                        <input
+                          type="text"
+                          value={bulkSourceDoc}
+                          onChange={e => setBulkSourceDoc(e.target.value)}
+                          placeholder="e.g. Growatt MAX 100KTL3 Manual"
+                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs shadow-sm"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="flex items-center gap-3 pt-2 border-t border-slate-100">
+                      <button
+                        onClick={handleValidateBulk}
+                        disabled={!selectedBulkFile || isValidatingBulk}
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-indigo-200 bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 transition disabled:opacity-50"
+                      >
+                        {isValidatingBulk ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
+                        Validate JSON / ZIP
+                      </button>
+
+                      <button
+                        onClick={handleExecuteBulkUpload}
+                        disabled={!selectedBulkFile || isUploadingBulk}
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 transition disabled:opacity-50 shadow-sm"
+                      >
+                        {isUploadingBulk ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                        Import Knowledge into MongoDB
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Validation Preview Results */}
+                  {bulkValidationPreview && (
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                      <div className="px-5 py-3.5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                        <span className="text-xs font-bold text-slate-800">
+                          Pre-Import Validation Preview: <code className="text-indigo-600">{bulkValidationPreview.filename}</code>
+                        </span>
+                        <span className="text-[11px] font-semibold text-slate-500">
+                          Mode: <strong>{bulkValidationPreview.mode}</strong>
+                        </span>
+                      </div>
+
+                      <div className="p-5 space-y-4">
+                        {bulkValidationPreview.previews?.map((p, idx) => (
+                          <div key={idx} className="space-y-3">
+                            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
+                              <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
+                                <span className="text-[10px] text-slate-500 block">Total Records</span>
+                                <span className="text-base font-bold text-slate-800">{p.total_records}</span>
+                              </div>
+                              <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-100">
+                                <span className="text-[10px] text-emerald-600 block">New Inserts</span>
+                                <span className="text-base font-bold text-emerald-700">{p.new_records}</span>
+                              </div>
+                              <div className="p-3 rounded-xl bg-blue-50 border border-blue-100">
+                                <span className="text-[10px] text-blue-600 block">Updates</span>
+                                <span className="text-base font-bold text-blue-700">{p.update_records}</span>
+                              </div>
+                              <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
+                                <span className="text-[10px] text-slate-500 block">Duplicates</span>
+                                <span className="text-base font-bold text-slate-600">{p.duplicate_records}</span>
+                              </div>
+                              <div className="p-3 rounded-xl bg-red-50 border border-red-100">
+                                <span className="text-[10px] text-red-600 block">Invalid</span>
+                                <span className="text-base font-bold text-red-700">{p.invalid_records}</span>
+                              </div>
+                            </div>
+
+                            {/* Sample Preview Cards */}
+                            {p.sample_records?.length > 0 && (
+                              <div className="space-y-2 pt-2">
+                                <div className="text-[11px] font-bold text-slate-600 uppercase">Sample Parsed Records:</div>
+                                <div className="space-y-2">
+                                  {p.sample_records.slice(0, 3).map((rec, rIdx) => (
+                                    <div key={rIdx} className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 text-[11px] font-mono">
+                                      <div className="text-indigo-700 font-bold mb-1">
+                                        {rec.manufacturer} {rec.model} {rec.alarm_code ? `— Alarm ${rec.alarm_code}` : ""} {rec.parameter ? `— ${rec.parameter}` : ""}
+                                      </div>
+                                      <div className="text-slate-600 line-clamp-2">
+                                        {rec.description || rec.procedure || rec.value || JSON.stringify(rec)}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Upload Success Banner */}
+                  {bulkUploadResult && (
+                    <div className="p-5 rounded-2xl bg-emerald-50 border border-emerald-200 text-xs shadow-sm space-y-3">
+                      <div className="flex items-center gap-2 font-bold text-sm text-emerald-900">
+                        <CheckCircle className="w-5 h-5 text-emerald-600" />
+                        Bulk Upload Successfully Committed
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        {bulkUploadResult.results?.map((res, idx) => (
+                          <React.Fragment key={idx}>
+                            <div className="p-2.5 bg-white/80 rounded-xl border border-emerald-100">
+                              <span className="text-[10px] text-slate-500 block">Batch ID</span>
+                              <span className="font-mono font-bold text-indigo-700 text-xs">{res.batch_id}</span>
+                            </div>
+                            <div className="p-2.5 bg-white/80 rounded-xl border border-emerald-100">
+                              <span className="text-[10px] text-slate-500 block">Inserted</span>
+                              <span className="font-bold text-emerald-700 text-sm">{res.inserted}</span>
+                            </div>
+                            <div className="p-2.5 bg-white/80 rounded-xl border border-emerald-100">
+                              <span className="text-[10px] text-slate-500 block">Updated</span>
+                              <span className="font-bold text-blue-700 text-sm">{res.updated}</span>
+                            </div>
+                            <div className="p-2.5 bg-white/80 rounded-xl border border-emerald-100">
+                              <span className="text-[10px] text-slate-500 block">Target Collection</span>
+                              <span className="font-bold text-slate-800 text-xs">{res.collection}</span>
+                            </div>
+                          </React.Fragment>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-3 pt-2">
+                        <button
+                          onClick={() => setActiveKnowledgeSubTab("batches")}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold text-[11px] hover:bg-emerald-700 transition"
+                        >
+                          View in Batch History
+                        </button>
+                        <button
+                          onClick={() => handleSyncQdrant()}
+                          className="px-3 py-1.5 rounded-lg bg-violet-600 text-white font-semibold text-[11px] hover:bg-violet-700 transition flex items-center gap-1.5"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" /> Sync to Qdrant RAG
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* SUBTAB 2: BATCH HISTORY */}
+              {activeKnowledgeSubTab === "batches" && (
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="px-5 py-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      Knowledge Import Batch History ({knowledgeBatches.length})
+                    </span>
+                    <button
+                      onClick={fetchKnowledgeData}
+                      className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
+                    >
+                      <RefreshCcw className="w-3.5 h-3.5" /> Refresh
+                    </button>
+                  </div>
+
+                  {knowledgeBatches.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-slate-400">
+                      <History className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                      No import batches recorded yet.
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100 overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50/60 text-[11px] font-bold text-slate-500 border-b border-slate-100">
+                          <tr>
+                            <th className="py-3 px-4">Batch ID</th>
+                            <th className="py-3 px-4">Collection</th>
+                            <th className="py-3 px-4">Mode</th>
+                            <th className="py-3 px-4 text-center">Inserted</th>
+                            <th className="py-3 px-4 text-center">Updated</th>
+                            <th className="py-3 px-4">Status</th>
+                            <th className="py-3 px-4">Date</th>
+                            <th className="py-3 px-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {knowledgeBatches.map((b) => (
+                            <tr key={b.batch_id} className="hover:bg-slate-50/70 transition">
+                              <td className="py-3.5 px-4 font-mono font-bold text-indigo-700">{b.batch_id}</td>
+                              <td className="py-3.5 px-4 font-semibold text-slate-800">{b.collection}</td>
+                              <td className="py-3.5 px-4 text-[10px] text-slate-500 font-semibold">{b.mode}</td>
+                              <td className="py-3.5 px-4 text-center font-bold text-emerald-700">{b.inserted_count}</td>
+                              <td className="py-3.5 px-4 text-center font-bold text-blue-700">{b.updated_count}</td>
+                              <td className="py-3.5 px-4">
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                  b.status === "COMPLETED"
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : b.status === "ROLLED_BACK"
+                                    ? "bg-amber-100 text-amber-800"
+                                    : "bg-slate-100 text-slate-700"
+                                }`}>
+                                  {b.status}
+                                </span>
+                              </td>
+                              <td className="py-3.5 px-4 text-slate-400 text-[11px]">
+                                {new Date(b.upload_date).toLocaleDateString()}
+                              </td>
+                              <td className="py-3.5 px-4 text-right">
+                                {b.status !== "ROLLED_BACK" && (
+                                  <button
+                                    onClick={() => handleRollbackBatch(b.batch_id)}
+                                    disabled={isRollingBackBatchId === b.batch_id}
+                                    className="px-2.5 py-1 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 text-[10px] font-semibold transition disabled:opacity-50"
+                                  >
+                                    {isRollingBackBatchId === b.batch_id ? "Rolling back..." : "Rollback"}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* SUBTAB 3: COLLECTIONS OVERVIEW */}
+              {activeKnowledgeSubTab === "collections" && (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {knowledgeCollections.map((col) => (
+                    <div key={col.collection} className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm space-y-3 flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-xs font-bold text-slate-800">{col.collection}</span>
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            col.count > 0 ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-400"
+                          }`}>
+                            {col.count.toLocaleString()} recs
+                          </span>
+                        </div>
+                        {col.sample_fields?.length > 0 && (
+                          <div className="text-[10px] text-slate-400 mt-2 truncate">
+                            Fields: {col.sample_fields.slice(0, 4).join(", ")}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                        <button
+                          onClick={() => handleExportKnowledge(col.collection)}
+                          className="flex-1 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-semibold transition text-center"
+                        >
+                          Export JSON
+                        </button>
+                        <button
+                          onClick={() => handleSyncQdrant(col.collection)}
+                          className="py-1.5 px-2.5 rounded-lg bg-violet-50 hover:bg-violet-100 border border-violet-200 text-violet-700 text-[11px] font-semibold transition"
+                        >
+                          Sync
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TAB 5: TRAINING CASES */}
           {activeTab === "cases" && (
             <div className="space-y-6 max-w-6xl">
