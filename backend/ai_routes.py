@@ -269,9 +269,9 @@ def build_ai_router(db, get_current_user):
         collection: str                           # MongoDB collection name to pull from
         field_map: Optional[Dict[str, str]] = {}  # { "mongo_field": "training_field" }
         filter_query: Optional[Dict[str, Any]] = {}
-        limit: Optional[int] = 100
-        target: str = "training_cases"            # "training_cases" | "knowledge_chunks" | "structured_knowledge"
-        collection_id: Optional[str] = None       # RAG collection ID (for knowledge_chunks)
+        limit: Optional[int] = 200
+        target: str = "auto"  # auto | training_cases | knowledge_chunks | structured_knowledge | ai_rules
+        collection_id: Optional[str] = None       # RAG collection ID (for knowledge_chunks target)
         auto_import: Optional[bool] = False       # True = import now, False = preview only
 
     # ----------------- 1. AI System Health & Circuit Status -----------------
@@ -812,14 +812,14 @@ def build_ai_router(db, get_current_user):
         if not generated_answer:
             if not retrieved_context.strip():
                 generated_answer = (
-                    "⚠️ No knowledge chunks found for this question. "
+                    "WARNING:️ No knowledge chunks found for this question. "
                     "Upload documents and index them first via the Knowledge Base tab."
                 )
             else:
                 # Summarize top context without LLM
                 top_source = retrieved_knowledge[0]["filename"] if retrieved_knowledge else "knowledge base"
                 generated_answer = (
-                    f"⚠️ Local Ollama LLM is offline — answer generation is unavailable.\n\n"
+                    f"WARNING:️ Local Ollama LLM is offline — answer generation is unavailable.\n\n"
                     f"However, {len(retrieved_knowledge)} relevant context chunk(s) were retrieved "
                     f"from '{top_source}' with a top similarity score of "
                     f"{retrieved_knowledge[0]['score'] if retrieved_knowledge else 'N/A'}.\n\n"
@@ -1203,239 +1203,660 @@ def build_ai_router(db, get_current_user):
                 "ai_available": False
             }
 
-    # ----------------- 10. MongoDB Data Pull for AI Training -----------------
 
-    # Whitelisted collections that are safe to pull from for AI training
-    PULLABLE_COLLECTIONS = [
-        "submissions",
-        "pdf_submissions",
-        "schedule_actuals",
-        "manpower",
-        "plant_documents",
-        "knowledge_documents",
-        "knowledge_chunks",
-        "structured_knowledge",
-        "training_cases",
-        "audit_logs",
-        "forms",
-    ]
+    # ══════════════════════════════════════════════════════════════════════════
+    # 10. MongoDB Data Pull for Solar O&M AI Knowledge System
+    # ══════════════════════════════════════════════════════════════════════════
 
-    @router.get("/mongo/collections")
-    async def list_pullable_collections(user=Depends(get_current_user)):
-        """Returns list of available MongoDB collections with record counts."""
+    # ── Collections discoverable via scan (whitelist = safety gate) ──
+    # These are FormForge system collections always available.
+    # The user's own solar knowledge collections are discovered dynamically.
+    SYSTEM_COLLECTION_WHITELIST = {
+        "submissions", "pdf_submissions", "schedule_actuals", "manpower",
+        "plant_documents", "knowledge_documents", "knowledge_chunks",
+        "structured_knowledge", "training_cases", "audit_logs", "forms",
+        "ai_feedback", "ai_prompts", "ai_evaluations",
+    }
+
+    # ── Auto-Classification Rules (by collection name pattern) ──
+    TRAINING_CASE_PATTERNS = {
+        "historical_incidents", "historical_cases", "company_rca", "rca_cases",
+        "solved_cases", "technician_cases", "incident_log", "fault_history",
+        "maintenance_history", "case_studies", "rca_records"
+    }
+    STRUCTURED_KNOWLEDGE_PATTERNS = {
+        "manufacturers", "inverter_models", "inverter_specifications",
+        "inverter_parameters", "modbus_registers", "scada_tags",
+        "engineering_calculations", "equipment_master", "pv_modules",
+        "electrical_equipment", "communication_parameters", "firmware_revisions",
+        "protection_settings", "cable_parameters", "transformer_specs",
+        "relay_settings", "ct_pt_specs", "meter_configuration"
+    }
+    KNOWLEDGE_CHUNK_PATTERNS = {
+        "fault_differential", "diagnostic_steps", "troubleshooting",
+        "oem_troubleshooting_procedures", "generic_alarm_patterns",
+        "communication_faults", "pv_module_faults", "dc_equipment_faults",
+        "ac_ht_equipment_faults", "safety_rules", "vision_fault_patterns",
+        "om_procedures", "installation_procedures", "commissioning_procedures",
+        "alarm_descriptions", "performance_analysis", "string_analysis",
+        "grid_fault_procedures", "inverter_alarms"
+    }
+    AI_RULES_PATTERNS = {
+        "ai_knowledge_rules", "ai_reasoning_rules", "source_policy",
+        "rag_retrieval_rules", "response_templates", "ai_orchestration",
+        "diagnostic_rules", "escalation_rules", "confidence_rules"
+    }
+
+    # ── Field normalization aliases ──
+    FIELD_ALIASES = {
+        "manufacturer":    ["manufacturer", "brand", "oem", "make"],
+        "model":           ["model", "model_name", "inverter_model", "device_model", "product_model"],
+        "power_rating_kw": ["power", "power_kw", "rated_power", "capacity", "power_rating", "capacity_kw"],
+        "fault":           ["fault", "fault_name", "alarm", "alarm_name", "symptom", "issue", "problem", "defect"],
+        "fault_code":      ["fault_code", "alarm_code", "error_code", "code", "alarm_id"],
+        "possible_causes": ["cause", "possible_cause", "root_cause", "probable_cause", "causes", "possible_causes"],
+        "diagnostic_steps":["diagnostic", "diagnostic_steps", "troubleshooting", "checks", "steps", "procedure", "investigation"],
+        "corrective_action":["action", "corrective_action", "recommended_action", "fix", "resolution", "remedy"],
+        "verification":    ["result", "verification", "expected_result", "outcome", "confirmation"],
+        "source_document": ["source", "source_document", "manual", "document", "document_name", "reference"],
+        "source_page":     ["page", "source_page", "page_number", "page_ref"],
+        "document_revision":["revision", "document_revision", "doc_rev", "rev", "version"],
+        "firmware_version":["firmware", "firmware_version", "sw_version", "software_version"],
+        "equipment_type":  ["equipment_type", "equipment", "device_type", "category", "type"],
+        "trigger_condition":["trigger", "trigger_condition", "threshold", "set_point", "condition"],
+        "safety_notes":    ["safety", "safety_notes", "precautions", "warnings", "loto", "isolation"],
+        "meaning":         ["meaning", "description", "definition", "explanation", "alarm_description"],
+        "observations":    ["observations", "symptoms", "readings", "measurements", "evidence", "signs"],
+        "investigation":   ["investigation", "diagnostic_steps", "troubleshooting", "rca_steps"],
+        "actual_cause":    ["actual_cause", "root_cause", "confirmed_cause", "cause"],
+        "lessons_learned": ["lessons_learned", "lessons", "recommendations", "preventive_action"],
+        "parameter":       ["parameter", "param", "register_name", "tag_name", "variable"],
+        "value":           ["value", "setting", "default_value", "nominal", "rated_value"],
+        "unit":            ["unit", "units", "engineering_unit", "eu"],
+    }
+
+    def _normalize_field(rec: dict, field_key: str, default=None):
+        """Resolve a normalized field from multiple possible source field names."""
+        aliases = FIELD_ALIASES.get(field_key, [field_key])
+        for alias in aliases:
+            val = rec.get(alias)
+            if val is not None and val != "" and val != [] and val != {}:
+                return val
+        return default
+
+    def _serialize_record(rec: dict) -> dict:
+        """Serialize ObjectIds and datetimes for JSON safety."""
+        clean = {}
+        for k, v in rec.items():
+            if hasattr(v, "__str__") and not isinstance(v, (str, int, float, bool, list, dict, type(None))):
+                clean[k] = str(v)
+            elif isinstance(v, list):
+                clean[k] = [str(i) if hasattr(i, "__str__") and not isinstance(i, (str, int, float, bool)) else i for i in v]
+            else:
+                clean[k] = v
+        return clean
+
+    def _auto_classify(collection_name: str) -> str:
+        """Determine knowledge target by collection name pattern matching."""
+        name = collection_name.lower()
+        if name in AI_RULES_PATTERNS or any(p in name for p in ["ai_rule", "ai_reason", "rag_rule", "orchestration", "source_policy"]):
+            return "ai_rules"
+        if name in TRAINING_CASE_PATTERNS or any(p in name for p in ["rca", "incident", "historical", "solved_case", "technician_case", "case_study"]):
+            return "training_cases"
+        if name in STRUCTURED_KNOWLEDGE_PATTERNS or any(p in name for p in ["modbus", "register", "firmware", "specification", "parameter", "scada_tag", "inverter_model", "equipment_master", "pv_module", "protection_setting"]):
+            return "structured_knowledge"
+        if name in KNOWLEDGE_CHUNK_PATTERNS or any(p in name for p in ["fault", "troubleshoot", "diagnostic", "alarm", "procedure", "om_", "safety_rule", "performance", "string_analysis"]):
+            return "knowledge_chunks"
+        # Default fallback for unknown names
+        return "knowledge_chunks"
+
+    def _get_classify_label(target: str) -> str:
+        labels = {
+            "training_cases": "TRAINING CASES",
+            "structured_knowledge": "STRUCTURED KNOWLEDGE",
+            "knowledge_chunks": "KNOWLEDGE CHUNKS",
+            "ai_rules": "AI RULES",
+        }
+        return labels.get(target, "KNOWLEDGE CHUNKS")
+
+    def _get_classify_color(target: str) -> str:
+        colors = {
+            "training_cases": "emerald",
+            "structured_knowledge": "blue",
+            "knowledge_chunks": "violet",
+            "ai_rules": "amber",
+        }
+        return colors.get(target, "slate")
+
+    def _build_chunk_content(rec: dict, collection_name: str) -> str:
+        """Build structured semantic text for a Knowledge Chunk record."""
+        mfr   = _normalize_field(rec, "manufacturer", "")
+        model = _normalize_field(rec, "model", "")
+        equip = _normalize_field(rec, "equipment_type", "")
+        fault = _normalize_field(rec, "fault", "")
+        fault_code = _normalize_field(rec, "fault_code", "")
+        meaning    = _normalize_field(rec, "meaning", "")
+        trigger    = _normalize_field(rec, "trigger_condition", "")
+        causes     = _normalize_field(rec, "possible_causes", [])
+        steps      = _normalize_field(rec, "diagnostic_steps", [])
+        action     = _normalize_field(rec, "corrective_action", "")
+        verif      = _normalize_field(rec, "verification", "")
+        safety     = _normalize_field(rec, "safety_notes", [])
+        src_doc    = _normalize_field(rec, "source_document", "")
+        src_page   = _normalize_field(rec, "source_page", "")
+        doc_rev    = _normalize_field(rec, "document_revision", "")
+        fw_ver     = _normalize_field(rec, "firmware_version", "")
+
+        # Build title
+        title_parts = [p for p in [mfr, model, fault or fault_code] if p]
+        title = " — ".join(title_parts) if title_parts else collection_name
+
+        lines = [f"Title: {title}"]
+        if mfr:    lines.append(f"Manufacturer: {mfr}")
+        if model:  lines.append(f"Model: {model}")
+        if equip:  lines.append(f"Equipment: {equip}")
+        if fault_code: lines.append(f"Fault Code: {fault_code}")
+        if fault:  lines.append(f"Fault / Symptom: {fault}")
+        if meaning: lines.append(f"Meaning: {meaning}")
+        if trigger: lines.append(f"Trigger Condition: {trigger}")
+
+        if causes:
+            causes_list = causes if isinstance(causes, list) else [causes]
+            lines.append("Possible Causes:")
+            for i, c in enumerate(causes_list, 1):
+                lines.append(f"  {i}. {c}")
+
+        if steps:
+            steps_list = steps if isinstance(steps, list) else [steps]
+            lines.append("Diagnostic Procedure:")
+            for i, s in enumerate(steps_list, 1):
+                lines.append(f"  {i}. {s}")
+
+        if action: lines.append(f"Corrective Action: {action}")
+        if verif:  lines.append(f"Verification: {verif}")
+
+        if safety:
+            safety_list = safety if isinstance(safety, list) else [safety]
+            lines.append("Safety Notes:")
+            for s in safety_list:
+                lines.append(f"  WARNING: {s}")
+
+        if src_doc:  lines.append(f"Source Document: {src_doc}")
+        if src_page: lines.append(f"Source Page: {src_page}")
+        if doc_rev:  lines.append(f"Document Revision: {doc_rev}")
+        if fw_ver:   lines.append(f"Firmware Version: {fw_ver}")
+
+        return "\n".join(lines)
+
+    def _build_training_case(rec: dict, collection_name: str, case_index: int) -> dict:
+        """Build a rich Training Case document from a normalized record."""
+        mfr     = _normalize_field(rec, "manufacturer", "")
+        model   = _normalize_field(rec, "model", "")
+        equip   = _normalize_field(rec, "equipment_type", "")
+        fault   = _normalize_field(rec, "fault", "")
+        fault_code = _normalize_field(rec, "fault_code", "")
+        obs     = _normalize_field(rec, "observations", [])
+        invest  = _normalize_field(rec, "investigation", [])
+        cause   = _normalize_field(rec, "actual_cause", "")
+        action  = _normalize_field(rec, "corrective_action", "")
+        verif   = _normalize_field(rec, "verification", "")
+        lessons = _normalize_field(rec, "lessons_learned", "")
+        src_doc = _normalize_field(rec, "source_document", "")
+        safety  = _normalize_field(rec, "safety_notes", [])
+        ai_diag = rec.get("ai_diagnosis", rec.get("initial_assessment", ""))
+        scada   = rec.get("scada_evidence", rec.get("scada_data", []))
+        alarms  = rec.get("alarm_history", rec.get("alarms", []))
+
+        # Build question from available data
+        parts = []
+        if mfr:   parts.append(mfr)
+        if model: parts.append(model)
+        if fault: parts.append(f"— {fault}")
+        elif fault_code: parts.append(f"— Fault {fault_code}")
+        question_auto = " ".join(parts) if parts else ""
+
+        question = (
+            rec.get("question") or rec.get("title") or rec.get("case_title") or
+            question_auto or
+            f"Incident from {collection_name} record {case_index}"
+        )
+        situation = rec.get("situation") or rec.get("description") or rec.get("background") or ""
+
+        return {
+            "case_code": f"CASE-{case_index:05d}",
+            "question": str(question)[:600],
+            "situation": str(situation)[:800],
+            "equipment": str(equip or fault or ""),
+            "manufacturer": str(mfr),
+            "model": str(model),
+            "observations": obs if isinstance(obs, list) else ([obs] if obs else []),
+            "scada_evidence": scada if isinstance(scada, list) else ([scada] if scada else []),
+            "alarm_history": alarms if isinstance(alarms, list) else ([alarms] if alarms else []),
+            "investigation": invest if isinstance(invest, list) else ([invest] if invest else []),
+            "actual_cause": str(cause)[:600],
+            "corrective_action": str(action)[:600],
+            "verification": str(verif)[:400],
+            "lessons_learned": str(lessons)[:400],
+            "ai_diagnosis": str(ai_diag)[:400],
+            "safety_notes": safety if isinstance(safety, list) else ([safety] if safety else []),
+            "source": str(src_doc),
+            "source_collection": collection_name,
+            "source_record_id": rec.get("_id", ""),
+            "verification_status": "NOT_VERIFIED",
+            "status": "Draft",
+            "technician_confirmed": False,
+            "expert_approved": False,
+        }
+
+    def _build_structured_knowledge(rec: dict, collection_name: str) -> dict:
+        """Build a Structured Knowledge document (machine-readable facts)."""
+        mfr    = _normalize_field(rec, "manufacturer", "")
+        model  = _normalize_field(rec, "model", "")
+        equip  = _normalize_field(rec, "equipment_type", "")
+        param  = _normalize_field(rec, "parameter", "")
+        value  = _normalize_field(rec, "value", None)
+        unit   = _normalize_field(rec, "unit", "")
+        src    = _normalize_field(rec, "source_document", "")
+        page   = _normalize_field(rec, "source_page", None)
+        rev    = _normalize_field(rec, "document_revision", "")
+        fw     = _normalize_field(rec, "firmware_version", "")
+        fault  = _normalize_field(rec, "fault", "")
+        fault_code = _normalize_field(rec, "fault_code", "")
+
+        # Inherit all fields not already mapped (preserve original structure)
+        preserved = {k: v for k, v in rec.items() if k not in ("_id", "created_at", "updated_at")}
+
+        doc = {
+            "manufacturer":         str(mfr),
+            "model":                str(model),
+            "equipment_type":       str(equip),
+            "parameter":            str(param),
+            "value":                value,
+            "unit":                 str(unit),
+            "fault":                str(fault),
+            "fault_code":           str(fault_code),
+            "source_document":      str(src),
+            "source_page":          page,
+            "document_revision":    str(rev),
+            "firmware_version":     str(fw),
+            "verification_status":  "NOT_VERIFIED",
+            "source_collection":    collection_name,
+            "source_record_id":     rec.get("_id", ""),
+            "original_data":        preserved,
+            "status":               "Draft",
+        }
+        return doc
+
+    def _build_ai_rule(rec: dict, collection_name: str) -> dict:
+        """Build an AI Rule document that governs AI reasoning behaviour."""
+        return {
+            "rule_type":    rec.get("rule_type", rec.get("type", "reasoning")),
+            "rule_key":     rec.get("rule_key", rec.get("key", "")),
+            "description":  rec.get("description", rec.get("rule", rec.get("content", ""))),
+            "priority":     rec.get("priority", 5),
+            "condition":    rec.get("condition", rec.get("trigger", "")),
+            "action":       rec.get("action", rec.get("response", "")),
+            "applies_to":   rec.get("applies_to", rec.get("scope", "general")),
+            "enabled":      rec.get("enabled", True),
+            "source_collection": collection_name,
+            "source_record_id":  rec.get("_id", ""),
+            "verification_status": "NOT_VERIFIED",
+            "status": "Draft",
+        }
+
+    async def _detect_duplicate(db_collection, query_dict: dict) -> bool:
+        """Check for an existing document matching key provenance fields."""
+        existing = await db_collection.find_one(query_dict)
+        return existing is not None
+
+    def _build_chunk_metadata(rec: dict, collection_name: str) -> dict:
+        """Build Qdrant-compatible metadata for a knowledge chunk."""
+        return {
+            "manufacturer":      str(_normalize_field(rec, "manufacturer", "") or ""),
+            "model":             str(_normalize_field(rec, "model", "") or ""),
+            "equipment_type":    str(_normalize_field(rec, "equipment_type", "") or ""),
+            "power_rating_kw":   _normalize_field(rec, "power_rating_kw", None),
+            "knowledge_type":    str(rec.get("knowledge_type", "troubleshooting")),
+            "fault":             str(_normalize_field(rec, "fault", "") or ""),
+            "fault_code":        str(_normalize_field(rec, "fault_code", "") or ""),
+            "alarm_code":        str(_normalize_field(rec, "fault_code", "") or ""),
+            "source_document":   str(_normalize_field(rec, "source_document", "") or ""),
+            "source_page":       str(_normalize_field(rec, "source_page", "") or ""),
+            "verification_status": str(rec.get("verification_status", "NOT_VERIFIED")),
+            "firmware_version":  str(_normalize_field(rec, "firmware_version", "") or ""),
+            "original_collection": collection_name,
+        }
+
+    # ── New: per-collection classification scan ──────────────────────────────
+
+    @router.get("/mongo/classify")
+    async def classify_all_collections(user=Depends(get_current_user)):
+        """Scan all MongoDB collections and return auto-classification for each."""
         require_admin(user)
+        try:
+            all_names = await db.list_collection_names()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
+
         result = []
-        for coll_name in PULLABLE_COLLECTIONS:
+        for name in sorted(all_names):
             try:
-                count = await db[coll_name].count_documents({})
-                sample = await db[coll_name].find_one({})
-                sample_fields = list(sample.keys()) if sample else []
-                # Remove internal mongo fields from sample
-                sample_fields = [f for f in sample_fields if not f.startswith("_")]
+                count  = await db[name].count_documents({})
+                sample = await db[name].find_one({})
+                fields = [f for f in (sample.keys() if sample else [])]
+                user_fields = [f for f in fields if not f.startswith("_")]
+
+                # Determine if this is a system collection or a user solar knowledge collection
+                is_system = name in SYSTEM_COLLECTION_WHITELIST
+                target    = _auto_classify(name)
+                label     = _get_classify_label(target)
+                color     = _get_classify_color(target)
+
                 result.append({
-                    "collection": coll_name,
-                    "count": count,
-                    "sample_fields": sample_fields[:15],
-                    "available": count > 0
+                    "collection":    name,
+                    "count":         count,
+                    "is_system":     is_system,
+                    "auto_target":   target,
+                    "target_label":  label,
+                    "target_color":  color,
+                    "sample_fields": user_fields[:12],
+                    "available":     count > 0,
+                    "importable":    count > 0 and not is_system,
                 })
             except Exception:
                 result.append({
-                    "collection": coll_name,
+                    "collection": name,
                     "count": 0,
+                    "is_system": name in SYSTEM_COLLECTION_WHITELIST,
+                    "auto_target": "knowledge_chunks",
+                    "target_label": "KNOWLEDGE CHUNKS",
+                    "target_color": "violet",
                     "sample_fields": [],
-                    "available": False
+                    "available": False,
+                    "importable": False,
                 })
         return result
 
+    @router.get("/mongo/collections")
+    async def list_pullable_collections(user=Depends(get_current_user)):
+        """Returns all MongoDB collections with counts and auto-classification."""
+        require_admin(user)
+        try:
+            all_names = await db.list_collection_names()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
+
+        result = []
+        for name in sorted(all_names):
+            try:
+                count  = await db[name].count_documents({})
+                sample = await db[name].find_one({})
+                user_fields = [f for f in (sample.keys() if sample else []) if not f.startswith("_")]
+                target = _auto_classify(name)
+                result.append({
+                    "collection":    name,
+                    "count":         count,
+                    "auto_target":   target,
+                    "target_label":  _get_classify_label(target),
+                    "target_color":  _get_classify_color(target),
+                    "sample_fields": user_fields[:12],
+                    "available":     count > 0,
+                    "is_system":     name in SYSTEM_COLLECTION_WHITELIST,
+                    "importable":    count > 0 and name not in SYSTEM_COLLECTION_WHITELIST,
+                })
+            except Exception:
+                result.append({
+                    "collection": name, "count": 0, "auto_target": "knowledge_chunks",
+                    "target_label": "KNOWLEDGE CHUNKS", "target_color": "violet",
+                    "sample_fields": [], "available": False,
+                    "is_system": name in SYSTEM_COLLECTION_WHITELIST, "importable": False
+                })
+        return result
+
+    # ── Preview with full classification + validation ────────────────────────
+
     @router.post("/mongo/preview")
     async def preview_mongo_pull(req: MongoDBPullRequest, user=Depends(get_current_user)):
-        """Preview records from a MongoDB collection before importing as AI training data."""
+        """Preview records with classification, normalization, and validation analysis."""
         require_admin(user)
-        if req.collection not in PULLABLE_COLLECTIONS:
-            raise HTTPException(status_code=400, detail=f"Collection '{req.collection}' is not in the whitelist for AI training pulls.")
 
-        limit = min(req.limit or 20, 200)
+        limit  = min(req.limit or 20, 100)
+        target = req.target if req.target != "auto" else _auto_classify(req.collection)
+
         try:
-            cursor = db[req.collection].find(req.filter_query or {}).limit(limit)
+            cursor  = db[req.collection].find(req.filter_query or {}).limit(limit)
             records = await cursor.to_list(length=limit)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to query collection: {str(e)}")
 
-        # Serialize ObjectIds
-        serialized = []
-        for rec in records:
-            row = {}
-            for k, v in rec.items():
-                row[k] = str(v) if hasattr(v, "__str__") and not isinstance(v, (str, int, float, bool, list, dict)) else v
-            serialized.append(row)
+        serialized = [_serialize_record(r) for r in records]
 
-        # Build preview of what fields would map to training target
-        field_map = req.field_map or {}
-        preview_mapped = []
+        # Validation & normalization analysis per record
+        valid_count = 0
+        skip_count  = 0
+        unverified  = 0
+        preview_normalized = []
+
         for rec in serialized:
-            mapped = {}
-            if field_map:
-                for src_field, dst_field in field_map.items():
-                    mapped[dst_field] = rec.get(src_field, "")
-            else:
-                # Auto-map: pick text-like fields
-                for k, v in rec.items():
-                    if isinstance(v, str) and len(v) > 3:
-                        mapped[k] = v
-            preview_mapped.append(mapped)
+            mfr   = _normalize_field(rec, "manufacturer", "")
+            model = _normalize_field(rec, "model", "")
+            fault = _normalize_field(rec, "fault", "") or _normalize_field(rec, "fault_code", "")
+            src   = _normalize_field(rec, "source_document", "")
+
+            has_identity = bool(mfr or model)
+            has_content  = any(isinstance(v, str) and len(v) > 5 for v in rec.values())
+            vstatus      = "OEM_DOCUMENT_REQUIRED" if (not src and (mfr or model)) else "NOT_VERIFIED"
+            if not has_content:
+                skip_count += 1
+                continue
+
+            valid_count += 1
+            if vstatus != "VERIFIED":
+                unverified += 1
+
+            preview_normalized.append({
+                "manufacturer":       mfr,
+                "model":              model,
+                "equipment_type":     _normalize_field(rec, "equipment_type", ""),
+                "fault":              fault,
+                "source_document":    src,
+                "verification_status": vstatus,
+                "has_identity":       has_identity,
+                "_raw_fields":        list(rec.keys())[:8],
+            })
 
         return {
-            "collection": req.collection,
-            "target": req.target,
-            "total_preview": len(serialized),
-            "records": serialized[:10],   # Show first 10 raw records
-            "mapped_preview": preview_mapped[:10],  # Show first 10 mapped records
-            "field_map": field_map
+            "collection":        req.collection,
+            "effective_target":  target,
+            "target_label":      _get_classify_label(target),
+            "total_records":     len(serialized),
+            "valid_count":       valid_count,
+            "skip_count":        skip_count,
+            "unverified_count":  unverified,
+            "records":           serialized[:8],
+            "normalized_preview": preview_normalized[:8],
+            "field_map":         req.field_map or {},
         }
+
+    # ── Full Import with normalization pipeline ───────────────────────────────
 
     @router.post("/mongo/import")
     async def import_mongo_to_training(req: MongoDBPullRequest, user=Depends(get_current_user)):
-        """Import MongoDB records directly into AI training — training cases, knowledge chunks, or structured knowledge."""
+        """
+        Import MongoDB records into the Solar O&M AI knowledge system.
+        Targets: auto | training_cases | knowledge_chunks | structured_knowledge | ai_rules
+        """
         require_admin(user)
-        if req.collection not in PULLABLE_COLLECTIONS:
-            raise HTTPException(status_code=400, detail=f"Collection '{req.collection}' is not in the whitelist.")
 
-        limit = min(req.limit or 100, 500)
+        effective_target = req.target if req.target != "auto" else _auto_classify(req.collection)
+        limit = min(req.limit or 200, 1000)
+
         try:
-            cursor = db[req.collection].find(req.filter_query or {}).limit(limit)
+            cursor  = db[req.collection].find(req.filter_query or {}).limit(limit)
             records = await cursor.to_list(length=limit)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to query collection: {str(e)}")
 
-        field_map = req.field_map or {}
-        imported = 0
-        skipped = 0
-        errors = []
-        now = datetime.utcnow()
+        now          = datetime.utcnow()
         performed_by = getattr(user, "email", "system")
+        imported = skipped = duplicates = unverified = 0
+        errors   = []
+        import_log = []
+
+        # Get current count for case numbering
+        case_base = await db.training_cases.count_documents({})
 
         for rec in records:
-            # Serialize ObjectIds
-            clean = {}
-            for k, v in rec.items():
-                clean[k] = str(v) if hasattr(v, "__str__") and not isinstance(v, (str, int, float, bool, list, dict)) else v
+            clean = _serialize_record(rec)
+            orig_id = clean.get("_id", "")
 
             try:
-                if req.target == "training_cases":
-                    # Map fields or auto-generate
-                    question = (
-                        clean.get(field_map.get("question", ""), "") or
-                        clean.get("question", "") or
-                        clean.get("title", "") or
-                        clean.get("description", "") or
-                        f"Record from {req.collection}: {str(clean)[:200]}"
-                    )
-                    actual_cause = (
-                        clean.get(field_map.get("actual_cause", ""), "") or
-                        clean.get("actual_cause", "") or
-                        clean.get("remarks", "") or
-                        clean.get("notes", "") or
-                        "Imported from MongoDB"
-                    )
-                    action = (
-                        clean.get(field_map.get("action", ""), "") or
-                        clean.get("action", "") or
-                        clean.get("corrective_action", "") or
-                        "See original record"
-                    )
-                    count = await db.training_cases.count_documents({})
-                    case_doc = {
-                        "case_code": f"CASE-{count + imported + 1:05d}",
-                        "question": question[:500],
-                        "conditions": {"source_collection": req.collection, "source_id": clean.get("_id", "")},
-                        "ai_diagnosis": clean.get(field_map.get("ai_diagnosis", ""), "") or clean.get("status", "Imported"),
-                        "actual_cause": actual_cause[:500],
-                        "action": action[:500],
-                        "result": clean.get(field_map.get("result", ""), "") or "Imported from MongoDB",
-                        "status": "Draft",
-                        "technician_confirmed": False,
-                        "expert_approved": False,
-                        "created_by": performed_by,
-                        "source": {"collection": req.collection, "record_id": clean.get("_id", "")},
-                        "created_at": now
-                    }
-                    await db.training_cases.insert_one(case_doc)
-                    imported += 1
+                has_content = any(isinstance(v, str) and len(str(v)) > 5 for v in clean.values())
+                if not has_content:
+                    skipped += 1
+                    continue
 
-                elif req.target == "knowledge_chunks":
-                    # Convert record to text chunk
-                    text_fields = []
-                    if field_map:
-                        for src, _ in field_map.items():
-                            val = clean.get(src, "")
-                            if isinstance(val, str) and val.strip():
-                                text_fields.append(val)
-                    else:
-                        # Auto-collect all string fields
-                        for k, v in clean.items():
-                            if isinstance(v, str) and len(v) > 5 and k not in ("_id", "created_at", "updated_at"):
-                                text_fields.append(f"{k}: {v}")
+                # ── Training Cases ───────────────────────────────────────────
+                if effective_target == "training_cases":
+                    case_doc = _build_training_case(clean, req.collection, case_base + imported + 1)
 
-                    if not text_fields:
-                        skipped += 1
+                    # Duplicate check: same source record
+                    is_dup = await _detect_duplicate(db.training_cases, {
+                        "source_collection": req.collection,
+                        "source_record_id": orig_id
+                    })
+                    if is_dup:
+                        duplicates += 1
                         continue
 
-                    text_content = "\n".join(text_fields)[:2000]
+                    case_doc["created_by"]  = performed_by
+                    case_doc["created_at"]  = now
+                    case_doc["updated_at"]  = now
+                    await db.training_cases.insert_one(case_doc)
+                    imported += 1
+                    if case_doc.get("verification_status") != "OEM_VERIFIED":
+                        unverified += 1
+
+                # ── Knowledge Chunks ─────────────────────────────────────────
+                elif effective_target == "knowledge_chunks":
+                    content  = _build_chunk_content(clean, req.collection)
+                    metadata = _build_chunk_metadata(clean, req.collection)
+
+                    # Duplicate check: same source record
+                    is_dup = await _detect_duplicate(db.knowledge_chunks, {
+                        "qdrant_metadata.original_collection": req.collection,
+                        "qdrant_metadata.source_record_id": orig_id
+                    })
+                    if is_dup:
+                        # Alternative check
+                        is_dup = await _detect_duplicate(db.knowledge_chunks, {
+                            "source_collection": req.collection,
+                            "source_record_id": orig_id
+                        })
+                    if is_dup:
+                        duplicates += 1
+                        continue
+
+                    chunk_id = str(uuid.uuid4())
                     chunk_doc = {
-                        "collection_id": req.collection_id or "",
-                        "folder_id": None,
-                        "content": text_content,
-                        "page_number": 1,
-                        "status": "indexed",
-                        "source": {"collection": req.collection, "record_id": clean.get("_id", "")},
-                        "created_by": performed_by,
-                        "created_at": now
+                        "chunk_id":          chunk_id,
+                        "collection_id":     req.collection_id or "",
+                        "folder_id":         None,
+                        "content":           content[:3000],
+                        "page_number":       1,
+                        "status":            "pending_embedding",
+                        "qdrant_ready":      False,
+                        "qdrant_metadata":   {**metadata, "source_record_id": orig_id},
+                        "manufacturer":      metadata["manufacturer"],
+                        "model":             metadata["model"],
+                        "equipment_type":    metadata["equipment_type"],
+                        "fault":             metadata["fault"],
+                        "source_collection": req.collection,
+                        "source_record_id":  orig_id,
+                        "verification_status": "NOT_VERIFIED",
+                        "created_by":        performed_by,
+                        "created_at":        now,
                     }
                     await db.knowledge_chunks.insert_one(chunk_doc)
                     imported += 1
+                    unverified += 1
 
-                elif req.target == "structured_knowledge":
-                    sk_doc = {
-                        "equipment": clean.get(field_map.get("equipment", ""), "") or clean.get("equipment", "") or clean.get("site_name", f"Source: {req.collection}"),
-                        "alarm": clean.get(field_map.get("alarm", ""), "") or clean.get("alarm", "") or clean.get("issue", "Imported Record"),
-                        "possible_causes": [clean.get(field_map.get("possible_causes", ""), "") or clean.get("possible_causes", "") or "See source record"],
-                        "checks": [clean.get(field_map.get("checks", ""), "") or clean.get("checks", "") or "Verify original data"],
-                        "corrective_actions": [clean.get(field_map.get("corrective_actions", ""), "") or clean.get("corrective_actions", "") or "Review and update"],
-                        "domain": clean.get("domain", "Imported"),
-                        "status": "Draft",
-                        "source": {"collection": req.collection, "record_id": clean.get("_id", "")},
-                        "created_by": performed_by,
-                        "created_at": now,
-                        "updated_at": now
-                    }
+                # ── Structured Knowledge ─────────────────────────────────────
+                elif effective_target == "structured_knowledge":
+                    sk_doc = _build_structured_knowledge(clean, req.collection)
+
+                    # Duplicate check
+                    is_dup = await _detect_duplicate(db.structured_knowledge, {
+                        "source_collection": req.collection,
+                        "source_record_id": orig_id
+                    })
+                    if is_dup:
+                        duplicates += 1
+                        continue
+
+                    sk_doc["created_by"] = performed_by
+                    sk_doc["created_at"] = now
+                    sk_doc["updated_at"] = now
                     await db.structured_knowledge.insert_one(sk_doc)
                     imported += 1
+                    unverified += 1
+
+                # ── AI Rules ─────────────────────────────────────────────────
+                elif effective_target == "ai_rules":
+                    rule_doc = _build_ai_rule(clean, req.collection)
+
+                    is_dup = await _detect_duplicate(db.ai_rules, {
+                        "source_collection": req.collection,
+                        "source_record_id": orig_id
+                    })
+                    if is_dup:
+                        duplicates += 1
+                        continue
+
+                    rule_doc["created_by"] = performed_by
+                    rule_doc["created_at"] = now
+                    await db.ai_rules.insert_one(rule_doc)
+                    imported += 1
+
                 else:
                     skipped += 1
 
             except Exception as ex:
-                errors.append(str(ex))
+                errors.append(str(ex)[:200])
                 skipped += 1
 
+        # Audit log
         await db.audit_logs.insert_one({
-            "event": "ai_mongo_pull",
-            "action": f"import_to_{req.target}",
-            "performed_by": performed_by,
-            "collection": req.collection,
-            "imported": imported,
-            "skipped": skipped,
-            "target": req.target,
-            "created_at": now
+            "event":          "ai_mongo_pull",
+            "action":         f"import_to_{effective_target}",
+            "performed_by":   performed_by,
+            "collection":     req.collection,
+            "effective_target": effective_target,
+            "imported":       imported,
+            "skipped":        skipped,
+            "duplicates":     duplicates,
+            "unverified":     unverified,
+            "created_at":     now
         })
 
         return {
-            "success": True,
-            "collection": req.collection,
-            "target": req.target,
-            "imported": imported,
-            "skipped": skipped,
-            "errors": errors[:5] if errors else [],
-            "message": f"Successfully imported {imported} records from '{req.collection}' into {req.target}."
+            "success":          True,
+            "collection":       req.collection,
+            "effective_target": effective_target,
+            "target_label":     _get_classify_label(effective_target),
+            "imported":         imported,
+            "skipped":          skipped,
+            "duplicates":       duplicates,
+            "unverified":       unverified,
+            "qdrant_ready":     effective_target == "knowledge_chunks",
+            "errors":           errors[:5],
+            "message":          (
+                f"Imported {imported} records from '{req.collection}' → "
+                f"{_get_classify_label(effective_target)}. "
+                f"Skipped: {skipped}. Duplicates: {duplicates}. "
+                f"Unverified: {unverified} (verification_status=NOT_VERIFIED)."
+            ),
         }
+
 
     return router
