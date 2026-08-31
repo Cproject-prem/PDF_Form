@@ -1194,58 +1194,67 @@ Whenever you're ready with those readings or if you performed the string isolati
     # A: Performance Ratio (PR)
     if "pr formula" in q_lower or "performance ratio" in q_lower or "calculate pr" in q_lower or ("formula" in q_lower and "pr" in q_lower):
         return (
-            "PR means **Performance Ratio** (IEC 61724 standard).\n\n"
+            "PR stands for **Performance Ratio** (governed by the IEC 61724 international standard).\n\n"
             "**Formula:**\n"
             "**PR = (Actual AC Energy Generated in kWh) / (POA Solar Irradiation in kWh/m² × Installed DC Capacity in kWp) × 100%**\n\n"
-            "Or in standard yield notation:\n"
+            "Or expressed in standardized yield terms:\n"
             "**PR = (Final Yield / Reference Yield) × 100% = (Yf / Yr) × 100%**\n\n"
-            "**Where:**\n"
-            "- **Actual AC Energy Generated (E_AC)**: Total AC energy exported to the grid (kWh)\n"
-            "- **POA Solar Irradiation (H_POA)**: Total in-plane solar irradiation received by module plane (kWh/m²)\n"
-            "- **Installed DC Capacity (P_DC)**: Installed DC peak nameplate capacity at STC (kWp)\n"
-            "- **Reference Yield (Yr)**: H_POA / 1.0 kW/m² (equivalent Peak Sun Hours)\n"
-            "- **Final Yield (Yf)**: E_AC / P_DC (equivalent full-load operating hours)\n\n"
-            "If you're asking specifically about PVSyst weather-corrected PR or temperature-adjusted PR, I can explain that calculation too."
+            "**Variable Breakdown & Full Forms:**\n"
+            "- **PR**: **Performance Ratio** (dimensionless plant efficiency metric, typically 75%–85%)\n"
+            "- **E_AC**: **Actual AC Energy Generated** exported to the electrical grid (kWh)\n"
+            "- **POA (H_POA)**: **Plane of Array Solar Irradiation** — total solar energy received on the tilted module surface (kWh/m²)\n"
+            "- **P_DC**: **Installed DC Capacity** — total peak DC nameplate power rated at **STC (Standard Test Conditions: 1000 W/m², 25°C, AM 1.5)** (kWp)\n"
+            "- **Yr**: **Reference Yield** (H_POA / 1.0 kW/m² — equivalent Peak Sun Hours)\n"
+            "- **Yf**: **Final Yield** (E_AC / P_DC — equivalent full-load operating hours)\n\n"
+            "If you need weather-corrected PR, temperature-adjusted PR, or PVSyst loss breakdown, let me know!"
         )
 
     # B: Full Form of PR
     if "full form for pr" in q_lower or "full form of pr" in q_lower:
         return (
             "In solar PV engineering, **PR** stands for **Performance Ratio**.\n\n"
-            "It is the dimensionless metric defined by the IEC 61724 standard that evaluates the overall efficiency and quality of a solar power plant independent of incoming solar irradiance."
+            "It is the standard dimensionless metric defined by **IEC (International Electrotechnical Commission) 61724** that evaluates the overall operating quality and health of a solar power plant independent of incoming solar irradiance."
         )
 
     # C: PR with reference to irradiance
     if "pr with irradiance" in q_lower or "with reference to irradiance" in q_lower or ("irradiance" in q_lower and "pr" in q_lower):
         return (
             "### Performance Ratio with Reference Solar Irradiance\n\n"
-            "In the standard PR equation, solar resource is normalized using the **reference irradiance at Standard Test Conditions (STC)** of **1000 W/m² (1.0 kW/m²)**:\n\n"
+            "In the standard PR equation, incoming solar resource is normalized against the **reference irradiance at STC (Standard Test Conditions)** of **1000 W/m² (1.0 kW/m²)**:\n\n"
             "**PR = [ (E_AC / P_DC) / (H_POA / 1.0 kW/m²) ] × 100%**\n\n"
-            "**Key distinction:**\n"
-            "- **Solar Irradiance (G)**: Instantaneous solar power flux density arriving per unit area, measured in **W/m²**.\n"
-            "- **Solar Irradiation (H_POA)**: Integrated solar energy received over a time interval, measured in **kWh/m²**.\n"
-            "- **Reference Yield (Yr)**: H_POA / 1.0 kW/m² represents the equivalent Peak Sun Hours at 1000 W/m²."
+            "**Key Technical Terms & Full Forms:**\n"
+            "- **Solar Irradiance (G)**: Instantaneous solar power flux density per unit area (measured in **W/m²**).\n"
+            "- **POA Solar Irradiation (H_POA)**: **Plane of Array** integrated solar energy received over a time period (measured in **kWh/m²**).\n"
+            "- **STC**: **Standard Test Conditions** (industry laboratory baseline: 1000 W/m² irradiance, 25°C cell temperature, AM 1.5 air mass spectrum).\n"
+            "- **Reference Yield (Yr)**: H_POA / 1.0 kW/m² (equivalent Peak Sun Hours)."
         )
 
     # D: IRR (Internal Rate of Return)
     if "what is irr" in q_lower or "irr formula" in q_lower or "internal rate of return" in q_lower or q_lower in ["irr", "irr?"]:
         return (
             "In solar project finance and renewable energy investment, **IRR** stands for **Internal Rate of Return**.\n\n"
-            "It is the annual discount rate at which the Net Present Value (NPV) of all future cash flows (revenues minus CAPEX, OPEX, and debt service) equals zero:\n\n"
+            "It is the annual discount rate at which the **NPV (Net Present Value)** of all future project cash flows equals zero:\n\n"
             "**NPV = Sum [ Net Cash Flow in Year t / (1 + IRR)^t ] - Initial Solar CAPEX = 0**\n\n"
-            "**Where:**\n"
-            "- **Initial CAPEX (C0)**: Initial solar capital expenditure (negative cash flow)\n"
-            "- **Net Cash Flow (Ct)**: Net annual cash flow in year t (PPA power sales revenue minus O&M and taxes)\n"
-            "- **Lifetime (N)**: Plant operational lifetime (typically 25 years)\n\n"
-            "*(Note: In rare instrument contexts, IRR can refer to an Infrared Reflectometer, but in solar power plant development it denotes financial project return).*"
+            "**Key Financial Terms & Full Forms:**\n"
+            "- **IRR**: **Internal Rate of Return** (the annualized effective compounded return rate of the solar asset)\n"
+            "- **NPV**: **Net Present Value** (the current value of all future cash inflows minus cash outflows)\n"
+            "- **CAPEX (C0)**: **Capital Expenditure** — total upfront solar plant investment (land, EPC, modules, inverters, BOP, substation)\n"
+            "- **Net Cash Flow (Ct)**: Net annual cash flow in year t (**PPA — Power Purchase Agreement** revenues minus **OPEX — Operational Expenditure**, debt service, and taxes)\n"
+            "- **t / N**: Operating year index across **N** years of plant design lifetime (typically 25 years)\n\n"
+            "*(Note: In rare laboratory sensor contexts, IRR can refer to an Infrared Reflectometer, but in solar power plant development it denotes financial project return).*"
         )
 
     # E: CUF (Capacity Utilization Factor)
     if "cuf" in q_lower or "capacity utilization" in q_lower:
         return (
             "### Capacity Utilization Factor (CUF) Calculation\n\n"
-            "Capacity Utilization Factor measures the ratio of actual energy generated over a period relative to the plant's theoretical maximum generation running at full capacity 24 hours a day:\n\n"
-            "**CUF = [ Total Annual AC Energy (kWh) / (Installed AC Capacity in kW × 8,760 hours) ] × 100%**"
+            "**CUF** stands for **Capacity Utilization Factor**.\n\n"
+            "It measures the ratio of actual AC energy generated over an annual period compared to the theoretical maximum output if the plant ran at 100% full capacity 24 hours a day, 365 days a year:\n\n"
+            "**CUF = [ Total Annual AC Energy Exported (kWh) / (Installed Capacity in kW × 8,760 hours) ] × 100%**\n\n"
+            "**Where:**\n"
+            "- **CUF**: **Capacity Utilization Factor** (typically 18%–24% for fixed-tilt and 22%–30% for single-axis tracker solar plants)\n"
+            "- **8,760 hours**: Total number of hours in a standard year (24 h/day × 365 days)\n"
+            "- **Installed Capacity**: Rated AC inverter capacity (kW) or DC capacity (kWp) depending on the grid PPA specification."
         )
 
     # F: Modbus Telemetry Mapping
