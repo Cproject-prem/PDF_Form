@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Dict, Any, Optional, Tuple
 from bson import ObjectId
 from pdfminer.high_level import extract_text as extract_pdf_text
