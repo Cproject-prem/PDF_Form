@@ -374,6 +374,49 @@ export default function AiTrainingPage() {
     }
   };
 
+  const openChunkViewer = async (doc) => {
+    setViewerDoc(doc);
+    setViewerLoading(true);
+    setViewerActiveChunk(0);
+    setViewerSearch("");
+    try {
+      const res = await api.get(`/ai/documents/${doc._id}/chunks`);
+      setViewerChunks(res.data || []);
+    } catch (err) {
+      toast.error("Failed to load document chunks: " + (err.response?.data?.detail || err.message));
+      setViewerChunks([]);
+    } finally {
+      setViewerLoading(false);
+    }
+  };
+
+  const handleReindexDoc = async (doc) => {
+    setReindexingDocId(doc._id);
+    try {
+      const res = await api.post(`/ai/documents/${doc._id}/reindex`);
+      toast.success(res.data?.message || `Successfully re-indexed ${doc.filename}`);
+      fetchAllData();
+    } catch (err) {
+      toast.error("Failed to re-index document: " + (err.response?.data?.detail || err.message));
+    } finally {
+      setReindexingDocId(null);
+    }
+  };
+
+  const handleReindexAllDocs = async () => {
+    if (!window.confirm("Are you sure you want to re-index ALL knowledge documents into semantic chunks?")) return;
+    setReindexingAll(true);
+    try {
+      const res = await api.post("/ai/documents/reindex-all");
+      toast.success(res.data?.message || `Re-indexed ${res.data?.total_documents} documents into ${res.data?.total_chunks} chunks!`);
+      fetchAllData();
+    } catch (err) {
+      toast.error("Failed to re-index all documents: " + (err.response?.data?.detail || err.message));
+    } finally {
+      setReindexingAll(false);
+    }
+  };
+
   const handleDeleteDoc = async (docId, filename) => {
     if (!window.confirm(`Delete document '${filename}' and purge chunks?`)) return;
     try {
@@ -2931,6 +2974,248 @@ export default function AiTrainingPage() {
                 <Button data-testid="rag-collection-save" type="submit" className="bg-emerald-600 text-white">Initialize Collection</Button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL: DOCUMENT CHUNK VIEWER ── */}
+      {viewerDoc && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white w-full max-w-5xl rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-violet-600/30 border border-violet-400/40 flex items-center justify-center text-violet-300">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    {viewerDoc.filename}
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 font-semibold">
+                      {viewerDoc.verification_status || "OEM_VERIFIED"}
+                    </span>
+                  </h3>
+                  <div className="flex items-center gap-3 text-xs text-slate-400 mt-0.5">
+                    <span>Mfr: <strong className="text-slate-200">{viewerDoc.manufacturer || "Unknown"}</strong></span>
+                    <span>•</span>
+                    <span>Model: <strong className="text-slate-200">{viewerDoc.model || "Unknown"}</strong></span>
+                    <span>•</span>
+                    <span>Pages: <strong className="text-slate-200">{viewerDoc.pages || 1}</strong></span>
+                    <span>•</span>
+                    <span>Chunks: <strong className="text-violet-300">{viewerChunks.length} indexed</strong></span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleReindexDoc(viewerDoc)}
+                  disabled={reindexingDocId === viewerDoc._id}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 flex items-center gap-1.5 transition"
+                >
+                  {reindexingDocId === viewerDoc._id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCcw className="w-3.5 h-3.5" />}
+                  Re-index
+                </button>
+                <button
+                  onClick={() => setViewerDoc(null)}
+                  className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            {viewerLoading ? (
+              <div className="p-16 text-center space-y-3">
+                <Loader2 className="w-8 h-8 animate-spin mx-auto text-violet-600" />
+                <p className="text-xs text-slate-500 font-medium">Loading document semantic chunks from database...</p>
+              </div>
+            ) : viewerChunks.length === 0 ? (
+              <div className="p-16 text-center space-y-4">
+                <FileText className="w-12 h-12 mx-auto text-slate-300" />
+                <p className="text-sm font-semibold text-slate-700">No semantic chunks found for this document</p>
+                <button
+                  onClick={() => handleReindexDoc(viewerDoc)}
+                  className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold shadow-sm transition"
+                >
+                  Run Re-indexing Pipeline
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-12 flex-1 overflow-hidden min-h-[500px]">
+                {/* Chunk List Selector (4 cols) */}
+                <div className="md:col-span-4 border-r border-slate-200 bg-slate-50/50 flex flex-col overflow-hidden">
+                  <div className="p-3 border-b border-slate-200 bg-white">
+                    <input
+                      type="text"
+                      placeholder="Search chunks (keyword, page, section)..."
+                      value={viewerSearch}
+                      onChange={e => setViewerSearch(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-medium focus:border-violet-500 focus:ring-1 focus:ring-violet-500"
+                    />
+                  </div>
+
+                  <div className="divide-y divide-slate-100 overflow-y-auto flex-1 max-h-[420px]">
+                    {viewerChunks
+                      .filter(c => {
+                        if (!viewerSearch.trim()) return true;
+                        const s = viewerSearch.toLowerCase();
+                        return (
+                          (c.content || c.text || "").toLowerCase().includes(s) ||
+                          (c.section || "").toLowerCase().includes(s) ||
+                          (c.chunk_type || "").toLowerCase().includes(s) ||
+                          String(c.page || c.page_number || "").includes(s)
+                        );
+                      })
+                      .map((chk, idx) => {
+                        const isSelected = viewerActiveChunk === idx;
+                        const typeColors = {
+                          alarm_table: "bg-red-50 text-red-700 border-red-200",
+                          troubleshooting: "bg-amber-50 text-amber-700 border-amber-200",
+                          safety: "bg-rose-50 text-rose-700 border-rose-200",
+                          specification: "bg-blue-50 text-blue-700 border-blue-200",
+                          installation: "bg-slate-100 text-slate-700 border-slate-200",
+                          wiring: "bg-indigo-50 text-indigo-700 border-indigo-200",
+                          modbus: "bg-purple-50 text-purple-700 border-purple-200"
+                        };
+                        const typeBadge = typeColors[chk.chunk_type] || "bg-slate-100 text-slate-600 border-slate-200";
+
+                        return (
+                          <button
+                            key={chk._id || idx}
+                            onClick={() => setViewerActiveChunk(idx)}
+                            className={`w-full p-3 text-left transition flex flex-col gap-1 ${
+                              isSelected ? "bg-violet-50/80 border-l-4 border-violet-600 shadow-inner" : "hover:bg-slate-100/70"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="font-mono font-bold text-[11px] text-slate-800">
+                                {chk.knowledge_id || chk.chunk_id || `Chunk #${chk.chunk_index || idx + 1}`}
+                              </span>
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 font-semibold">
+                                Page {chk.page || chk.page_number || 1}
+                              </span>
+                            </div>
+
+                            <div className="text-[11px] font-semibold text-slate-700 truncate">
+                              {chk.section || "General Section"}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase ${typeBadge}`}>
+                                {chk.chunk_type || "general"}
+                              </span>
+                              <span className="text-[10px] text-slate-400 truncate max-w-[130px]">
+                                {(chk.content || chk.text || "").slice(0, 45)}...
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+
+                {/* Chunk Detail & Metadata Inspector (8 cols) */}
+                <div className="md:col-span-8 flex flex-col overflow-hidden bg-white">
+                  {(() => {
+                    const chk = viewerChunks[viewerActiveChunk] || viewerChunks[0];
+                    if (!chk) return <div className="p-8 text-center text-slate-400">Select a chunk to inspect</div>;
+
+                    return (
+                      <div className="flex flex-col h-full overflow-hidden">
+                        {/* Top Bar with Pagination */}
+                        <div className="px-5 py-3 border-b border-slate-100 bg-slate-50 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-xs text-slate-800">
+                              {chk.knowledge_id || chk.chunk_id || `Chunk ${viewerActiveChunk + 1}`}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 font-bold text-[10px] border border-indigo-100">
+                              Page {chk.page || chk.page_number || 1}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 font-bold text-[10px] uppercase border border-slate-200">
+                              {chk.chunk_type || "general"}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              disabled={viewerActiveChunk <= 0}
+                              onClick={() => setViewerActiveChunk(i => Math.max(0, i - 1))}
+                              className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold disabled:opacity-40"
+                            >
+                              ← Previous
+                            </button>
+                            <span className="text-xs font-mono font-semibold text-slate-500 px-1">
+                              {viewerActiveChunk + 1} / {viewerChunks.length}
+                            </span>
+                            <button
+                              disabled={viewerActiveChunk >= viewerChunks.length - 1}
+                              onClick={() => setViewerActiveChunk(i => Math.min(viewerChunks.length - 1, i + 1))}
+                              className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold disabled:opacity-40"
+                            >
+                              Next →
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Chunk Content & Metadata tabs */}
+                        <div className="p-5 overflow-y-auto space-y-4 flex-1 max-h-[420px]">
+                          {/* Heading Banner */}
+                          <div className="p-3 rounded-xl bg-violet-50/60 border border-violet-100">
+                            <div className="text-[10px] font-bold text-violet-800 uppercase tracking-wider">Document Section Heading</div>
+                            <div className="text-xs font-bold text-slate-800 mt-0.5">{chk.section || "General Overview"}</div>
+                            {chk.subsection && <div className="text-[11px] text-slate-500 mt-0.5">{chk.subsection}</div>}
+                          </div>
+
+                          {/* Content Box */}
+                          <div>
+                            <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                              <span>Chunk Text Body</span>
+                              <span className="text-[10px] font-mono text-slate-400">{(chk.content || chk.text || "").length} characters</span>
+                            </div>
+                            <div className="p-4 rounded-xl bg-slate-900 text-slate-100 font-mono text-xs leading-relaxed whitespace-pre-wrap selection:bg-violet-600 selection:text-white shadow-inner max-h-[220px] overflow-y-auto">
+                              {chk.content || chk.text || "No content"}
+                            </div>
+                          </div>
+
+                          {/* Structured Metadata Grid */}
+                          <div>
+                            <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-2">Qdrant Vector Payload & Metadata</div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                <div className="text-[10px] text-slate-400 font-medium">Manufacturer</div>
+                                <div className="font-bold text-slate-800 mt-0.5">{chk.manufacturer || "Unknown"}</div>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                <div className="text-[10px] text-slate-400 font-medium">Model</div>
+                                <div className="font-bold text-slate-800 mt-0.5">{chk.model || "Unknown"}</div>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                <div className="text-[10px] text-slate-400 font-medium">Model Family</div>
+                                <div className="font-bold text-slate-800 mt-0.5">{chk.model_family || "Unknown"}</div>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                <div className="text-[10px] text-slate-400 font-medium">Power Rating</div>
+                                <div className="font-bold text-slate-800 mt-0.5">{chk.power_kw ? `${chk.power_kw} kW` : "N/A"}</div>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                <div className="text-[10px] text-slate-400 font-medium">Equipment Type</div>
+                                <div className="font-bold text-slate-800 mt-0.5">{chk.equipment_type || "inverter"}</div>
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                                <div className="text-[10px] text-slate-400 font-medium">Verification Status</div>
+                                <div className="font-bold text-emerald-600 mt-0.5">{chk.verification_status || "OEM_VERIFIED"}</div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
