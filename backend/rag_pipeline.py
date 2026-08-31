@@ -1091,11 +1091,34 @@ Respond conversationally as an experienced Solar Support Engineer.
     return system_prompt, user_prompt, debug_summary
 
 
+def sanitize_latex_math(text: str) -> str:
+    """Converts raw LaTeX math syntax into clean, human-readable plain-text / markdown."""
+    s = text
+    # 1. Clean \text{...} repeatedly inside subscripts or standalone
+    for _ in range(5):
+        s = re.sub(r"\\(?:text|mathrm|mathbf|mathit|textnormal)\{([^{}]*)\}", r"\1", s)
+    # 2. Convert subscripts and superscripts: _{AC} -> _AC
+    s = re.sub(r"_\{([^{}]+)\}", r"_\1", s)
+    s = re.sub(r"\^\{([^{}]+)\}", r"^\1", s)
+    # 3. Convert \frac{A}{B} repeatedly
+    for _ in range(5):
+        s = re.sub(r"\\frac\{([^{}]*)\}\{([^{}]*)\}", r"(\1) / (\2)", s)
+    # 4. Clean common LaTeX operators and symbols
+    s = s.replace(r"\times", "×").replace(r"\approx", "~").replace(r"\cdot", "·")
+    s = s.replace(r"\%", "%").replace(r"\_", "_").replace(r"\pm", "±")
+    s = s.replace(r"\le", "<=").replace(r"\ge", ">=").replace(r"\neq", "!=")
+    s = s.replace(r"\sum", "Sum").replace(r"\prod", "Product")
+    s = s.replace("$$", "").replace("$", "")
+    # 5. Clean any residual backslashes in front of words
+    s = re.sub(r"\\([a-zA-Z]+)", r"\1", s)
+    return s
+
+
 def validate_ai_response_text(text: str, entities: QueryEntities) -> str:
     """Anti-hallucination post-processor that intercepts and sanitizes unsupported claims
-    such as invented voltage ranges (480-520V) or premature short-circuit assertions.
+    such as invented voltage ranges (480-520V) or premature short-circuit assertions, and strips raw LaTeX tags.
     """
-    clean = text
+    clean = sanitize_latex_math(text)
 
     # 1. Intercept invented voltage range like 480-520V or 480V to 520V
     if re.search(r"480\s*[-–toANDand]+\s*520\s*v", clean, re.IGNORECASE) or ("480" in clean and "520" in clean and "range" in clean):
