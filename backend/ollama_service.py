@@ -624,18 +624,32 @@ class OllamaService:
 
         # 2. Inject Structured Knowledge (Modbus, Inverter Specs, OEM Alarms)
         if structured_knowledge:
-            sk_lines = ["\n[VERIFIED STRUCTURED SOLAR KNOWLEDGE (MongoDB)]"]
-            for item in structured_knowledge[:8]:
-                mfr = item.get("manufacturer", "")
-                mdl = item.get("model", "")
-                param = item.get("parameter") or item.get("alarm") or item.get("fault") or ""
-                val = item.get("value") or item.get("meaning") or ""
-                unit = item.get("unit", "")
-                src = item.get("source_document", "")
-                verif = item.get("verification_status", "NOT_VERIFIED")
-                line = f"- [{mfr} {mdl}] {param}: {val} {unit} (Status: {verif}, Source: {src})".strip()
-                sk_lines.append(line)
-            sections.append("\n".join(sk_lines))
+            oem_verified_items = [i for i in structured_knowledge if i.get("verification_status") == "OEM_VERIFIED"]
+            general_items = [i for i in structured_knowledge if i.get("verification_status") != "OEM_VERIFIED"]
+
+            if oem_verified_items:
+                sk_lines = ["\n[VERIFIED STRUCTURED SOLAR KNOWLEDGE (OEM_VERIFIED — MongoDB)]"]
+                for item in oem_verified_items[:8]:
+                    mfr = item.get("manufacturer", "")
+                    mdl = item.get("model", "")
+                    code = item.get("alarm_code") or item.get("code") or ""
+                    meaning = item.get("meaning") or item.get("fault_name") or item.get("description") or ""
+                    causes = item.get("possible_causes", "")
+                    remedy = item.get("remedy") or item.get("action") or ""
+                    src = item.get("source_document", "")
+                    page = item.get("page", "")
+                    sk_lines.append(f"- [{mfr} {mdl}] Alarm/Code: {code} | Meaning: {meaning} | Causes: {causes} | Remedy: {remedy} (Source: {src} Page {page})")
+                sections.append("\n".join(sk_lines))
+
+            if general_items:
+                gen_lines = ["\n[GENERAL ENGINEERING KNOWLEDGE (Non-OEM Specific)]"]
+                for item in general_items[:4]:
+                    cat = item.get("fault_category") or item.get("symptom") or "General"
+                    desc = item.get("description", "")
+                    causes = item.get("possible_causes", "")
+                    diag = item.get("diagnostic_steps", "")
+                    gen_lines.append(f"- Category: {cat} | Description: {desc} | Hypotheses: {causes} | Diagnostic Steps: {diag}")
+                sections.append("\n".join(gen_lines))
 
         # 3. Inject Retrieved Document / Chunk Context (RAG)
         if context_docs:
@@ -643,16 +657,16 @@ class OllamaService:
             for i, doc in enumerate(context_docs[:6], 1):
                 fn = doc.get("filename") or doc.get("title") or f"Doc-{i}"
                 src = doc.get("source_document") or fn
-                page = doc.get("page_number") or doc.get("source_page") or ""
-                rev = doc.get("document_revision") or ""
+                page = doc.get("page_number") or doc.get("page") or doc.get("source_page") or ""
                 mfr = doc.get("manufacturer") or ""
                 mdl = doc.get("model") or ""
+                doc_type = doc.get("doc_type") or "Technical Manual"
                 content = (doc.get("text_content") or doc.get("content") or "").strip()
 
                 header_parts = [f"Source: {src}"]
                 if page: header_parts.append(f"Page: {page}")
-                if rev: header_parts.append(f"Rev: {rev}")
                 if mfr or mdl: header_parts.append(f"Equipment: {mfr} {mdl}".strip())
+                header_parts.append(f"Type: {doc_type}")
 
                 doc_lines.append(f"\n--- Document [{i}]: {', '.join(header_parts)} ---")
                 doc_lines.append(content[:1600])

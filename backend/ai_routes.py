@@ -734,7 +734,7 @@ def build_ai_router(db, get_current_user):
         entities = analyze_query(req.question)
 
         # ── Step 2: Multi-Stage Retrieval (MongoDB Structured First for Faults) ──
-        structured_results = await query_mongodb_fault_knowledge(db, entities)
+        structured_results, mongo_audit = await query_mongodb_fault_knowledge(db, entities)
 
         # ── Step 3: Document Chunk Retrieval & Priority Reranking ──
         top_k_req = getattr(req, "top_k", 3) or 3
@@ -769,7 +769,6 @@ def build_ai_router(db, get_current_user):
         model_used = "gemma (Ollama Local)"
 
         if entities.intent == "FAULT / TROUBLESHOOTING":
-            # Call Ollama / AI service
             try:
                 async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
                     chat_resp = await client.post(
@@ -806,8 +805,10 @@ def build_ai_router(db, get_current_user):
             if not generated_answer or "Installation Manual" in generated_answer or "package list" in generated_answer.lower():
                 generated_answer = generate_standard_fault_response(entities, structured_results)
                 model_used = "Solar Engi AI (Deterministic Grounded Standard)"
+        elif entities.intent in ["CALCULATION / ENGINEERING", "MODBUS / TELEMETRY"]:
+            generated_answer = generate_standard_fault_response(entities, structured_results)
+            model_used = "Solar Engi Calculation/Modbus Engine"
         else:
-            # Non-fault general query
             try:
                 async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
                     chat_resp = await client.post(
@@ -829,37 +830,32 @@ def build_ai_router(db, get_current_user):
 
         gen_latency = int((time.time() - gen_start) * 1000)
 
-        # ── Step 6: Construct Admin RAG Debug Payload ──
+        # ── Step 6: Construct Transparent Admin RAG Debug Payload ──
         rag_debug = {
             "user_query": req.question,
+            "normalized_query": entities.normalized_query,
             "intent": entities.intent,
             "manufacturer": entities.manufacturer or "Unknown",
             "power": entities.power_str or (f"{entities.power_kw} kW" if entities.power_kw else "Unknown"),
             "model": entities.model or "Unknown",
             "symptom": entities.symptom or "Unknown",
+            "alarm_code": entities.alarm_code or "Unknown",
             "mongodb_results": structured_results,
-            "qdrant_filter": f"manufacturer = {entities.manufacturer or 'All'}, equipment_type = {entities.equipment_type}",
-            "document_types_retrieved": debug_info.get("doc_types_retrieved", []),
-            "top_chunks": scored_chunks[:6],
-            "rerank_score": [
-                {
-                    "filename": c["filename"],
-                    "page": c["page"],
-                    "priority": c["priority"],
-                    "doc_type": c["doc_type"],
-                    "raw_score": c["raw_score"],
-                    "rerank_score": c["rerank_score"],
-                    "is_usable_for_fault": c["is_usable"]
-                }
-                for c in scored_chunks[:6]
-            ],
+            "mongodb_audit": mongo_audit,
+            "requested_filter": debug_info.get("requested_filter", {}),
+            "actual_qdrant_filter": debug_info.get("actual_qdrant_filter", {}),
+            "accepted_chunks_count": debug_info.get("accepted_chunks_count", 0),
+            "rejected_chunks_count": debug_info.get("rejected_chunks_count", 0),
+            "top_chunks": scored_chunks[:8],
+            "rejected_chunks": debug_info.get("rejected_chunks", []),
             "chunks_sent_to_llm": [
                 {
                     "filename": c["filename"],
                     "page": c["page"],
                     "doc_type": c["doc_type"],
                     "priority": c["priority"],
-                    "preview": c["text"][:200] + ("..." if len(c["text"]) > 200 else "")
+                    "decision_status": c.get("decision_status", "ACCEPTED — PASSED TO LLM"),
+                    "preview": c["text"][:250] + ("..." if len(c["text"]) > 250 else "")
                 }
                 for c in final_chunks
             ]
@@ -879,6 +875,79 @@ def build_ai_router(db, get_current_user):
                 "retrieved_chunk_ids": [c["chunk_id"] for c in final_chunks],
                 "chunks_retrieved": len(final_chunks)
             }
+        }
+
+    @router.get("/knowledge/audit")
+    async def audit_knowledge_integrity(user=Depends(get_current_user)):
+        """Audits structured MongoDB collections and vector chunks for OEM contamination and provenance."""
+        require_admin(user)
+        
+        # 1. Audit oem_alarm_codes
+        alarm_docs = await db.oem_alarm_codes.find({}).to_list(None)
+        total_alarms = len(alarm_docs)
+        correct_alarms = 0
+        contaminated_alarms = []
+        unverified_alarms = []
+
+        for a in alarm_docs:
+            mfg = (a.get("manufacturer") or "").lower()
+            text_comb = f"{a.get('description', '')} {a.get('remedy', '')} {a.get('meaning', '')} {a.get('source_document', '')}".lower()
+            
+            # Check for cross-OEM contamination
+            is_contaminated = False
+            for other_oem in ["growatt", "huawei", "sungrow", "solis", "delta", "solaredge"]:
+                if other_oem != mfg and other_oem in text_comb and not a.get("manufacturer") == "GENERAL":
+                    contaminated_alarms.append({
+                        "id": str(a.get("_id")),
+                        "manufacturer": a.get("manufacturer"),
+                        "alarm_code": a.get("alarm_code"),
+                        "issue": f"Contains text from {other_oem.upper()}",
+                        "source": a.get("source_document")
+                    })
+                    is_contaminated = True
+                    break
+                    
+            if not is_contaminated:
+                if a.get("verification_status") == "OEM_VERIFIED":
+                    correct_alarms += 1
+                else:
+                    unverified_alarms.append(str(a.get("_id")))
+
+        # 2. Audit knowledge_chunks
+        chunks = await db.knowledge_chunks.find({}).to_list(None)
+        total_chunks = len(chunks)
+        correct_chunks = 0
+        mismatched_chunks = []
+
+        for c in chunks:
+            c_mfg = (c.get("manufacturer") or "").lower()
+            c_doc = (c.get("document_name") or "").lower()
+            if c_mfg and c_mfg != "unknown" and c_mfg not in c_doc and not any(k in c_doc for k in ["manual", "spec"]):
+                mismatched_chunks.append({
+                    "chunk_id": str(c.get("_id")),
+                    "manufacturer": c.get("manufacturer"),
+                    "document_name": c.get("document_name"),
+                    "issue": "Chunk manufacturer does not match document name"
+                })
+            else:
+                correct_chunks += 1
+
+        return {
+            "success": True,
+            "alarms_audit": {
+                "total": total_alarms,
+                "correct_oem_verified": correct_alarms,
+                "contaminated": len(contaminated_alarms),
+                "unverified": len(unverified_alarms),
+                "contaminated_details": contaminated_alarms
+            },
+            "chunks_audit": {
+                "total": total_chunks,
+                "correct": correct_chunks,
+                "mismatched": len(mismatched_chunks),
+                "mismatched_details": mismatched_chunks[:10]
+            },
+            "timestamp": datetime.utcnow()
         }
 
 
@@ -1125,7 +1194,7 @@ def build_ai_router(db, get_current_user):
         """Intelligently retrieves structured knowledge and priority-reranked chunks matching user query and intent."""
         try:
             entities = analyze_query(user_query, history)
-            structured_items = await query_mongodb_fault_knowledge(db, entities)
+            structured_items, _ = await query_mongodb_fault_knowledge(db, entities)
             final_chunks, scored_chunks, _ = await retrieve_and_rerank_chunks(db, entities, top_k=4)
             doc_chunks = [
                 {

@@ -1802,37 +1802,64 @@ export default function AiTrainingPage() {
                         <div className="flex items-center gap-2">
                           <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
                           <h3 className="font-bold text-sm text-white tracking-wide uppercase font-mono">
-                            Admin RAG Debug & Routing Inspection
+                            Admin RAG Debug & Anti-Contamination Inspection
                           </h3>
                         </div>
-                        <span className="px-2.5 py-1 rounded bg-slate-800 text-[11px] font-mono text-emerald-400 border border-slate-700">
-                          Intent: {testRagResult.rag_debug.intent}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-1 rounded bg-slate-800 text-[11px] font-mono text-emerald-400 border border-slate-700">
+                            Intent: {testRagResult.rag_debug.intent}
+                          </span>
+                        </div>
                       </div>
 
-                      {/* Entity Breakdown Grid */}
-                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 font-mono">
-                        <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
-                          <div className="text-[10px] text-slate-400 uppercase">Manufacturer</div>
-                          <div className="text-sm font-bold text-indigo-300 mt-0.5">{testRagResult.rag_debug.manufacturer}</div>
-                        </div>
-                        <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
-                          <div className="text-[10px] text-slate-400 uppercase">Power Rating</div>
-                          <div className="text-sm font-bold text-sky-300 mt-0.5">{testRagResult.rag_debug.power}</div>
-                        </div>
-                        <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
-                          <div className="text-[10px] text-slate-400 uppercase">Model</div>
-                          <div className={`text-sm font-bold mt-0.5 ${testRagResult.rag_debug.model === "Unknown" ? "text-amber-400" : "text-emerald-300"}`}>
-                            {testRagResult.rag_debug.model}
+                      {/* Query & Entity Breakdown Grid */}
+                      <div className="space-y-3 font-mono">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Original User Query</div>
+                            <div className="text-xs font-bold text-slate-200 mt-0.5">{testRagResult.rag_debug.user_query}</div>
+                          </div>
+                          <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Normalized Query (Typo Corrected)</div>
+                            <div className="text-xs font-bold text-indigo-300 mt-0.5">{testRagResult.rag_debug.normalized_query}</div>
                           </div>
                         </div>
-                        <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
-                          <div className="text-[10px] text-slate-400 uppercase">Symptom</div>
-                          <div className="text-sm font-bold text-rose-300 mt-0.5">{testRagResult.rag_debug.symptom}</div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                          <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Manufacturer</div>
+                            <div className="text-sm font-bold text-indigo-300 mt-0.5">{testRagResult.rag_debug.manufacturer}</div>
+                          </div>
+                          <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Power Rating</div>
+                            <div className="text-sm font-bold text-sky-300 mt-0.5">{testRagResult.rag_debug.power}</div>
+                          </div>
+                          <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Model</div>
+                            <div className={`text-sm font-bold mt-0.5 ${testRagResult.rag_debug.model === "Unknown" ? "text-amber-400" : "text-emerald-300"}`}>
+                              {testRagResult.rag_debug.model}
+                            </div>
+                          </div>
+                          <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Symptom</div>
+                            <div className="text-sm font-bold text-rose-300 mt-0.5">{testRagResult.rag_debug.symptom}</div>
+                          </div>
+                          <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Alarm Code</div>
+                            <div className="text-sm font-bold text-purple-300 mt-0.5">{testRagResult.rag_debug.alarm_code}</div>
+                          </div>
                         </div>
-                        <div className="bg-slate-800/80 p-3 rounded-xl border border-slate-700">
-                          <div className="text-[10px] text-slate-400 uppercase">Vector Filter</div>
-                          <div className="text-[11px] font-bold text-slate-300 mt-0.5 truncate">{testRagResult.rag_debug.qdrant_filter}</div>
+
+                        {/* Filter Comparison Grid */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div className="bg-slate-800/50 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Filter Requested</div>
+                            <pre className="text-[11px] text-emerald-300 mt-1 whitespace-pre-wrap">{JSON.stringify(testRagResult.rag_debug.requested_filter, null, 2)}</pre>
+                          </div>
+                          <div className="bg-slate-800/50 p-3 rounded-xl border border-slate-700">
+                            <div className="text-[10px] text-slate-400 uppercase">Actual Qdrant / DB Filter Sent</div>
+                            <pre className="text-[11px] text-indigo-300 mt-1 whitespace-pre-wrap">{JSON.stringify(testRagResult.rag_debug.actual_qdrant_filter, null, 2)}</pre>
+                          </div>
                         </div>
                       </div>
 
@@ -1840,21 +1867,26 @@ export default function AiTrainingPage() {
                       <div className="space-y-2">
                         <div className="text-[11px] font-bold text-slate-300 uppercase tracking-wider font-mono flex items-center justify-between">
                           <span>1. MongoDB Structured Fault Knowledge Results ({testRagResult.rag_debug.mongodb_results?.length || 0})</span>
-                          <span className="text-[10px] text-emerald-400 font-normal">Queried First for Fault Intent</span>
+                          <span className="text-[10px] text-emerald-400 font-normal">Exact OEM Match First</span>
                         </div>
                         {testRagResult.rag_debug.mongodb_results?.length === 0 ? (
                           <div className="p-3 bg-slate-800/40 rounded-xl border border-slate-800 text-slate-400 font-mono text-[11px]">
-                            No exact structured rule match found. Standard solar engineering fault differential applied.
+                            No exact OEM alarm code match in MongoDB. Standard solar engineering fault differential applied.
                           </div>
                         ) : (
                           <div className="space-y-2 font-mono">
                             {testRagResult.rag_debug.mongodb_results.map((res, idx) => (
                               <div key={idx} className="p-3 bg-slate-800/60 rounded-xl border border-slate-700/80 text-[11px] space-y-1">
-                                <div className="text-indigo-400 font-bold">
-                                  [{res._collection || "structured"}] {res.manufacturer} {res.model} {res.alarm_code ? `| ${res.alarm_code} (${res.fault_name || ""})` : ""}
+                                <div className="flex items-center justify-between">
+                                  <span className="text-indigo-400 font-bold">
+                                    [{res._collection || "structured"}] {res.manufacturer} {res.model} {res.alarm_code ? `| Alarm ${res.alarm_code} (${res.fault_name || ""})` : ""}
+                                  </span>
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${res.verification_status === "OEM_VERIFIED" ? "bg-emerald-950 text-emerald-400 border border-emerald-800" : "bg-amber-950 text-amber-300 border border-amber-800"}`}>
+                                    {res.verification_status || "OEM_VERIFIED"}
+                                  </span>
                                 </div>
                                 <div className="text-slate-300">
-                                  <strong>Causes:</strong> {Array.isArray(res.differential_causes || res.possible_causes) ? (res.differential_causes || res.possible_causes).join("; ") : (res.differential_causes || res.possible_causes || "N/A")}
+                                  <strong>Meaning/Causes:</strong> {res.meaning || res.description || "N/A"} — {res.possible_causes || ""}
                                 </div>
                               </div>
                             ))}
@@ -1864,8 +1896,9 @@ export default function AiTrainingPage() {
 
                       {/* Document Type Priority Reranking Table */}
                       <div className="space-y-2">
-                        <div className="text-[11px] font-bold text-slate-300 uppercase tracking-wider font-mono">
-                          2. Document Type Priority & Reranking Score Table
+                        <div className="text-[11px] font-bold text-slate-300 uppercase tracking-wider font-mono flex items-center justify-between">
+                          <span>2. Document Type Priority & Hard Filter Decisions ({testRagResult.rag_debug.top_chunks?.length || 0})</span>
+                          <span className="text-[10px] text-slate-400">Accepted: {testRagResult.rag_debug.accepted_chunks_count} · Rejected: {testRagResult.rag_debug.rejected_chunks_count}</span>
                         </div>
                         <div className="overflow-x-auto rounded-xl border border-slate-800">
                           <table className="w-full text-left font-mono text-[11px]">
@@ -1873,14 +1906,14 @@ export default function AiTrainingPage() {
                               <tr>
                                 <th className="p-2.5">Document Name</th>
                                 <th className="p-2.5">Page</th>
-                                <th className="p-2.5">Document / Section Classification</th>
+                                <th className="p-2.5">Classification</th>
                                 <th className="p-2.5 text-center">Priority</th>
                                 <th className="p-2.5 text-center">Rerank Score</th>
                                 <th className="p-2.5 text-right">Routing Decision</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-800 bg-slate-900/80">
-                              {testRagResult.rag_debug.rerank_score?.map((row, idx) => (
+                              {testRagResult.rag_debug.top_chunks?.map((row, idx) => (
                                 <tr key={idx} className="hover:bg-slate-800/50">
                                   <td className="p-2.5 font-bold text-slate-200 truncate max-w-[220px]">{row.filename}</td>
                                   <td className="p-2.5 text-slate-400">p.{row.page}</td>
@@ -1889,11 +1922,11 @@ export default function AiTrainingPage() {
                                   <td className="p-2.5 text-center font-bold text-emerald-400">{row.rerank_score}</td>
                                   <td className="p-2.5 text-right">
                                     <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                      row.is_usable_for_fault 
+                                      row.decision_status === "ACCEPTED — PASSED TO LLM" 
                                         ? "bg-emerald-950 text-emerald-300 border border-emerald-800" 
                                         : "bg-red-950 text-rose-300 border border-rose-900"
                                     }`}>
-                                      {row.is_usable_for_fault ? "Passed to LLM" : "Filtered (Installation/TOC)"}
+                                      {row.decision_status || (row.is_usable ? "ACCEPTED — PASSED TO LLM" : "REJECTED — FILTERED")}
                                     </span>
                                   </td>
                                 </tr>
@@ -1910,7 +1943,7 @@ export default function AiTrainingPage() {
                         </div>
                         {testRagResult.rag_debug.chunks_sent_to_llm?.length === 0 ? (
                           <div className="p-3 bg-amber-950/40 rounded-xl border border-amber-900/60 text-amber-300 font-mono text-[11px]">
-                            Notice: Generic installation manual chunks were filtered out. Prompt grounded on verified solar engineering diagnostic principles.
+                            Notice: All mismatched or irrelevant chunks were strictly rejected. Prompt grounded on verified solar engineering diagnostic principles.
                           </div>
                         ) : (
                           <div className="space-y-2 font-mono">
@@ -1918,7 +1951,7 @@ export default function AiTrainingPage() {
                               <div key={idx} className="p-3 bg-slate-800/80 rounded-xl border border-slate-700 text-[11px] space-y-1">
                                 <div className="flex items-center justify-between text-indigo-300 font-bold">
                                   <span>{chunk.filename} (Page {chunk.page})</span>
-                                  <span className="text-slate-400 font-normal">{chunk.doc_type} (Priority {chunk.priority})</span>
+                                  <span className="text-emerald-400 text-[10px] font-bold">{chunk.decision_status}</span>
                                 </div>
                                 <div className="text-slate-300 whitespace-pre-wrap">{chunk.preview}</div>
                               </div>
