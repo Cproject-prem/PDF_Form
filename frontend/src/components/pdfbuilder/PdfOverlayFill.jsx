@@ -135,13 +135,29 @@ function useAutoFontSize(text, width, height, preferredSize = 14, minSize = 7) {
 }
 
 function OverlayInput({ field, box, value, onChange, disabled }) {
-  const displayVal = String(value ?? "");
+  const isAutoNumber = !!(field.auto_number?.enabled || field.type === "auto_number");
+  let autoNumberDefault = "";
+  if (isAutoNumber) {
+    const cfg = field.auto_number || {};
+    const mode = cfg.mode || (field.type === "number" ? "continuous" : "year_continuous");
+    const start = Number(cfg.start_from) || 1;
+    const pad = Number(cfg.padding) || (mode === "year_continuous" ? 3 : 1);
+    const yr = new Date().getFullYear();
+    autoNumberDefault = mode === "year_continuous"
+      ? `${yr}/${String(start).padStart(pad, "0")}`
+      : String(start).padStart(pad, "0");
+  }
+
+  const effectiveVal = (value !== undefined && value !== "" && value !== null)
+    ? String(value)
+    : (isAutoNumber ? autoNumberDefault : "");
+
   const preferredFont = field.font_size
     ? Number(field.font_size)
     : Math.max(10, Math.min(box.height * 0.6, 16));
 
   const autoFontSize = useAutoFontSize(
-    displayVal || field.placeholder || field.label || "",
+    effectiveVal || field.placeholder || field.label || "",
     box.width,
     box.height,
     preferredFont,
@@ -164,10 +180,11 @@ function OverlayInput({ field, box, value, onChange, disabled }) {
   const commonProps = {
     "data-testid": `pdf-overlay-${field.id}`,
     style,
-    value: value ?? "",
+    value: effectiveVal,
     onChange: (e) => onChange(e.target.value),
-    disabled,
-    placeholder: field.placeholder || field.label || "",
+    disabled: disabled || isAutoNumber,
+    readOnly: isAutoNumber || !!field.read_only,
+    placeholder: isAutoNumber ? autoNumberDefault : (field.placeholder || field.label || ""),
   };
 
   switch (field.type) {
@@ -179,8 +196,12 @@ function OverlayInput({ field, box, value, onChange, disabled }) {
       return <input type="time" className={baseCls} {...commonProps} />;
     case "email":
       return <input type="email" className={baseCls} {...commonProps} />;
+    case "auto_number":
+      return <input type="text" className={`${baseCls} bg-blue-50/50 font-mono`} {...commonProps} />;
     case "number":
-      return <input type="number" className={baseCls} {...commonProps} />;
+      return isAutoNumber
+        ? <input type="text" className={`${baseCls} bg-blue-50/50 font-mono`} {...commonProps} />
+        : <input type="number" className={baseCls} {...commonProps} />;
     case "dropdown":
       return (
         <DropdownOverlay

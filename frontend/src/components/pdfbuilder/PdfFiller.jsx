@@ -136,8 +136,12 @@ function FieldControl({ f, containerW, containerH, value, onChange }) {
   switch (f.type) {
     case "long_text":
       return <div style={style}><Textarea {...common} rows={3} /></div>;
+    case "auto_number":
+      return <div style={style}><input type="text" {...common} readOnly className={`${common.className} bg-blue-50/50 font-mono`} /></div>;
     case "number":
-      return <div style={style}><input type="number" {...common} /></div>;
+      return f.auto_number?.enabled
+        ? <div style={style}><input type="text" {...common} readOnly className={`${common.className} bg-blue-50/50 font-mono`} /></div>
+        : <div style={style}><input type="number" {...common} /></div>;
     case "email":
       return <div style={style}><input type="email" {...common} /></div>;
     case "phone":

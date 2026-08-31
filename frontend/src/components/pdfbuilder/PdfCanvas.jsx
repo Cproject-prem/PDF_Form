@@ -315,7 +315,9 @@ function FieldBox({ f, containerW, containerH, selected, snapToGrid,
         <div className="px-1.5 truncate flex items-center gap-1 w-full">
           <Icon className="w-3 h-3 shrink-0 text-blue-700" />
           <span className="truncate font-medium" style={{ fontSize: computeFontSize(f, h) }}>
-            {f.label || meta.label}
+            {(f.auto_number?.enabled || f.type === "auto_number")
+              ? `# ${f.label || meta.label} (${f.auto_number?.mode === "continuous" ? "1,2,3..." : `${new Date().getFullYear()}/001`})`
+              : (f.label || meta.label)}
           </span>
           {f.required && <span className="text-red-500 ml-auto">*</span>}
         </div>
