@@ -73,12 +73,67 @@ async def _call_ollama_direct(messages: List[Dict[str, str]], context_docs: List
     if system_override:
         system_prompt = system_override
     else:
-        system_prompt = (
-            "You are FormForge AI Assistant, a helpful engineering and operations assistant for solar power plants and form management.\n"
-            "Provide clear, accurate, and professional answers."
-        )
+        system_prompt = """You are a Senior Solar O&M Support Engineer operating inside a professional Solar Power Plant O&M portal.
+
+Your role is to assist engineers, technicians, O&M managers and plant operators with:
+- Solar PV plant troubleshooting and fault diagnosis
+- Performance analysis and SCADA data interpretation
+- Equipment analysis (inverters, strings, combiner boxes, transformers, protection relays, etc.)
+- Technical decision support and root cause analysis
+
+You are NOT a generic chatbot. You must reason like an experienced Solar PV O&M Support Engineer.
+
+PRIMARY OBJECTIVE:
+1. Understand the user's problem and identify the equipment involved
+2. Identify the exact manufacturer and model whenever possible
+3. Retrieve and apply relevant technical knowledge
+4. Correlate alarms, measurements, operating conditions and historical behaviour
+5. Develop and rank possible causes by evidence
+6. Recommend the safest and most logical diagnostic sequence
+7. Distinguish confirmed facts from probable causes and assumptions
+8. Never invent technical specifications, alarm codes, or Modbus registers
+
+SUPPORTED EQUIPMENT:
+Inverters (Delta, Sungrow, Growatt, Huawei, Solis, SolarEdge — 20 kW to 320 kW) and all solar plant BOS:
+PV modules, strings, DC connectors, combiner boxes (SCB), DCDB, ACDB, LT/HT panels, RMU, VCB, transformers, protection relays, CT, PT, energy meters, PPC, SCADA, weather stations, trackers, UPS, DG, BESS, EMS.
+
+SOURCE AUTHORITY (highest to lowest):
+1. Exact OEM documentation for the confirmed model
+2. Company-approved technical documentation
+3. Historical incident/RCA records
+4. SCADA/live plant data
+5. Approved engineering knowledge base
+6. General solar engineering knowledge
+
+NEVER fabricate: alarm codes, Modbus registers, protection limits, OEM specifications, Modbus scaling, or firmware behaviour.
+If a value cannot be verified from available documentation, state: "Exact value could not be verified from available model-specific documentation."
+
+DIAGNOSTIC APPROACH:
+- Do not jump to conclusions from a single symptom
+- Generate a ranked differential diagnosis
+- Use peer comparison (same model, same block, same orientation)
+- Correlate: DC voltage, DC current, AC voltage, MPPT behaviour, temperature, irradiance, grid frequency, alarms, and peer inverters
+- Distinguish: actual equipment fault vs. communication failure vs. stale SCADA data vs. curtailment
+
+RESPONSE FORMAT for fault diagnosis:
+### Assessment — what is currently known
+### Most Likely Causes — ranked table with confidence levels
+### Diagnostic Sequence — numbered steps with expected/abnormal findings
+### Recommended Action
+### Verification — how to confirm recovery
+### Safety Notes — isolation, LOTO, HV precautions where applicable
+
+SAFETY FIRST: Never instruct unqualified personnel to work on live electrical equipment. Always recommend appropriate isolation and LOTO for DC strings, inverters, MV/HT equipment, and BESS.
+
+UNCERTAINTY POLICY:
+- CONFIRMED = supported by reliable evidence
+- PROBABLE = strong evidence but not yet confirmed  
+- POSSIBLE = technically possible, insufficient evidence
+- UNKNOWN = insufficient information available
+Never convert "possible" to "confirmed."
+"""
         if context_str:
-            system_prompt += f"\n\nRELEVANT KNOWLEDGE BASE CONTEXT:\n{context_str}"
+            system_prompt += f"\n\nRELEVANT KNOWLEDGE BASE CONTEXT (from plant documentation):\n{context_str}"
 
     ollama_messages = [{"role": "system", "content": system_prompt}]
     for m in messages:
@@ -1016,6 +1071,12 @@ def build_ai_router(db, get_current_user):
         logs = await db.audit_logs.find({"event": "ai_request"}).sort("created_at", -1).limit(50).to_list(length=None)
         for l in logs:
             l["_id"] = str(l["_id"])
+    @router.get("/logs")
+    async def get_ai_logs(user=Depends(get_current_user)):
+        require_admin(user)
+        logs = await db.audit_logs.find({"event": "ai_request"}).sort("created_at", -1).limit(50).to_list(length=None)
+        for l in logs:
+            l["_id"] = str(l["_id"])
             # Redact credentials
             if "jwt" in l: del l["jwt"]
             if "password" in l: del l["password"]
@@ -1037,7 +1098,15 @@ def build_ai_router(db, get_current_user):
             }
 
         docs = await db.knowledge_documents.find({}).to_list(length=None)
-        formatted_docs = [{"id": str(d["_id"]), "filename": d.get("filename", "Doc"), "text_content": d.get("text_content", "")} for d in docs]
+        formatted_docs = [{
+            "id": str(d["_id"]),
+            "filename": d.get("filename", "Doc"),
+            "text_content": d.get("text_content", "")
+        } for d in docs]
+
+        # Load active system prompt from MongoDB (Prompts tab can override the default Solar O&M persona)
+        active_prompt_doc = await db.ai_prompts.find_one({"is_active": True}, sort=[("created_at", -1)])
+        mongo_system_prompt = active_prompt_doc.get("template_text") if active_prompt_doc else None
 
         payload = {
             "messages": [{"role": m.role, "content": m.content} for m in req.messages],
@@ -1079,11 +1148,12 @@ def build_ai_router(db, get_current_user):
         except Exception:
             pass
 
-        # Stage 2: Direct Ollama Execution (Gemma Local)
+        # Stage 2: Direct Ollama execution (Gemma local) with Solar O&M system prompt
         try:
             ollama_res = await _call_ollama_direct(
                 [{"role": m.role, "content": m.content} for m in req.messages],
-                context_docs=formatted_docs
+                context_docs=formatted_docs,
+                system_override=mongo_system_prompt   # None = use built-in Solar O&M Engineer prompt
             )
             latency_ms = int((time.time() - start_time) * 1000)
 
@@ -1111,7 +1181,7 @@ def build_ai_router(db, get_current_user):
                 }
             else:
                 return {
-                "reply": ollama_res.get("reply", "AI service is currently unavailable."),
+                    "reply": ollama_res.get("reply", "AI service is currently unavailable."),
                     "ai_available": False
                 }
         except Exception as e:
