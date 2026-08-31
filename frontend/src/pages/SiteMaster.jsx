@@ -8,6 +8,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
@@ -392,7 +399,7 @@ export default function SiteMasterPage() {
   const exportCsv = () => authedDownload(`/sites/export.csv?include_hidden=${showHidden}`, "sites-export.csv");
 
   const doImport = async () => {
-    if (!importFile) { toast.error("Choose a file"); return; }
+    if (!importFile) { toast.error("Choose a spreadsheet file"); return; }
     setImporting(true);
     try {
       const fd = new FormData();
@@ -401,13 +408,32 @@ export default function SiteMasterPage() {
       const r = await api.post("/sites/import", fd, {
         headers: { "Content-Type": "multipart/form-data" }
       });
-      toast.success(`${r.data.rows} row(s) imported`);
+      toast.success(`${r.data.rows || r.data.imported || 0} row(s) imported`);
       setImportOpen(false); setImportFile(null); setReplace(false);
       await load();
     } catch (e) {
       toast.error(getErrorMessage(e, "Import failed"));
     } finally {
       setImporting(false);
+    }
+  };
+
+  const doRoofImport = async () => {
+    if (!roofImportFile) { toast.error("Choose a roofs spreadsheet file"); return; }
+    setRoofImporting(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", roofImportFile);
+      const r = await api.post("/sites/roofs/import", fd, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+      toast.success(r.data.message || "Roofs imported successfully");
+      setRoofImportOpen(false); setRoofImportFile(null);
+      await load();
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Roof import failed"));
+    } finally {
+      setRoofImporting(false);
     }
   };
 
@@ -441,59 +467,78 @@ export default function SiteMasterPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Select onValueChange={(val) => {
-              if (val === "sites-xlsx") exportXlsx();
-              else if (val === "sites-csv") exportCsv();
-              else if (val === "sites-tpl") downloadTemplate();
-              else if (val === "roofs-xlsx") authedDownload("/sites/roofs/export.xlsx", "roofs-export.xlsx");
-              else if (val === "roofs-tpl") authedDownload("/sites/roofs/template.xlsx", "roofs-template.xlsx");
-            }}>
-              <SelectTrigger className="h-9 px-3 text-xs bg-white border border-slate-200 rounded-lg flex items-center gap-1.5 shadow-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
-                <Download className="w-4 h-4 text-blue-600" />
-                <span>Export & Templates</span>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="sites-xlsx">📊 Export Sites (Excel)</SelectItem>
-                <SelectItem value="sites-csv">📄 Export Sites (CSV)</SelectItem>
-                <SelectItem value="sites-tpl">📋 Sites Template</SelectItem>
-                <SelectItem value="roofs-xlsx">🏠 Export Roofs (Excel)</SelectItem>
-                <SelectItem value="roofs-tpl">📋 Roofs Template</SelectItem>
-              </SelectContent>
-            </Select>
+            {/* Export & Templates Dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-9 px-3 text-xs bg-white border border-slate-200 rounded-lg flex items-center gap-1.5 shadow-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
+                  <Download className="w-4 h-4 text-blue-600" />
+                  <span>Export &amp; Templates</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuItem onClick={exportXlsx} className="cursor-pointer text-xs">
+                  <FileSpreadsheet className="w-4 h-4 mr-2 text-emerald-600" /> Export Sites (Excel)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={exportCsv} className="cursor-pointer text-xs">
+                  <FileSpreadsheet className="w-4 h-4 mr-2 text-blue-600" /> Export Sites (CSV)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={downloadTemplate} className="cursor-pointer text-xs">
+                  <Download className="w-4 h-4 mr-2 text-slate-500" /> Sites Template
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => authedDownload("/sites/roofs/export.xlsx", "roofs-export.xlsx")} className="cursor-pointer text-xs">
+                  <Building2 className="w-4 h-4 mr-2 text-amber-600" /> Export Roofs (Excel)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => authedDownload("/sites/roofs/template.xlsx", "roofs-template.xlsx")} className="cursor-pointer text-xs">
+                  <Download className="w-4 h-4 mr-2 text-slate-500" /> Roofs Template
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
+            {/* Import Data Dropdown */}
             {canEdit && (
-              <Select onValueChange={(val) => {
-                if (val === "import-sites") setImportOpen(true);
-                else if (val === "import-roofs") setRoofImportOpen(true);
-                else if (val === "import-history") loadHistory();
-              }}>
-                <SelectTrigger className="h-9 px-3 text-xs bg-white border border-slate-200 rounded-lg flex items-center gap-1.5 shadow-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
-                  <Upload className="w-4 h-4 text-emerald-600" />
-                  <span>Import Data</span>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="import-sites">📥 Import Sites</SelectItem>
-                  <SelectItem value="import-roofs">🏠 Import Roofs</SelectItem>
-                  <SelectItem value="import-history">📜 Import History Log</SelectItem>
-                </SelectContent>
-              </Select>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="h-9 px-3 text-xs bg-white border border-slate-200 rounded-lg flex items-center gap-1.5 shadow-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
+                    <Upload className="w-4 h-4 text-emerald-600" />
+                    <span>Import Data</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuItem onClick={() => setImportOpen(true)} className="cursor-pointer text-xs">
+                    <Upload className="w-4 h-4 mr-2 text-emerald-600" /> Import Sites
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setRoofImportOpen(true)} className="cursor-pointer text-xs">
+                    <Building2 className="w-4 h-4 mr-2 text-blue-600" /> Import Roofs
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={loadHistory} className="cursor-pointer text-xs">
+                    <History className="w-4 h-4 mr-2 text-purple-600" /> Import History Log
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
 
-            <Select onValueChange={async (val) => {
-              if (val === "add-col") setAddColOpen(true);
-              else if (val === "toggle-hidden") setShowHidden(!showHidden);
-            }}>
-              <SelectTrigger className="h-9 px-3 text-xs bg-white border border-slate-200 rounded-lg flex items-center gap-1.5 shadow-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
-                <Columns3 className="w-4 h-4 text-purple-600" />
-                <span>Tools & Options</span>
-              </SelectTrigger>
-              <SelectContent>
-                {canEdit && <SelectItem value="add-col">➕ Add Custom Column</SelectItem>}
-                <SelectItem value="toggle-hidden">
-                  {showHidden ? "👁️‍🗨️ Hide System Data" : "👁️ Show Hidden Data"}
-                </SelectItem>
-              </SelectContent>
-            </Select>
+            {/* Tools & Options Dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-9 px-3 text-xs bg-white border border-slate-200 rounded-lg flex items-center gap-1.5 shadow-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer">
+                  <Columns3 className="w-4 h-4 text-purple-600" />
+                  <span>Tools &amp; Options</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                {canEdit && (
+                  <DropdownMenuItem onClick={() => setAddColOpen(true)} className="cursor-pointer text-xs">
+                    <Plus className="w-4 h-4 mr-2 text-indigo-600" /> Add Custom Column
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={() => setShowHidden(!showHidden)} className="cursor-pointer text-xs">
+                  <Columns3 className="w-4 h-4 mr-2 text-slate-600" />
+                  {showHidden ? "Hide System Data" : "Show Hidden Data"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
@@ -830,6 +875,238 @@ export default function SiteMasterPage() {
                 {handoverSubmitting ? "Submitting..." : "Confirm & Execute Handover"}
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- Import Sites Modal --- */}
+      <Dialog open={importOpen} onOpenChange={setImportOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Upload className="w-5 h-5 text-emerald-600" />
+              Import Sites
+            </DialogTitle>
+            <DialogDescription>
+              Upload an Excel (.xlsx) or CSV (.csv) file to create or update sites in bulk.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-xs font-semibold">Select Spreadsheet File</Label>
+              <Input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => setImportFile(e.target.files?.[0] || null)}
+                className="mt-1 cursor-pointer text-xs"
+              />
+              {importFile && (
+                <p className="text-xs text-slate-500 mt-1">
+                  Selected: <span className="font-semibold text-slate-700">{importFile.name}</span> ({(importFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
+              <input
+                type="checkbox"
+                id="replace-sites"
+                checked={replace}
+                onChange={(e) => setReplace(e.target.checked)}
+                className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+              />
+              <label htmlFor="replace-sites" className="text-xs text-slate-700 cursor-pointer">
+                <span className="font-semibold">Replace all existing sites</span>
+                <span className="block text-slate-500 text-[11px]">If unchecked, existing rows are updated and new rows are appended.</span>
+              </label>
+            </div>
+
+            <div className="text-xs text-slate-500 flex items-center justify-between pt-1 border-t border-slate-100">
+              <span>Need the standard template?</span>
+              <button
+                type="button"
+                onClick={downloadTemplate}
+                className="text-blue-600 hover:underline flex items-center gap-1 font-medium cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" /> Download Template
+              </button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => { setImportOpen(false); setImportFile(null); }}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+              onClick={doImport}
+              disabled={importing || !importFile}
+            >
+              {importing ? "Importing…" : "Upload & Import"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- Import Roofs Modal --- */}
+      <Dialog open={roofImportOpen} onOpenChange={setRoofImportOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-blue-600" />
+              Import Roofs / Solar Sub-arrays
+            </DialogTitle>
+            <DialogDescription>
+              Upload an Excel (.xlsx) or CSV file with roof details mapped to <span className="font-semibold text-slate-800">site_name</span>.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-xs font-semibold">Select Roofs File</Label>
+              <Input
+                ref={roofFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => setRoofImportFile(e.target.files?.[0] || null)}
+                className="mt-1 cursor-pointer text-xs"
+              />
+              {roofImportFile && (
+                <p className="text-xs text-slate-500 mt-1">
+                  Selected: <span className="font-semibold text-slate-700">{roofImportFile.name}</span> ({(roofImportFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+
+            <div className="bg-blue-50/70 p-3 rounded-lg border border-blue-100 text-xs text-blue-900 space-y-1">
+              <div className="font-semibold flex items-center gap-1.5">
+                <FileSpreadsheet className="w-4 h-4 text-blue-600" /> Expected columns:
+              </div>
+              <div className="text-slate-600 text-[11px]">
+                <code>site_name</code>, <code>name</code> (roof/block), <code>capacity</code>, <code>inverter_make</code>, <code>module_make</code>, <code>notes</code>
+              </div>
+            </div>
+
+            <div className="text-xs text-slate-500 flex items-center justify-between pt-1 border-t border-slate-100">
+              <span>Need the roof import format?</span>
+              <button
+                type="button"
+                onClick={() => authedDownload("/sites/roofs/template.xlsx", "roofs-template.xlsx")}
+                className="text-blue-600 hover:underline flex items-center gap-1 font-medium cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" /> Download Roofs Template
+              </button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => { setRoofImportOpen(false); setRoofImportFile(null); }}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="bg-blue-600 hover:bg-blue-700 text-white cursor-pointer"
+              onClick={doRoofImport}
+              disabled={roofImporting || !roofImportFile}
+            >
+              {roofImporting ? "Importing Roofs…" : "Upload & Import Roofs"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- Import History Log Modal --- */}
+      <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <History className="w-5 h-5 text-purple-600" />
+              Site Import History Log
+            </DialogTitle>
+            <DialogDescription>
+              Audit log of all bulk site imports, uploaded files, and modified counts.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[360px] overflow-y-auto space-y-2 py-2">
+            {imports.length === 0 ? (
+              <div className="text-center py-10 text-xs text-slate-400">
+                No import history recorded yet.
+              </div>
+            ) : (
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
+                    <tr>
+                      <th className="text-left p-2.5">Date &amp; Time</th>
+                      <th className="text-left p-2.5">File Name</th>
+                      <th className="text-left p-2.5">Imported By</th>
+                      <th className="text-right p-2.5">Rows</th>
+                      <th className="text-right p-2.5">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {imports.map((item, idx) => (
+                      <tr key={item.import_id || idx} className="hover:bg-slate-50">
+                        <td className="p-2.5 text-slate-700 font-medium">
+                          {item.created_at ? new Date(item.created_at).toLocaleString() : "—"}
+                        </td>
+                        <td className="p-2.5 text-slate-600">
+                          {item.filename || item.file_name || "sites_import.xlsx"}
+                        </td>
+                        <td className="p-2.5 text-slate-600">
+                          {item.user_email || item.imported_by || "Admin"}
+                        </td>
+                        <td className="p-2.5 text-right font-semibold text-slate-800">
+                          {item.rows ?? item.count ?? item.imported ?? 0}
+                        </td>
+                        <td className="p-2.5 text-right">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Success
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setHistoryOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* --- Add Custom Column Modal --- */}
+      <Dialog open={addColOpen} onOpenChange={setAddColOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="w-5 h-5 text-indigo-600" />
+              Add Custom Column
+            </DialogTitle>
+            <DialogDescription>
+              Add a new custom data field to the Site Master table.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <Label className="text-xs font-semibold">Column Label / Header</Label>
+            <Input
+              value={newColLabel}
+              onChange={(e) => setNewColLabel(e.target.value)}
+              placeholder="e.g. Substation ID, PPA Number"
+              className="mt-1 text-xs"
+              onKeyDown={(e) => { if (e.key === "Enter") addColumn(); }}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => { setAddColOpen(false); setNewColLabel(""); }}>
+              Cancel
+            </Button>
+            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer" onClick={addColumn} disabled={!newColLabel.trim()}>
+              Add Column
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
