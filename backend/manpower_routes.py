@@ -125,7 +125,13 @@ def build_manpower_router(main_db, get_current_user):
         if not _enabled() or coll is None:
             return {"items": [], "total": 0, "enabled": False}
 
-        q: Dict[str, Any] = {}
+        # Strictly filter: Only approved/active manpower with generated ID, and not disabled
+        q: Dict[str, Any] = {
+            "disabled": {"$ne": True},
+            "is_active": {"$ne": False},
+            "manpower_id": {"$exists": True, "$ne": "", "$nin": [None, ""]},
+            "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+        }
         vid = getattr(user, "vendor_id", None)
         if vid:
             q["vendor_id"] = vid
@@ -133,7 +139,8 @@ def build_manpower_router(main_db, get_current_user):
         if state:    q["work_state"] = state
         if location: q["location"]   = location
         if company:  q["company_name"] = company
-        if status:   q["status"] = status
+        if status and status not in ("draft", "pending_approval", "rejected", "disabled", "Disabled"):
+            q["status"] = status
         if search:
             rx = re.escape(search.strip())
             q["$or"] = [
@@ -165,7 +172,12 @@ def build_manpower_router(main_db, get_current_user):
         if not _enabled() or coll is None:
             return {"states": [], "locations": [], "companies": []}
             
-        q = {}
+        q = {
+            "disabled": {"$ne": True},
+            "is_active": {"$ne": False},
+            "manpower_id": {"$exists": True, "$ne": "", "$nin": [None, ""]},
+            "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+        }
         vid = getattr(user, "vendor_id", None)
         if vid:
             q["vendor_id"] = vid
@@ -184,7 +196,12 @@ def build_manpower_router(main_db, get_current_user):
         if not _enabled() or coll is None:
             raise HTTPException(503, "Manpower integration is disabled")
             
-        q = {"manpower_id": manpower_id}
+        q = {
+            "manpower_id": manpower_id,
+            "disabled": {"$ne": True},
+            "is_active": {"$ne": False},
+            "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+        }
         vid = getattr(user, "vendor_id", None)
         if vid:
             q["vendor_id"] = vid
@@ -204,7 +221,12 @@ def build_manpower_router(main_db, get_current_user):
         if not _enabled() or coll is None:
             raise HTTPException(503, "Manpower integration is disabled")
             
-        q = {"manpower_id": manpower_id}
+        q = {
+            "manpower_id": manpower_id,
+            "disabled": {"$ne": True},
+            "is_active": {"$ne": False},
+            "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+        }
         vid = getattr(user, "vendor_id", None)
         if vid:
             q["vendor_id"] = vid

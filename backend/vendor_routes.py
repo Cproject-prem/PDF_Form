@@ -1663,7 +1663,13 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             coll = _manpower_coll(db)
             if coll is None:
                 return {"value": None, "fill": {}, "matched": False}
-            row = _clean(await coll.find_one({display: chosen}, {"_id": 0}))
+            row = _clean(await coll.find_one({
+                display: chosen,
+                "disabled": {"$ne": True},
+                "is_active": {"$ne": False},
+                "manpower_id": {"$exists": True, "$ne": "", "$nin": [None, ""]},
+                "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+            }, {"_id": 0}))
             if not row:
                 return {"value": None, "fill": {}, "matched": False}
             row = _compute_manpower_eligibility(row)
@@ -1723,7 +1729,12 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             coll = _manpower_coll(db)
             if coll is None:
                 return []
-            flt = {}
+            flt = {
+                "disabled": {"$ne": True},
+                "is_active": {"$ne": False},
+                "manpower_id": {"$exists": True, "$ne": "", "$nin": [None, ""]},
+                "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+            }
             if q:
                 flt[column] = {"$regex": re.escape(q), "$options": "i"}
             vals = await coll.distinct(column, flt)
@@ -1785,7 +1796,12 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             coll = _manpower_coll(db)
             if coll is None:
                 return []
-            flt = {}
+            flt = {
+                "disabled": {"$ne": True},
+                "is_active": {"$ne": False},
+                "manpower_id": {"$exists": True, "$ne": "", "$nin": [None, ""]},
+                "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+            }
             if q:
                 flt[column] = {"$regex": re.escape(q), "$options": "i"}
             vals = await coll.distinct(column, flt)
@@ -1812,7 +1828,13 @@ def build_routers(db, get_current_user, hash_password_fn, get_optional_user=None
             coll = _manpower_coll(db)
             if coll is None:
                 return {"value": None, "fill": {}, "matched": False}
-            row = _clean(await coll.find_one({display: chosen}, {"_id": 0}))
+            row = _clean(await coll.find_one({
+                display: chosen,
+                "disabled": {"$ne": True},
+                "is_active": {"$ne": False},
+                "manpower_id": {"$exists": True, "$ne": "", "$nin": [None, ""]},
+                "status": {"$nin": ["draft", "pending_approval", "rejected", "disabled", "Disabled"]}
+            }, {"_id": 0}))
         else:
             raise HTTPException(400, "Unknown source")
         if not row:
