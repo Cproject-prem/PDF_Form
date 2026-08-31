@@ -175,11 +175,16 @@ export default function AiTrainingPage() {
   const [bulkValidationPreview, setBulkValidationPreview] = useState(null);
   const [isValidatingBulk, setIsValidatingBulk] = useState(false);
   const [isUploadingBulk, setIsUploadingBulk] = useState(false);
-  const [bulkUploadResult, setBulkUploadResult] = useState(null);
   const [activeKnowledgeSubTab, setActiveKnowledgeSubTab] = useState("upload");
   const [isRollingBackBatchId, setIsRollingBackBatchId] = useState(null);
   const [isSyncingQdrant, setIsSyncingQdrant] = useState(false);
   const bulkFileInputRef = useRef(null);
+
+  // ── Dedicated AI Model Management State ──
+  const [switchingModelId, setSwitchingModelId] = useState(null);
+  const [pullModelInput, setPullModelInput] = useState("");
+  const [isPullingModel, setIsPullingModel] = useState(false);
+  const [playgroundModel, setPlaygroundModel] = useState("");
 
 
   useEffect(() => {
@@ -668,6 +673,40 @@ export default function AiTrainingPage() {
       toast.error("Qdrant sync failed");
     } finally {
       setIsSyncingQdrant(false);
+    }
+  };
+
+  // ── AI MODEL SELECTION & PULL HANDLERS ──
+  const handleSetActiveModel = async (modelRawName) => {
+    setSwitchingModelId(modelRawName);
+    try {
+      const res = await api.post("/ai/models/active", { model: modelRawName });
+      toast.success(res.data.message || `Active AI Model set to ${modelRawName}`);
+      fetchAllData();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.response?.data?.message || "Failed to switch active model");
+    } finally {
+      setSwitchingModelId(null);
+    }
+  };
+
+  const handlePullModel = async (e) => {
+    e?.preventDefault();
+    if (!pullModelInput.trim()) return toast.error("Please specify a model name (e.g. qwen3:14b)");
+    setIsPullingModel(true);
+    try {
+      const res = await api.post("/ai/models/pull", { model: pullModelInput.trim() });
+      if (res.data.success) {
+        toast.success(res.data.message || `Model ${pullModelInput} downloaded successfully!`);
+        setPullModelInput("");
+        fetchAllData();
+      } else {
+        toast.error(res.data.message || "Failed to download model");
+      }
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || err?.response?.data?.message || "Failed to pull model from Ollama");
+    } finally {
+      setIsPullingModel(false);
     }
   };
 
@@ -2666,45 +2705,174 @@ export default function AiTrainingPage() {
           {/* TAB 8: MODELS */}
           {activeTab === "models" && (
             <div className="space-y-6 max-w-6xl">
-              <div>
-                <h2 className="text-xl font-bold text-slate-800">Local AI Models</h2>
-                <p className="text-xs text-slate-500 mt-1">Status of on-premise open-weights models running inside Ollama.</p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                    <Cpu className="w-5 h-5 text-indigo-600" />
+                    Local AI Models & Model Selection
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Select which model runs the AI Assistant. Choose between high-precision reasoning (e.g. Qwen 3 14B) or ultra-fast edge execution (Gemma 2B).
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button 
+                    onClick={fetchAllData} 
+                    variant="outline" 
+                    size="sm" 
+                    className="text-xs h-9 gap-1.5 text-slate-600 bg-white"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Refresh Models
+                  </Button>
+                </div>
               </div>
 
+              {/* ── Add / Pull New Model Card ── */}
+              <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-5 rounded-2xl border border-indigo-900/50 shadow-md space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-indigo-600/40 border border-indigo-400/50 flex items-center justify-center text-indigo-300 font-bold text-xs">
+                      ⚡
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-sm text-indigo-100">Add / Pull New Model from Ollama</h3>
+                      <p className="text-[11px] text-slate-400">Download and register any open-weights model into your local instance.</p>
+                    </div>
+                  </div>
+                </div>
+
+                <form onSubmit={handlePullModel} className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <div className="flex-1">
+                    <Input 
+                      value={pullModelInput}
+                      onChange={(e) => setPullModelInput(e.target.value)}
+                      placeholder="e.g. qwen3:14b, qwen2.5:14b, llama3.1:8b, deepseek-r1:14b..."
+                      className="bg-slate-950/80 border-slate-700 text-white placeholder:text-slate-500 text-xs h-10 rounded-xl font-mono focus:border-indigo-400"
+                      disabled={isPullingModel}
+                    />
+                  </div>
+                  <Button 
+                    type="submit" 
+                    disabled={!pullModelInput.trim() || isPullingModel}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs h-10 px-5 rounded-xl font-semibold gap-2 shrink-0 transition shadow-sm"
+                  >
+                    {isPullingModel ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-white" />
+                        <span>Downloading Model...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 text-indigo-300" />
+                        <span>Pull & Install Model</span>
+                      </>
+                    )}
+                  </Button>
+                </form>
+
+                {/* Popular Model Quick Presets */}
+                <div className="flex items-center gap-2 flex-wrap text-[11px] pt-1">
+                  <span className="text-slate-400 font-semibold">Quick Presets:</span>
+                  {["qwen3:14b", "qwen2.5:14b", "gemma:2b", "llama3.1:8b", "deepseek-r1:14b"].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setPullModelInput(preset)}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800/80 hover:bg-indigo-900/60 text-indigo-200 border border-slate-700 hover:border-indigo-400/50 font-mono transition"
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* ── Installed Models List ── */}
               <div className="space-y-4">
                 {modelsList.map((m) => (
-                  <div key={m.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                          <Cpu className="w-5 h-5" />
+                  <div 
+                    key={m.id || m.raw_name} 
+                    className={`bg-white p-6 rounded-2xl border transition-all ${
+                      m.active 
+                        ? "border-indigo-500 shadow-md ring-2 ring-indigo-500/20" 
+                        : "border-slate-200 shadow-sm hover:border-slate-300"
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="flex items-start gap-3.5">
+                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-inner ${
+                          m.active 
+                            ? "bg-gradient-to-tr from-indigo-600 to-violet-600 text-white" 
+                            : "bg-slate-100 text-slate-600"
+                        }`}>
+                          <Cpu className="w-6 h-6" />
                         </div>
                         <div>
-                          <h3 className="font-bold text-slate-800 text-sm">{m.model_name}</h3>
-                          <p className="text-xs text-slate-500">Provider: {m.provider}</p>
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <h3 className="font-bold text-slate-900 text-base">{m.model_name}</h3>
+                            {m.active && (
+                              <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-[11px] flex items-center gap-1.5 shadow-xs">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                ACTIVE & RUNNING
+                              </span>
+                            )}
+                            {m.category && (
+                              <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100 font-medium text-[11px]">
+                                {m.category}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-500 font-mono mt-0.5">
+                            Identifier: <strong className="text-slate-700">{m.raw_name}</strong> • Provider: {m.provider}
+                          </p>
                         </div>
                       </div>
-                      <span className={`px-3 py-1 rounded-full font-bold text-xs ${m.active ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-100 text-slate-600"}`}>
-                        {m.active ? "Active & Loaded" : "Available"}
-                      </span>
+
+                      <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                        {m.active ? (
+                          <div className="px-4 py-2 rounded-xl bg-emerald-50 text-emerald-700 font-bold text-xs border border-emerald-200 flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span>Currently Active</span>
+                          </div>
+                        ) : (
+                          <Button
+                            onClick={() => handleSetActiveModel(m.raw_name)}
+                            disabled={switchingModelId === m.raw_name}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs h-9 px-4 rounded-xl flex items-center gap-1.5 transition shadow-sm"
+                          >
+                            {switchingModelId === m.raw_name ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Switching...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="w-3.5 h-3.5 text-indigo-200" />
+                                <span>Run This Model</span>
+                              </>
+                            )}
+                          </Button>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs pt-2">
-                      <div className="p-3 bg-slate-50 rounded-xl">
-                        <div className="text-slate-400">Context Window</div>
-                        <div className="font-bold text-slate-800 text-sm mt-0.5">{m.context_window}</div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-4 border-t border-slate-100 mt-4">
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                        <div className="text-slate-400 text-[11px] font-medium">Context Window</div>
+                        <div className="font-bold text-slate-800 text-sm mt-0.5">{m.context_window || "8,192 tokens"}</div>
                       </div>
-                      <div className="p-3 bg-slate-50 rounded-xl">
-                        <div className="text-slate-400">RAM Estimate</div>
-                        <div className="font-bold text-slate-800 text-sm mt-0.5">{m.ram_estimate_gb}</div>
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                        <div className="text-slate-400 text-[11px] font-medium">RAM Estimate</div>
+                        <div className="font-bold text-slate-800 text-sm mt-0.5">{m.ram_estimate_gb || "4.8 GB"}</div>
                       </div>
-                      <div className="p-3 bg-slate-50 rounded-xl">
-                        <div className="text-slate-400">Inference Speed</div>
-                        <div className="font-bold text-slate-800 text-sm mt-0.5">48 tokens/sec</div>
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                        <div className="text-slate-400 text-[11px] font-medium">Inference Speed</div>
+                        <div className="font-bold text-slate-800 text-sm mt-0.5">{m.inference_speed || "35 tokens/sec"}</div>
                       </div>
-                      <div className="p-3 bg-slate-50 rounded-xl">
-                        <div className="text-slate-400">Compute Backend</div>
-                        <div className="font-bold text-slate-800 text-sm mt-0.5">Local Ollama</div>
+                      <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                        <div className="text-slate-400 text-[11px] font-medium">Engine / Backend</div>
+                        <div className="font-bold text-slate-800 text-sm mt-0.5">Ollama (Host Port 11434)</div>
                       </div>
                     </div>
                   </div>
@@ -2837,6 +3005,22 @@ export default function AiTrainingPage() {
               <button onClick={() => setShowPlayground(false)} className="text-slate-400 hover:text-white">
                 <X className="w-4 h-4" />
               </button>
+            </div>
+
+            {/* Playground Model Quick Switcher */}
+            <div className="px-3 py-2 bg-slate-800 border-b border-slate-700 flex items-center justify-between text-xs">
+              <span className="text-slate-400 font-medium text-[11px]">Running Model:</span>
+              <select
+                value={modelsList.find(m => m.active)?.raw_name || "qwen3:14b"}
+                onChange={(e) => handleSetActiveModel(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[11px] text-indigo-200 font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+              >
+                {modelsList.map(m => (
+                  <option key={m.raw_name} value={m.raw_name}>
+                    {m.raw_name} {m.active ? "(Active)" : ""}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/50 nice-scroll text-xs">

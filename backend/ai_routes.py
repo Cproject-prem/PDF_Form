@@ -108,6 +108,12 @@ def build_ai_router(db, get_current_user):
         top_k: Optional[int] = 3
         model: Optional[str] = None
 
+    class ModelSelectRequest(BaseModel):
+        model: str
+
+    class ModelPullRequest(BaseModel):
+        model: str
+
     class StructuredKnowledgeRequest(BaseModel):
         equipment: str
         alarm: str
@@ -1109,41 +1115,103 @@ def build_ai_router(db, get_current_user):
 
     # ----------------- 8. Models, Versioned Prompts & Evaluations API -----------------
 
+    # ----------------- 8. Models, Versioned Prompts & Evaluations API -----------------
+
+    def _format_model_card(m: str, idx: int, active_model_str: str) -> dict:
+        m_lower = m.lower()
+        is_active = (m == active_model_str or m_lower == active_model_str.lower())
+
+        if "70b" in m_lower or "72b" in m_lower:
+            ram = "42.0 GB"
+            ctx = "64,000 tokens"
+            speed = "12 tokens/sec"
+        elif "14b" in m_lower or "13b" in m_lower:
+            ram = "9.2 GB"
+            ctx = "32,768 tokens"
+            speed = "28 tokens/sec"
+        elif "7b" in m_lower or "8b" in m_lower:
+            ram = "5.2 GB"
+            ctx = "16,384 tokens"
+            speed = "45 tokens/sec"
+        elif "2b" in m_lower or "3b" in m_lower:
+            ram = "2.5 GB"
+            ctx = "8,192 tokens"
+            speed = "65 tokens/sec"
+        else:
+            ram = "4.8 GB"
+            ctx = "8,192 tokens"
+            speed = "40 tokens/sec"
+
+        if "qwen3:14b" in m_lower or "qwen3" in m_lower:
+            display_name = "Qwen 3 (14B Parameters — High Precision)"
+            category = "Reasoning & Technical Expert"
+        elif "qwen" in m_lower and "14b" in m_lower:
+            display_name = "Qwen 2.5 (14B Parameters — High Precision)"
+            category = "Reasoning & Technical Expert"
+        elif "qwen" in m_lower:
+            display_name = f"Qwen ({m})"
+            category = "Instruction Following"
+        elif "gemma:2b" in m_lower:
+            display_name = "Gemma 2B (Ultra Lightweight)"
+            category = "Fast Edge Model"
+        elif "gemma" in m_lower:
+            display_name = f"Gemma ({m})"
+            category = "General Knowledge"
+        elif "llama" in m_lower:
+            display_name = f"Llama 3.1 ({m})"
+            category = "General Language & Reasoning"
+        elif "deepseek" in m_lower:
+            display_name = f"DeepSeek R1 ({m})"
+            category = "Deep Chain-of-Thought"
+        else:
+            display_name = f"{m.upper()}"
+            category = "Custom Local Model"
+
+        return {
+            "id": f"model-{idx+1}",
+            "model_name": display_name,
+            "provider": "Ollama Local",
+            "raw_name": m,
+            "category": category,
+            "ram_estimate_gb": ram,
+            "context_window": ctx,
+            "inference_speed": speed,
+            "status": "Installed & Ready",
+            "active": is_active
+        }
+
     @router.get("/models")
     async def list_models(user=Depends(get_current_user)):
+        """Lists all installed Ollama models with metadata and highlights the active model."""
         require_admin(user)
-        ollama_info = await _check_ollama_direct()
-        installed_models = ollama_info.get("models", [])
-        active_model = ollama_info.get("active_model", OLLAMA_MODEL)
+        active_model = await ollama_service.get_active_model(db)
+        health = await ollama_service.check_health(force=True)
+        installed_models = health.get("models", [])
 
         models_list = []
         if installed_models:
             for idx, m in enumerate(installed_models):
-                is_active = (m == active_model or (active_model in m))
-                models_list.append({
-                    "id": f"model-{idx+1}",
-                    "model_name": f"{m.upper()} (Ollama Local)",
-                    "provider": "Ollama",
-                    "raw_name": m,
-                    "ram_estimate_gb": "2.5 GB" if ("2b" in m or "3b" in m) else "4.8 GB",
-                    "context_window": "8,192 tokens",
-                    "status": "Installed",
-                    "active": is_active
-                })
+                models_list.append(_format_model_card(m, idx, active_model))
         else:
             models_list = [
-                {
-                    "id": "model-1",
-                    "model_name": "Gemma 2B (Ollama Local)",
-                    "provider": "Ollama",
-                    "raw_name": "gemma:2b",
-                    "ram_estimate_gb": "2.5 GB",
-                    "context_window": "8,192 tokens",
-                    "status": "Installed",
-                    "active": True
-                }
+                _format_model_card("qwen3:14b", 0, active_model),
+                _format_model_card("gemma:2b", 1, active_model)
             ]
         return models_list
+
+    @router.post("/models/active")
+    async def set_active_model_endpoint(req: ModelSelectRequest, user=Depends(get_current_user)):
+        """Switches the active running model across all AI chat and test endpoints."""
+        require_admin(user)
+        result = await ollama_service.set_active_model(req.model, db)
+        return result
+
+    @router.post("/models/pull")
+    async def pull_model_endpoint(req: ModelPullRequest, user=Depends(get_current_user)):
+        """Downloads/pulls a new model into Ollama."""
+        require_admin(user)
+        result = await ollama_service.pull_model(req.model)
+        return result
 
     @router.get("/prompts")
     async def list_prompts(user=Depends(get_current_user)):

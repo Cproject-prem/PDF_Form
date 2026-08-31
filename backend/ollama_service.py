@@ -166,6 +166,52 @@ class OllamaService:
             "message": "Local Ollama service is unavailable. Please ensure Ollama is running on port 11434."
         }
 
+    async def get_active_model(self, db=None) -> str:
+        """Returns the currently active model, reading from MongoDB settings if available."""
+        if db is not None:
+            try:
+                setting = await db.ai_settings.find_one({"key": "active_model"})
+                if setting and setting.get("value"):
+                    self.active_model = setting["value"]
+            except Exception:
+                pass
+        return self.active_model
+
+    async def set_active_model(self, model_name: str, db=None) -> Dict[str, Any]:
+        """Sets the active model and persists it to MongoDB if db is provided."""
+        clean_name = model_name.strip()
+        self.active_model = clean_name
+
+        if db is not None:
+            try:
+                await db.ai_settings.update_one(
+                    {"key": "active_model"},
+                    {"$set": {"key": "active_model", "value": clean_name, "updated_at": datetime.utcnow()}},
+                    upsert=True
+                )
+            except Exception as e:
+                logger.error(f"Failed to persist active model to MongoDB: {e}")
+
+        logger.info(f"Active Ollama model set to: {clean_name}")
+        return {
+            "success": True,
+            "active_model": clean_name,
+            "message": f"Active AI model switched to '{clean_name}'"
+        }
+
+    async def pull_model(self, model_name: str) -> Dict[str, Any]:
+        """Requests Ollama to download/pull a new model from the library."""
+        clean_name = model_name.strip()
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.post(f"{self.active_base_url}/api/pull", json={"name": clean_name, "stream": False})
+                if resp.status_code == 200:
+                    await self.check_health(force=True)
+                    return {"success": True, "model": clean_name, "message": f"Model '{clean_name}' pulled successfully."}
+                return {"success": False, "message": f"Ollama pull failed (HTTP {resp.status_code}): {resp.text}"}
+        except Exception as e:
+            return {"success": False, "message": f"Model pull error: {str(e)}"}
+
     async def list_models(self) -> List[str]:
         """Returns list of installed models from local Ollama."""
         health = await self.check_health()
