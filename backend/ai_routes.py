@@ -86,9 +86,12 @@ def build_ai_router(db, get_current_user):
         top_k: Optional[int] = 5
 
     class TestRAGRequest(BaseModel):
+        model_config = ConfigDict(extra="allow")
         question: str
         collection_id: Optional[str] = None
         folder_id: Optional[str] = None
+        top_k: Optional[int] = 3
+        model: Optional[str] = None
 
     class StructuredKnowledgeRequest(BaseModel):
         equipment: str
@@ -547,7 +550,7 @@ def build_ai_router(db, get_current_user):
             async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
                 rag_resp = await client.post(
                     f"{AI_SERVICE_URL}/ai/rag/query",
-                    json={"query": req.question, "top_k": req.top_k or 3}
+                    json={"query": req.question, "top_k": getattr(req, 'top_k', 3) or 3}
                 )
                 if rag_resp.status_code == 200:
                     rag_data = rag_resp.json()
@@ -575,7 +578,7 @@ def build_ai_router(db, get_current_user):
             query = {}
             if req.collection_id:
                 query["collection_id"] = req.collection_id
-            chunks = await db.knowledge_chunks.find(query).limit(req.top_k or 3).to_list(length=None)
+            chunks = await db.knowledge_chunks.find(query).limit(getattr(req, 'top_k', 3) or 3).to_list(length=None)
             for idx, chk in enumerate(chunks):
                 doc = await db.knowledge_documents.find_one({"_id": ObjectId(chk["document_id"])}) if chk.get("document_id") else None
                 score = round(0.92 - (idx * 0.04), 2)
